@@ -2,10 +2,12 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'elec
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
+import { DialogPathHistory } from './dialog-path-history'
 import type { BackendStatus, UiLocale } from '../shared/protocol'
 
 let mainWindow: BrowserWindow | undefined
 let backend: BackendClient | undefined
+let dialogPathHistory: DialogPathHistory | undefined
 let lastBackendStatus: BackendStatus = { state: 'starting' }
 let uiLocale: UiLocale = 'en'
 const initialPaths = parseInitialPaths(process.argv)
@@ -168,13 +170,17 @@ const registerIpc = (): void => {
       return process.env.DNSPY_E2E_ASSEMBLY.split(path.delimiter).filter(Boolean)
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: nativeText().openAssembly,
+      defaultPath: dialogPathHistory?.openDirectory,
       properties: ['openFile', 'multiSelections'],
       filters: [
         { name: nativeText().dotNetAssemblies, extensions: ['dll', 'exe', 'netmodule', 'winmd'] },
         { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })
-    return result.canceled ? [] : result.filePaths
+    if (result.canceled || result.filePaths.length === 0)
+      return []
+    await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
+    return result.filePaths
   })
   ipcMain.handle('workspace:open', (_event, paths: string[]) => requireBackend().invoke('workspace/open', { paths }))
   ipcMain.handle('workspace:close', (_event, workspaceId: string) => requireBackend().invoke('workspace/close', { workspaceId }))
@@ -202,11 +208,13 @@ const registerIpc = (): void => {
   ipcMain.handle('edit:replaceResourceFromFile', async (_event, workspaceId: string, transactionId: string, resourceNodeId: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: nativeText().replaceResource,
+      defaultPath: dialogPathHistory?.openDirectory,
       properties: ['openFile'],
       filters: [{ name: nativeText().allFiles, extensions: ['*'] }],
     })
     if (result.canceled || result.filePaths.length === 0)
       return false
+    await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
     const data = await readFile(result.filePaths[0])
     if (data.length > 64 * 1024 * 1024)
       throw new Error(nativeText().resourceTooLarge)
@@ -275,13 +283,17 @@ const registerIpc = (): void => {
       return process.env.DNSPY_E2E_DEBUG_TARGET
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: nativeText().selectDebugTarget,
+      defaultPath: dialogPathHistory?.openDirectory,
       properties: ['openFile'],
       filters: [
         { name: nativeText().dotNetPrograms, extensions: ['dll', 'exe'] },
         { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })
-    return result.canceled ? undefined : result.filePaths[0]
+    if (result.canceled || result.filePaths.length === 0)
+      return undefined
+    await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
+    return result.filePaths[0]
   })
   ipcMain.handle('debug:listProcesses', () => requireBackend().invoke('debug/listProcesses', {}))
   ipcMain.handle('debug:launch', (_event, program: string, args: string[], stopAtEntry: boolean) => requireBackend().invoke('debug/launch', { program, arguments: args, stopAtEntry }))
@@ -326,6 +338,8 @@ const registerIpc = (): void => {
 
 app.whenReady().then(async () => {
   uiLocale = app.getLocale().toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
+  dialogPathHistory = new DialogPathHistory(path.join(app.getPath('userData'), 'dialog-state.json'))
+  await dialogPathHistory.load()
   Menu.setApplicationMenu(null)
   registerAppProtocol()
   registerIpc()
