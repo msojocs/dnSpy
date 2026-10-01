@@ -249,10 +249,15 @@ export interface DnSpyApi {
   setExceptionBreakpoints(sessionId: string, filters: string[]): Promise<Record<string, unknown>>
   evaluateDebugExpression(sessionId: string, frameId: number, expression: string): Promise<DebugVariable>
   disconnectDebug(sessionId: string, terminateDebuggee: boolean): Promise<void>
+  minimizeWindow(): Promise<void>
+  toggleMaximizeWindow(): Promise<boolean>
+  closeWindow(): Promise<void>
+  isWindowMaximized(): Promise<boolean>
   quit(): Promise<void>
   getBackendStatus(): Promise<BackendStatus>
   getInitialPaths(): Promise<string[]>
   getProcessId(): Promise<number>
+  onWindowMaximizedChange(callback: (isMaximized: boolean) => void): () => void
   onBackendStatus(callback: (status: BackendStatus) => void): () => void
   onDebugEvent(callback: (event: DebugEvent) => void): () => void
 }

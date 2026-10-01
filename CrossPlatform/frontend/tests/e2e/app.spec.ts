@@ -46,10 +46,24 @@ const openAssemblyAndNamespace = async (): Promise<void> => {
 
 test('starts the backend and renders the upstream-style shell', async () => {
   await expect(page.getByRole('menubar')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Minimize window' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Maximize window' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Close window' })).toBeVisible()
   await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
   await expect(page.getByText('Ready', { exact: true })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Assembly Explorer' }).first()).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Output' })).toBeVisible()
+})
+
+test('maximizes and restores the window from the title bar', async () => {
+  const browserWindow = await application.browserWindow(page)
+  await page.getByRole('button', { name: 'Maximize window' }).click()
+  await expect(page.getByRole('button', { name: 'Restore window' })).toBeVisible()
+  expect(await browserWindow.evaluate((window) => window.isMaximized())).toBe(true)
+
+  await page.getByRole('button', { name: 'Restore window' }).click()
+  await expect(page.getByRole('button', { name: 'Maximize window' })).toBeVisible()
+  expect(await browserWindow.evaluate((window) => window.isMaximized())).toBe(false)
 })
 
 test('persists themes across renderer reloads', async () => {

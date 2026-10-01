@@ -131,13 +131,15 @@ select:focus-visible,
   z-index: 20;
   display: flex;
   align-items: stretch;
-  padding: 0 4px;
+  padding: 0 0 0 4px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  -webkit-app-region: drag;
 }
 
 .menu-root {
   position: relative;
+  -webkit-app-region: no-drag;
 }
 
 .menu-root > button {
@@ -197,6 +199,37 @@ select:focus-visible,
   height: 1px;
   margin: 3px 5px;
   background: var(--border);
+}
+
+.window-controls {
+  display: flex;
+  align-self: stretch;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+
+.window-control-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.window-control-button:hover {
+  background: var(--surface-raised);
+}
+
+.window-control-button:active {
+  background: var(--selection);
+}
+
+.window-close-button:hover,
+.window-close-button:active {
+  background: #c42b1c;
+  color: #fff;
 }
 
 .tool-bar {

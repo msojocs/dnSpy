@@ -45,10 +45,19 @@ const api: DnSpyApi = {
     return { name: expression, value: body?.result ?? '', type: body?.type, variablesReference: body?.variablesReference ?? 0, evaluateName: expression }
   },
   disconnectDebug: (sessionId, terminateDebuggee) => ipcRenderer.invoke('debug:disconnect', sessionId, terminateDebuggee),
+  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggleMaximize'),
+  closeWindow: () => ipcRenderer.invoke('window:close'),
+  isWindowMaximized: () => ipcRenderer.invoke('window:isMaximized'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getBackendStatus: () => ipcRenderer.invoke('backend:status:get'),
   getInitialPaths: () => ipcRenderer.invoke('app:initialPaths'),
   getProcessId: () => ipcRenderer.invoke('app:processId'),
+  onWindowMaximizedChange: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, isMaximized: boolean): void => callback(isMaximized)
+    ipcRenderer.on('window:maximized-changed', listener)
+    return () => ipcRenderer.removeListener('window:maximized-changed', listener)
+  },
   onBackendStatus: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, status: BackendStatus): void => callback(status)
     ipcRenderer.on('backend:status', listener)

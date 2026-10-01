@@ -38,6 +38,7 @@ const createWindow = (): void => {
     minWidth: 640,
     minHeight: 400,
     show: false,
+    frame: false,
     backgroundColor: '#1e1e1e',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
@@ -69,6 +70,11 @@ const createWindow = (): void => {
   mainWindow.on('closed', () => {
     mainWindow = undefined
   })
+  const sendMaximizedState = (): void => {
+    mainWindow?.webContents.send('window:maximized-changed', mainWindow.isMaximized())
+  }
+  mainWindow.on('maximize', sendMaximizedState)
+  mainWindow.on('unmaximize', sendMaximizedState)
 
   if (process.env.ELECTRON_RENDERER_URL)
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -245,6 +251,17 @@ const registerIpc = (): void => {
   debugRequest('debug:setExceptionBreakpoints', 'setExceptionBreakpoints')
   debugRequest('debug:evaluate', 'evaluate')
   ipcMain.handle('debug:disconnect', (_event, sessionId: string, terminateDebuggee: boolean) => requireBackend().invoke('debug/disconnect', { sessionId, terminateDebuggee }))
+  ipcMain.handle('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
+  ipcMain.handle('window:toggleMaximize', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window)
+      return false
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+    return window.isMaximized()
+  })
+  ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
+  ipcMain.handle('window:isMaximized', (event) => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false)
   ipcMain.handle('backend:status:get', () => lastBackendStatus)
   ipcMain.handle('app:initialPaths', () => initialPaths)
   ipcMain.handle('app:processId', () => process.pid)

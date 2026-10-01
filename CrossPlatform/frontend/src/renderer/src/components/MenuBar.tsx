@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
+import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
 
@@ -147,6 +148,7 @@ export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceReso
           )}
         </div>
       ))}
+      <WindowControls />
     </div>
   )
 }
