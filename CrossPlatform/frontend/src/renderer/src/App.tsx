@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { TreeNode } from '../../shared/protocol'
@@ -44,15 +44,15 @@ const createDefaultLayout = (): IJsonModel => ({
       size: 220,
       selected: 0,
       children: [
-        { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: false },
-        { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: false },
-        { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: false },
-        { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: false },
-        { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: false },
-        { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: false },
-        { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: false },
-        { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: false },
-        { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: false },
+        { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: true },
+        { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
+        { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
+        { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
+        { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: true },
+        { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
+        { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: true },
+        { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: true },
+        { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: true },
       ],
     },
   ],
@@ -68,6 +68,26 @@ const createDefaultLayout = (): IJsonModel => ({
   },
 })
 
+interface RestorableBorderTab {
+  name: string
+  component: string
+  borderId: string
+  location: DockLocation
+}
+
+const restorableBorderTabs: Record<string, RestorableBorderTab> = {
+  explorer: { name: 'Assembly Explorer', component: 'explorer', borderId: 'border_left', location: DockLocation.LEFT },
+  output: { name: 'Output', component: 'output', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  search: { name: 'Search', component: 'search', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  analysis: { name: 'Analyzer', component: 'analysis', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  locals: { name: 'Locals', component: 'locals', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  watch: { name: 'Watch', component: 'watch', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  callstack: { name: 'Call Stack', component: 'callstack', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  breakpoints: { name: 'Breakpoints', component: 'breakpoints', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  threads: { name: 'Threads', component: 'threads', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  modules: { name: 'Modules', component: 'modules', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+}
+
 const loadLayout = (): Model => {
   try {
     const saved = localStorage.getItem('dnspy.layout.v1')
@@ -75,6 +95,12 @@ const loadLayout = (): Model => {
     if (!model.getFirstTabSet())
       return Model.fromJson(createDefaultLayout())
     model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true }))
+    // Migrate older layouts where the tool window tabs were marked non-closable.
+    for (const id of Object.keys(restorableBorderTabs)) {
+      const node = model.getNodeById(id)
+      if (node && !node.isCloseable())
+        model.doAction(Actions.updateNodeAttributes(id, { enableClose: true }))
+    }
     return model
   } catch {
     return Model.fromJson(createDefaultLayout())
@@ -101,8 +127,16 @@ export const App = (): React.JSX.Element => {
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
-  const [, forceLayoutUpdate] = useState(0)
+  const [layoutVersion, forceLayoutUpdate] = useState(0)
   const previousWorkspaceId = useRef<string | undefined | null>(null)
+  const visibleToolWindows = useMemo(() => {
+    const visible = new Set<string>()
+    for (const id of Object.keys(restorableBorderTabs)) {
+      if (model.getNodeById(id))
+        visible.add(id)
+    }
+    return visible
+  }, [model, layoutVersion])
   const initialPathsHandled = useRef(false)
   const workspaceId = useAppStore((state) => state.workspaceId)
   const backendStatus = useAppStore((state) => state.backendStatus)
@@ -200,6 +234,29 @@ export const App = (): React.JSX.Element => {
     forceLayoutUpdate((value) => value + 1)
   }, [locale, model, t])
 
+  const showBorderTab = (tabId: string): void => {
+    const tab = model.getNodeById(tabId)
+    if (tab) {
+      const border = tab.getParent() as { isShowing?: () => boolean; getSelectedNode?: () => { getId(): string } | undefined } | undefined
+      if (!border?.isShowing?.() || border.getSelectedNode?.()?.getId() !== tabId) {
+        model.doAction(Actions.selectTab(tabId))
+        forceLayoutUpdate((value) => value + 1)
+      }
+      return
+    }
+    const spec = restorableBorderTabs[tabId]
+    if (!spec) return
+    if (!model.getNodeById(spec.borderId)) return
+    model.doAction(Actions.addNode({
+      type: 'tab',
+      id: tabId,
+      name: t(spec.name),
+      component: spec.component,
+      enableClose: true,
+    }, spec.borderId, spec.location, -1, true))
+    forceLayoutUpdate((value) => value + 1)
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null
@@ -236,8 +293,7 @@ export const App = (): React.JSX.Element => {
         }
       } else if (event.ctrlKey && event.key.toLowerCase() === 'f' && workspaceId) {
         event.preventDefault()
-        model.doAction(Actions.selectTab('search'))
-        forceLayoutUpdate((value) => value + 1)
+        showBorderTab('search')
       } else if (event.ctrlKey && event.key.toLowerCase() === 'z' && canUndo && !editingText) {
         event.preventDefault()
         void undoEdit()
@@ -267,7 +323,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, stepDebug, stopDebug, undoEdit, workspaceId])
+  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -357,15 +413,6 @@ export const App = (): React.JSX.Element => {
   const openAnalysis = async (node: TreeNode): Promise<void> => {
     await analyzeNode(node)
     showBorderTab('analysis')
-  }
-
-  const showBorderTab = (tabId: string): void => {
-    const tab = model.getNodeById(tabId)
-    const border = tab?.getParent() as { isShowing?: () => boolean; getSelectedNode?: () => { getId(): string } | undefined } | undefined
-    if (tab && (!border?.isShowing?.() || border.getSelectedNode?.()?.getId() !== tabId)) {
-      model.doAction(Actions.selectTab(tabId))
-      forceLayoutUpdate((value) => value + 1)
-    }
   }
 
   const selectedModule = selectedNode?.kind === 'module'
@@ -460,6 +507,21 @@ export const App = (): React.JSX.Element => {
         onShowExplorer={() => showBorderTab('explorer')}
         onShowOutput={() => showBorderTab('output')}
         onShowSearch={() => showBorderTab('search')}
+        onShowAnalysis={() => showBorderTab('analysis')}
+        onShowLocals={() => showBorderTab('locals')}
+        onShowWatch={() => showBorderTab('watch')}
+        onShowCallStack={() => showBorderTab('callstack')}
+        onShowBreakpoints={() => showBorderTab('breakpoints')}
+        onShowThreads={() => showBorderTab('threads')}
+        onShowModules={() => showBorderTab('modules')}
+        onShowModuleBreakpoints={() => undefined}
+        onShowExceptionSettings={() => undefined}
+        onShowAutos={() => undefined}
+        onShowStaticFields={() => undefined}
+        onShowProcesses={() => undefined}
+        onShowMemory={() => undefined}
+        onShowDisassembly={() => undefined}
+        visibleToolWindows={visibleToolWindows}
         onTheme={setTheme}
         wordWrap={wordWrap}
         highlightCurrentLine={highlightCurrentLine}

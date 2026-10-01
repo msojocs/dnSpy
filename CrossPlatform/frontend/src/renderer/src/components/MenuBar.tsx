@@ -26,6 +26,7 @@ interface MenuBarProps {
   wordWrap: boolean
   highlightCurrentLine: boolean
   fullScreen: boolean
+  visibleToolWindows: ReadonlySet<string>
   onOpen(): void
   onOpenRecent(paths: string[]): void
   onClose(): void
@@ -48,6 +49,20 @@ interface MenuBarProps {
   onShowExplorer(): void
   onShowOutput(): void
   onShowSearch(): void
+  onShowAnalysis(): void
+  onShowModuleBreakpoints(): void
+  onShowExceptionSettings(): void
+  onShowAutos(): void
+  onShowStaticFields(): void
+  onShowProcesses(): void
+  onShowMemory(): void
+  onShowDisassembly(): void
+  onShowLocals(): void
+  onShowWatch(): void
+  onShowCallStack(): void
+  onShowBreakpoints(): void
+  onShowThreads(): void
+  onShowModules(): void
   onTheme(theme: ThemeName): void
   onToggleWordWrap(): void
   onToggleHighlightCurrentLine(): void
@@ -107,9 +122,24 @@ export const MenuBar = ({
   onStepIn,
   onStepOver,
   onStopDebug,
+  visibleToolWindows,
   onShowExplorer,
   onShowOutput,
   onShowSearch,
+  onShowAnalysis,
+  onShowModuleBreakpoints,
+  onShowExceptionSettings,
+  onShowAutos,
+  onShowStaticFields,
+  onShowProcesses,
+  onShowMemory,
+  onShowDisassembly,
+  onShowLocals,
+  onShowWatch,
+  onShowCallStack,
+  onShowBreakpoints,
+  onShowThreads,
+  onShowModules,
   onTheme,
   onToggleWordWrap,
   onToggleHighlightCurrentLine,
@@ -121,6 +151,7 @@ export const MenuBar = ({
   const [openMenu, setOpenMenu] = useState<string>()
   const host = useRef<HTMLDivElement>(null)
   const { language, t } = useLanguage()
+  const isDebugging = debugState !== 'inactive'
   const menus: Record<string, MenuItem[]> = {
     [t('File')]: [
       { label: t('Open...'), shortcut: 'Ctrl+O', action: onOpen },
@@ -148,9 +179,10 @@ export const MenuBar = ({
       { label: t('Highlight Current Line'), checked: highlightCurrentLine, action: onToggleHighlightCurrentLine },
       { label: fullScreen ? t('Exit Full Screen') : t('Full Screen'), shortcut: 'Shift+Alt+Enter', checked: fullScreen, action: onToggleFullScreen },
       { separator: true },
-      { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', action: onShowExplorer },
-      { label: t('Output'), shortcut: 'Alt+2', action: onShowOutput },
-      { label: t('Search'), shortcut: 'Ctrl+Alt+F', action: onShowSearch },
+      { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', checked: visibleToolWindows.has('explorer'), action: onShowExplorer },
+      { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
+      { label: t('Search'), shortcut: 'Ctrl+Alt+F', checked: visibleToolWindows.has('search'), action: onShowSearch },
+      { label: t('Analyzer'), shortcut: 'Ctrl+Alt+R', checked: visibleToolWindows.has('analysis'), action: onShowAnalysis },
       { separator: true },
       {
         label: t('Themes'),
@@ -174,13 +206,40 @@ export const MenuBar = ({
       { label: t('Module Information'), disabled: !canInspectModule, action: onModuleInfo },
     ],
     [t('Debug')]: [
+      {
+        label: t('Window'),
+        submenu: [
+          { label: t('Breakpoints'), shortcut: 'Ctrl+Alt+B', checked: visibleToolWindows.has('breakpoints'), action: onShowBreakpoints },
+          { label: t('Module Breakpoints'), checked: visibleToolWindows.has('module-breakpoints'), action: onShowModuleBreakpoints },
+          { label: t('Exception Settings'), shortcut: 'Ctrl+Alt+E', checked: visibleToolWindows.has('exception-settings'), action: onShowExceptionSettings },
+          { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
+          ...(isDebugging ? [
+            { separator: true },
+            { label: t('Watch'), checked: visibleToolWindows.has('watch'), action: onShowWatch },
+            { label: t('Autos'), shortcut: 'Ctrl+Alt+V, A', checked: visibleToolWindows.has('autos'), action: onShowAutos },
+            { label: t('Locals'), shortcut: 'Alt+4', checked: visibleToolWindows.has('locals'), action: onShowLocals },
+            { label: t('Static Fields'), checked: visibleToolWindows.has('static-fields'), action: onShowStaticFields },
+            { separator: true },
+            { label: t('Call Stack'), shortcut: 'Ctrl+Alt+C', checked: visibleToolWindows.has('callstack'), action: onShowCallStack },
+            { label: t('Threads'), shortcut: 'Ctrl+Alt+H', checked: visibleToolWindows.has('threads'), action: onShowThreads },
+            { label: t('Modules'), shortcut: 'Ctrl+Alt+U', checked: visibleToolWindows.has('modules'), action: onShowModules },
+            { label: t('Processes'), shortcut: 'Ctrl+Alt+Z', checked: visibleToolWindows.has('processes'), action: onShowProcesses },
+            { separator: true },
+            { label: t('Memory'), checked: visibleToolWindows.has('memory'), action: onShowMemory },
+            { label: t('Disassembly'), shortcut: 'Alt+8', checked: visibleToolWindows.has('disassembly'), action: onShowDisassembly },
+          ] : []),
+        ],
+      },
+      { separator: true },
       { label: debugState === 'stopped' ? t('Continue') : t('Start Debugging'), shortcut: 'F5', disabled: !debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped'), action: debugState === 'stopped' ? onContinueDebug : onStartDebug },
       { label: t('Attach to Process...'), disabled: !debugAvailable || debugState !== 'inactive', action: onAttachDebug },
-      { separator: true },
-      { label: t('Pause'), disabled: debugState !== 'running', action: onPauseDebug },
-      { label: t('Step Into'), shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
-      { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
-      { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: debugState === 'inactive', action: onStopDebug },
+      ...(isDebugging ? [
+        { separator: true },
+        { label: t('Pause'), disabled: debugState !== 'running', action: onPauseDebug },
+        { label: t('Step Into'), shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
+        { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
+        { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: false, action: onStopDebug },
+      ] : []),
     ],
     [t('Help')]: [
       { label: t('Latest Release'), action: () => openExternal(`${repositoryUrl}/releases/latest`) },
@@ -254,6 +313,7 @@ const MenuPopup = ({ items, onClose, depth = 0 }: { items: MenuItem[]; onClose: 
         return (
           <button
             role="menuitem"
+            aria-checked={item.checked === undefined ? undefined : item.checked}
             className="menu-item"
             disabled={item.disabled}
             key={`it:${depth}:${index}`}
