@@ -1,0 +1,212 @@
+import { app } from 'electron'
+import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import path from 'node:path'
+import type { BackendStatus, HelloResponse } from '../shared/protocol'
+import { protocolVersion } from '../shared/protocol'
+
+interface RpcResponse {
+  jsonrpc: '2.0'
+  id?: number
+  result?: unknown
+  error?: {
+    code: number
+    message: string
+    data?: unknown
+  }
+  method?: string
+  params?: unknown
+}
+
+interface PendingRequest {
+  resolve(value: unknown): void
+  reject(error: Error): void
+  timeout: NodeJS.Timeout
+}
+
+export class BackendClient {
+  private process?: ChildProcessWithoutNullStreams
+  private readBuffer = Buffer.alloc(0)
+  private nextRequestId = 0
+  private readonly pending = new Map<number, PendingRequest>()
+  private readonly nonce = randomBytes(32).toString('hex')
+
+  constructor(
+    private readonly onStatus: (status: BackendStatus) => void,
+    private readonly onNotification: (method: string, params: unknown) => void,
+  ) {}
+
+  async start(): Promise<HelloResponse> {
+    this.onStatus({ state: 'starting' })
+    const command = this.resolveCommand()
+    this.process = spawn(command.executable, command.args, {
+      cwd: command.cwd,
+      env: {
+        ...process.env,
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+        ...(app.isPackaged ? {
+          DNSPY_NETCOREDBG_PATH: path.join(process.resourcesPath, 'debugger', `${process.platform}-${process.arch}`, 'netcoredbg'),
+        } : {}),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+    this.process.stdout.on('data', (chunk: Buffer) => this.handleStdout(chunk))
+    this.process.stderr.setEncoding('utf8')
+    this.process.stderr.on('data', (chunk: string) => console.error(`[backend] ${chunk.trimEnd()}`))
+    this.process.on('error', (error) => this.stopWithError(error))
+    this.process.on('exit', (code, signal) => {
+      if (code !== 0 && code !== null)
+        this.stopWithError(new Error(`Backend exited with code ${code}.`))
+      else {
+        this.rejectPending(new Error(`Backend stopped${signal ? ` (${signal})` : ''}.`))
+        this.onStatus({ state: 'stopped' })
+      }
+      this.process = undefined
+    })
+
+    const hello = await this.invoke<HelloResponse>('system/hello', {
+      protocolVersion,
+      clientVersion: app.getVersion(),
+      nonce: this.nonce,
+    })
+    if (hello.nonce !== this.nonce)
+      throw new Error('Backend handshake nonce did not match.')
+    this.onStatus({ state: 'ready', capabilities: hello.capabilities })
+    return hello
+  }
+
+  invoke<T>(method: string, params: unknown, timeoutMs = 60_000): Promise<T> {
+    if (!this.process || this.process.exitCode !== null)
+      return Promise.reject(new Error('The backend is not running.'))
+    const id = ++this.nextRequestId
+    const payload = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, method, params }), 'utf8')
+    const header = Buffer.from(`Content-Length: ${payload.length}\r\n\r\n`, 'ascii')
+    return new Promise<T>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id)
+        this.sendNotification('system/cancel', { id })
+        reject(new Error(`${method} timed out.`))
+      }, timeoutMs)
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as T),
+        reject,
+        timeout,
+      })
+      this.process?.stdin.write(Buffer.concat([header, payload]), (error) => {
+        if (error) {
+          clearTimeout(timeout)
+          this.pending.delete(id)
+          reject(error)
+        }
+      })
+    })
+  }
+
+  async dispose(): Promise<void> {
+    const child = this.process
+    if (!child)
+      return
+    try {
+      await this.invoke('system/shutdown', {}, 1_000)
+    } catch {
+      // The host may close stdout before the acknowledgement is observed.
+    }
+    if (child.exitCode === null)
+      child.kill('SIGTERM')
+    this.process = undefined
+  }
+
+  private sendNotification(method: string, params: unknown): void {
+    if (!this.process || this.process.exitCode !== null)
+      return
+    const payload = Buffer.from(JSON.stringify({ jsonrpc: '2.0', method, params }), 'utf8')
+    this.process.stdin.write(Buffer.concat([
+      Buffer.from(`Content-Length: ${payload.length}\r\n\r\n`, 'ascii'),
+      payload,
+    ]))
+  }
+
+  private handleStdout(chunk: Buffer): void {
+    this.readBuffer = Buffer.concat([this.readBuffer, chunk])
+    while (true) {
+      const headerEnd = this.readBuffer.indexOf('\r\n\r\n')
+      if (headerEnd < 0)
+        return
+      const header = this.readBuffer.subarray(0, headerEnd).toString('ascii')
+      const match = /^Content-Length:\s*(\d+)\s*$/im.exec(header)
+      if (!match) {
+        this.stopWithError(new Error('Backend sent an invalid JSON-RPC header.'))
+        return
+      }
+      const contentLength = Number.parseInt(match[1], 10)
+      const payloadStart = headerEnd + 4
+      if (this.readBuffer.length < payloadStart + contentLength)
+        return
+      const payload = this.readBuffer.subarray(payloadStart, payloadStart + contentLength)
+      this.readBuffer = this.readBuffer.subarray(payloadStart + contentLength)
+      try {
+        this.handleResponse(JSON.parse(payload.toString('utf8')) as RpcResponse)
+      } catch (error) {
+        this.stopWithError(error instanceof Error ? error : new Error(String(error)))
+        return
+      }
+    }
+  }
+
+  private handleResponse(response: RpcResponse): void {
+    if (response.id === undefined) {
+      if (response.method)
+        this.onNotification(response.method, response.params)
+      return
+    }
+    const request = this.pending.get(response.id)
+    if (!request)
+      return
+    clearTimeout(request.timeout)
+    this.pending.delete(response.id)
+    if (response.error)
+      request.reject(new Error(response.error.message))
+    else
+      request.resolve(response.result)
+  }
+
+  private resolveCommand(): { executable: string; args: string[]; cwd: string } {
+    if (app.isPackaged) {
+      const executable = path.join(process.resourcesPath, 'backend', `${process.platform}-${process.arch}`, 'dnSpy.Backend.Host')
+      return {
+        executable,
+        args: ['--nonce', this.nonce, '--parent-pid', String(process.pid)],
+        cwd: path.dirname(executable),
+      }
+    }
+    const backendDll = process.env.DNSPY_BACKEND_PATH ?? path.resolve(
+      app.getAppPath(),
+      '..',
+      'backend',
+      'dnSpy.Backend.Host',
+      'bin',
+      'Debug',
+      'net10.0',
+      'dnSpy.Backend.Host.dll',
+    )
+    return {
+      executable: 'dotnet',
+      args: [backendDll, '--nonce', this.nonce, '--parent-pid', String(process.pid)],
+      cwd: path.dirname(backendDll),
+    }
+  }
+
+  private stopWithError(error: Error): void {
+    this.rejectPending(error)
+    this.onStatus({ state: 'error', message: error.message })
+  }
+
+  private rejectPending(error: Error): void {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timeout)
+      request.reject(error)
+    }
+    this.pending.clear()
+  }
+}

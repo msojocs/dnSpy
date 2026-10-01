@@ -1,0 +1,20 @@
+{
+  "name": "dnspy-cross-platform",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@12.3.4",
+  "scripts": {
+    "build": "pnpm build:backend && pnpm build:frontend",
+    "build:backend": "dotnet build dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false",
+    "build:frontend": "pnpm --dir frontend build",
+    "dev": "pnpm build:backend && pnpm --dir frontend dev",
+    "test": "pnpm test:backend && pnpm test:frontend",
+    "test:backend": "dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false",
+    "test:frontend": "pnpm --dir frontend test",
+    "typecheck": "pnpm --dir frontend typecheck",
+    "package:linux": "bash scripts/package-linux.sh"
+  },
+  "devDependencies": {
+    "yaml": "2.9.1"
+  }
+}

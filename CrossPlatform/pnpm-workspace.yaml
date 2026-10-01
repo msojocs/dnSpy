@@ -1,0 +1,14 @@
+packages:
+  - frontend
+
+overrides:
+  dompurify: 3.4.16
+
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - electron@44.5.1
+  - lucide-react@1.49.0

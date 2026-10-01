@@ -1,0 +1,57 @@
+appId: io.github.dnspyex.dnspy
+productName: dnSpy
+copyright: Copyright (C) 2014-2020 de4dot@gmail.com and contributors
+asar: true
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
+directories:
+  output: ../artifacts/packages
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: ../artifacts/publish/backend
+    to: backend
+  - from: ../artifacts/publish/debugger
+    to: debugger
+  - from: ../packaging/licenses
+    to: licenses
+  - from: ../artifacts/sbom
+    to: licenses
+  - from: ../../LICENSE.txt
+    to: licenses/dnSpy-GPL-3.0.txt
+linux:
+  category: Development
+  executableName: dnspy
+  maintainer: dnSpyEx contributors <dnspyex@users.noreply.github.com>
+  syncDesktopName: true
+  icon: ../packaging/linux/icons
+  synopsis: .NET assembly browser, editor and debugger
+  description: Cross-platform .NET assembly browser, decompiler, editor and debugger.
+  desktop:
+    entry:
+      Name: dnSpy
+      Comment: Browse, edit and debug .NET assemblies
+      Categories: Development;Debugger;
+  target:
+    - AppImage
+    - deb
+artifactName: dnSpy-${version}-${arch}.${ext}
+deb:
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libicu76 | libicu74 | libicu72

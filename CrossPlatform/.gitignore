@@ -1,0 +1,7 @@
+.tools/
+artifacts/
+node_modules/
+frontend/out/
+frontend/test-results/
+frontend/playwright-report/
+frontend/dist/

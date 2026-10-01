@@ -1,0 +1,64 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { BackendStatus, DecompilerLanguage, DnSpyApi } from '../shared/protocol'
+
+const api: DnSpyApi = {
+  openAssemblies: () => ipcRenderer.invoke('dialog:openAssemblies'),
+  openWorkspace: (paths) => ipcRenderer.invoke('workspace:open', paths),
+  closeWorkspace: (workspaceId) => ipcRenderer.invoke('workspace:close', workspaceId),
+  getRoots: (workspaceId) => ipcRenderer.invoke('tree:roots', workspaceId),
+  getChildren: (workspaceId, nodeId) => ipcRenderer.invoke('tree:children', workspaceId, nodeId),
+  getNode: (workspaceId, nodeId) => ipcRenderer.invoke('tree:node', workspaceId, nodeId),
+  decompile: (workspaceId, nodeId, language: DecompilerLanguage) => ipcRenderer.invoke('document:decompile', workspaceId, nodeId, language),
+  search: (workspaceId, query, kinds) => ipcRenderer.invoke('search:run', workspaceId, query, kinds),
+  analyzeReferences: (workspaceId, nodeId) => ipcRenderer.invoke('analyze:references', workspaceId, nodeId),
+  getHexLength: (workspaceId, moduleId) => ipcRenderer.invoke('hex:length', workspaceId, moduleId),
+  readHex: (workspaceId, moduleId, offset, count) => ipcRenderer.invoke('hex:read', workspaceId, moduleId, offset, count),
+  getModuleInfo: (workspaceId, moduleId) => ipcRenderer.invoke('module:info', workspaceId, moduleId),
+  beginEdit: (workspaceId) => ipcRenderer.invoke('edit:begin', workspaceId),
+  getMethodBody: (workspaceId, methodNodeId) => ipcRenderer.invoke('edit:getMethodBody', workspaceId, methodNodeId),
+  queueRename: (workspaceId, transactionId, nodeId, newName) => ipcRenderer.invoke('edit:rename', workspaceId, transactionId, nodeId, newName),
+  queueMethodBody: (workspaceId, transactionId, methodNodeId, body, clearExceptionHandlers) => ipcRenderer.invoke('edit:replaceMethodBody', workspaceId, transactionId, methodNodeId, body, clearExceptionHandlers),
+  replaceResourceFromFile: (workspaceId, transactionId, resourceNodeId) => ipcRenderer.invoke('edit:replaceResourceFromFile', workspaceId, transactionId, resourceNodeId),
+  commitEdit: (workspaceId, transactionId) => ipcRenderer.invoke('edit:commit', workspaceId, transactionId),
+  rollbackEdit: (workspaceId, transactionId) => ipcRenderer.invoke('edit:rollback', workspaceId, transactionId),
+  undoEdit: (workspaceId) => ipcRenderer.invoke('edit:undo', workspaceId),
+  redoEdit: (workspaceId) => ipcRenderer.invoke('edit:redo', workspaceId),
+  saveModuleAs: (workspaceId, moduleId, suggestedName) => ipcRenderer.invoke('module:saveAs', workspaceId, moduleId, suggestedName),
+  chooseDebugTarget: () => ipcRenderer.invoke('debug:chooseTarget'),
+  listDebugProcesses: () => ipcRenderer.invoke('debug:listProcesses'),
+  launchDebug: (program, args, stopAtEntry) => ipcRenderer.invoke('debug:launch', program, args, stopAtEntry),
+  attachDebug: (processId) => ipcRenderer.invoke('debug:attach', processId),
+  setFunctionBreakpoints: async (sessionId, names) => (await ipcRenderer.invoke('debug:setFunctionBreakpoints', sessionId, { breakpoints: names.map((name) => ({ name })) })).body ?? {},
+  debugContinue: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:continue', sessionId, { threadId })).body ?? {},
+  debugPause: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:pause', sessionId, { threadId })).body ?? {},
+  debugNext: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:next', sessionId, { threadId })).body ?? {},
+  debugStepIn: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:stepIn', sessionId, { threadId })).body ?? {},
+  debugStepOut: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:stepOut', sessionId, { threadId })).body ?? {},
+  getDebugThreads: async (sessionId) => ((await ipcRenderer.invoke('debug:threads', sessionId, {})).body?.threads ?? []),
+  getDebugStackTrace: async (sessionId, threadId) => ((await ipcRenderer.invoke('debug:stackTrace', sessionId, { threadId, startFrame: 0, levels: 100 })).body?.stackFrames ?? []),
+  getDebugScopes: async (sessionId, frameId) => ((await ipcRenderer.invoke('debug:scopes', sessionId, { frameId })).body?.scopes ?? []),
+  getDebugVariables: async (sessionId, variablesReference) => ((await ipcRenderer.invoke('debug:variables', sessionId, { variablesReference })).body?.variables ?? []),
+  getDebugModules: async (sessionId) => ((await ipcRenderer.invoke('debug:modules', sessionId, { startModule: 0, moduleCount: 10000 })).body?.modules ?? []),
+  setExceptionBreakpoints: async (sessionId, filters) => (await ipcRenderer.invoke('debug:setExceptionBreakpoints', sessionId, { filters })).body ?? {},
+  evaluateDebugExpression: async (sessionId, frameId, expression) => {
+    const body = (await ipcRenderer.invoke('debug:evaluate', sessionId, { expression, frameId, context: 'watch' })).body
+    return { name: expression, value: body?.result ?? '', type: body?.type, variablesReference: body?.variablesReference ?? 0, evaluateName: expression }
+  },
+  disconnectDebug: (sessionId, terminateDebuggee) => ipcRenderer.invoke('debug:disconnect', sessionId, terminateDebuggee),
+  quit: () => ipcRenderer.invoke('app:quit'),
+  getBackendStatus: () => ipcRenderer.invoke('backend:status:get'),
+  getInitialPaths: () => ipcRenderer.invoke('app:initialPaths'),
+  getProcessId: () => ipcRenderer.invoke('app:processId'),
+  onBackendStatus: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, status: BackendStatus): void => callback(status)
+    ipcRenderer.on('backend:status', listener)
+    return () => ipcRenderer.removeListener('backend:status', listener)
+  },
+  onDebugEvent: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, debugEvent: Parameters<typeof callback>[0]): void => callback(debugEvent)
+    ipcRenderer.on('debug:event', listener)
+    return () => ipcRenderer.removeListener('debug:event', listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('dnSpy', api)

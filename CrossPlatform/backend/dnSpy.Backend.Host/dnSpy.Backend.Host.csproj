@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>dnSpy.Backend.Host</RootNamespace>
+    <AssemblyName>dnSpy.Backend.Host</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
+    <ProjectReference Include="..\dnSpy.Backend.Core\dnSpy.Backend.Core.csproj" />
+    <ProjectReference Include="..\dnSpy.Backend.Debugging.Dap\dnSpy.Backend.Debugging.Dap.csproj" />
+  </ItemGroup>
+</Project>

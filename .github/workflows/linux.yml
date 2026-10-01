@@ -1,0 +1,84 @@
+name: Linux Cross-Platform CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-test-package:
+    name: Electron and .NET backend
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: CrossPlatform
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+          run_install: false
+
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: CrossPlatform/pnpm-lock.yaml
+
+      - name: Install Linux test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatspi2.0-0 libsecret-1-0
+
+      - name: Restore JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pinned debugger
+        run: ./scripts/install-netcoredbg.sh
+
+      - name: Build and test backend
+        run: dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false --logger "console;verbosity=minimal"
+
+      - name: Audit dependencies
+        run: |
+          pnpm audit --audit-level moderate
+          dotnet list dnSpy.CrossPlatform.slnx package --vulnerable --include-transitive
+
+      - name: Build Electron application
+        run: pnpm --dir frontend build
+
+      - name: Run Electron end-to-end tests
+        run: xvfb-run --auto-servernum pnpm --dir frontend test:e2e
+
+      - name: Build Linux packages
+        run: pnpm package:linux
+
+      - name: Test packaged application
+        env:
+          DNSPY_PACKAGED_EXECUTABLE: ${{ github.workspace }}/CrossPlatform/artifacts/packages/linux-unpacked/dnspy
+        run: xvfb-run --auto-servernum pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts
+
+      - name: Generate checksums
+        run: sha256sum artifacts/packages/dnSpy-*.AppImage artifacts/packages/dnSpy-*.deb > artifacts/packages/SHA256SUMS
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dnSpy-linux-x64
+          path: |
+            CrossPlatform/artifacts/packages/dnSpy-*.AppImage
+            CrossPlatform/artifacts/packages/dnSpy-*.deb
+            CrossPlatform/artifacts/packages/SHA256SUMS
+            CrossPlatform/artifacts/sbom/dnSpy.cdx.json
+          if-no-files-found: error
+          compression-level: 0

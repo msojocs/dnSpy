@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
+    <ProjectReference Include="..\..\dnSpy.Backend.Core\dnSpy.Backend.Core.csproj" />
+    <ProjectReference Include="..\..\dnSpy.Backend.Debugging.Dap\dnSpy.Backend.Debugging.Dap.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Fixtures\sample-resource.txt" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <ProjectReference Include="..\DebugTarget\DebugTarget.csproj" />
+  </ItemGroup>
+
+  <Target Name="BuildBamlFixture" BeforeTargets="Build">
+    <MSBuild Projects="..\BamlTarget\BamlTarget.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+  </Target>
+</Project>

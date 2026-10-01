@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>dnSpy.Backend.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="dnlib" Version="4.5.0" />
+    <PackageReference Include="ICSharpCode.Decompiler" Version="11.1.0.9782" />
+    <PackageReference Include="ICSharpCode.CodeConverter" Version="10.0.1.923" />
+    <PackageReference Include="ICSharpCode.BamlDecompiler" Version="11.1.0.9782" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12" />
+  </ItemGroup>
+</Project>
