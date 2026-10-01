@@ -234,6 +234,7 @@ internal sealed class JsonRpcServer {
 				["document.csharp"] = true,
 				["document.visualBasic"] = true,
 				["document.il"] = true,
+				["document.ilWithCSharp"] = true,
 				["search"] = true,
 				["analyze.references"] = true,
 				["hex.read"] = true,

@@ -43,12 +43,14 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
 
   const editorLanguage = document.language === 'visual-basic'
     ? 'vb'
-    : document.language === 'il' || document.language === 'plaintext'
-      ? 'plaintext'
-      : document.language === 'xml'
-        ? 'xml'
-        : 'csharp'
-  const editorTheme = theme === 'light' ? 'vs' : theme === 'hc' ? 'hc-black' : 'vs-dark'
+    : document.language === 'il'
+      ? 'il'
+      : document.language === 'plaintext'
+        ? 'plaintext'
+        : document.language === 'xml'
+          ? 'xml'
+          : 'csharp'
+  const editorTheme = theme === 'light' ? 'dnspy-light' : theme === 'hc' ? 'dnspy-high-contrast' : 'dnspy-dark'
 
   return (
     <div className="document-view" data-reference-count={document.spans.filter((span) => span.targetNodeId).length}>
@@ -62,6 +64,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             <option value="cSharp">C#</option>
             <option value="visualBasic">Visual Basic</option>
             <option value="il">IL</option>
+            <option value="ilWithCSharp">IL with C#</option>
           </select>
         ) : <span className="document-language-label">{document.language === 'xml' ? 'XAML/XML' : document.language}</span>}
         {document.diagnostics.length > 0 && (
@@ -81,6 +84,13 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             theme={editorTheme}
             onMount={(editor, monaco) => {
               editorRef.current = editor
+              const updateLanguageId = (): void => {
+                const languageId = editor.getModel()?.getLanguageId()
+                if (languageId)
+                  editor.getDomNode()?.setAttribute('data-language-id', languageId)
+              }
+              updateLanguageId()
+              editor.onDidChangeModel(updateLanguageId)
               decorationsRef.current = editor.createDecorationsCollection()
               const model = editor.getModel()
               if (!model) return

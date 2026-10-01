@@ -325,6 +325,7 @@ public sealed class WorkspaceManager : IDisposable {
 			return request.Language switch {
 				DecompilerLanguage.CSharp => DecompileCSharp(node, cancellationToken),
 				DecompilerLanguage.IL => DecompileIL(node),
+				DecompilerLanguage.ILWithCSharp => DecompileILWithCSharp(node, cancellationToken),
 				DecompilerLanguage.VisualBasic => await DecompileVisualBasicAsync(node, cancellationToken).ConfigureAwait(false),
 				_ => throw new RpcException(ErrorCodes.InvalidParams, "Unknown decompiler language."),
 			};
@@ -364,28 +365,9 @@ public sealed class WorkspaceManager : IDisposable {
 
 		DecompileResponse DecompileCSharp(NodeEntry node, CancellationToken cancellationToken) {
 			var settings = new DecompilerSettings();
-			MemoryStream? snapshotStream = null;
-			ICSharpCode.Decompiler.Metadata.PEFile? snapshotFile = null;
 			try {
-				CSharpDecompiler decompiler;
-				if (node.Module.IsModified) {
-					snapshotStream = new MemoryStream();
-					node.Module.Module.Write(snapshotStream);
-					snapshotStream.Position = 0;
-					snapshotFile = new ICSharpCode.Decompiler.Metadata.PEFile(
-						node.Module.Path,
-						snapshotStream,
-						PEStreamOptions.PrefetchEntireImage);
-					var resolver = new ICSharpCode.Decompiler.Metadata.UniversalAssemblyResolver(
-						node.Module.Path,
-						throwOnError: false,
-						targetFramework: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectTargetFrameworkId(snapshotFile),
-						runtimePack: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectRuntimePack(snapshotFile));
-					decompiler = new CSharpDecompiler(snapshotFile, resolver, settings);
-				}
-				else
-					decompiler = new CSharpDecompiler(node.Module.Path, settings);
-				decompiler.CancellationToken = cancellationToken;
+				using var session = CreateCSharpDecompilerSession(node.Module, settings, cancellationToken);
+				var decompiler = session.Decompiler;
 
 				string text;
 				IReadOnlyList<TextSpanDto> spans = Array.Empty<TextSpanDto>();
@@ -417,9 +399,39 @@ public sealed class WorkspaceManager : IDisposable {
 			catch (Exception ex) {
 				throw new RpcException(ErrorCodes.UnsupportedDocument, "The selected item could not be decompiled.", null, ex);
 			}
-			finally {
-				snapshotFile?.Dispose();
-				snapshotStream?.Dispose();
+		}
+
+		static CSharpDecompilerSession CreateCSharpDecompilerSession(ModuleEntry module, DecompilerSettings settings, CancellationToken cancellationToken) {
+			if (!module.IsModified) {
+				var decompiler = new CSharpDecompiler(module.Path, settings) { CancellationToken = cancellationToken };
+				return new CSharpDecompilerSession(decompiler);
+			}
+
+			var snapshotStream = new MemoryStream();
+			try {
+				module.Module.Write(snapshotStream);
+				snapshotStream.Position = 0;
+				var snapshotFile = new ICSharpCode.Decompiler.Metadata.PEFile(
+					module.Path,
+					snapshotStream,
+					PEStreamOptions.PrefetchEntireImage);
+				try {
+					var resolver = new ICSharpCode.Decompiler.Metadata.UniversalAssemblyResolver(
+						module.Path,
+						throwOnError: false,
+						targetFramework: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectTargetFrameworkId(snapshotFile),
+						runtimePack: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectRuntimePack(snapshotFile));
+					var decompiler = new CSharpDecompiler(snapshotFile, resolver, settings) { CancellationToken = cancellationToken };
+					return new CSharpDecompilerSession(decompiler, snapshotFile, snapshotStream);
+				}
+				catch {
+					snapshotFile.Dispose();
+					throw;
+				}
+			}
+			catch {
+				snapshotStream.Dispose();
+				throw;
 			}
 		}
 
@@ -467,6 +479,27 @@ public sealed class WorkspaceManager : IDisposable {
 			ILFormatter.Format(node),
 			Array.Empty<TextSpanDto>(),
 			Array.Empty<DiagnosticDto>());
+
+		DecompileResponse DecompileILWithCSharp(NodeEntry node, CancellationToken cancellationToken) {
+			var settings = new DecompilerSettings {
+				UsingDeclarations = false,
+			};
+			try {
+				using var session = CreateCSharpDecompilerSession(node.Module, settings, cancellationToken);
+				var sourceProvider = new DecompiledSourceProvider(session.Decompiler, settings, cancellationToken);
+				var text = ILFormatter.Format(node, sourceProvider.GetStatements);
+				var diagnostics = session.Decompiler.Errors
+					.Select(error => new DiagnosticDto("warning", error.ToString()))
+					.ToArray();
+				return new DecompileResponse(GetLabel(node), "il", text, Array.Empty<TextSpanDto>(), diagnostics);
+			}
+			catch (OperationCanceledException) {
+				throw;
+			}
+			catch (Exception ex) {
+				throw new RpcException(ErrorCodes.UnsupportedDocument, "The selected item could not be decompiled as IL with C#.", null, ex);
+			}
+		}
 
 		async Task<DecompileResponse> DecompileVisualBasicAsync(NodeEntry node, CancellationToken cancellationToken) {
 			var csharp = DecompileCSharp(node, cancellationToken);
@@ -1128,6 +1161,86 @@ public sealed class WorkspaceManager : IDisposable {
 			gate.Dispose();
 		}
 
+		sealed class CSharpDecompilerSession : IDisposable {
+			readonly ICSharpCode.Decompiler.Metadata.PEFile? snapshotFile;
+			readonly MemoryStream? snapshotStream;
+
+			public CSharpDecompilerSession(
+				CSharpDecompiler decompiler,
+				ICSharpCode.Decompiler.Metadata.PEFile? snapshotFile = null,
+				MemoryStream? snapshotStream = null) {
+				Decompiler = decompiler;
+				this.snapshotFile = snapshotFile;
+				this.snapshotStream = snapshotStream;
+			}
+
+			public CSharpDecompiler Decompiler { get; }
+
+			public void Dispose() {
+				snapshotFile?.Dispose();
+				snapshotStream?.Dispose();
+			}
+		}
+
+		sealed class DecompiledSourceProvider(
+			CSharpDecompiler decompiler,
+			DecompilerSettings settings,
+			CancellationToken cancellationToken) {
+			public IReadOnlyList<ILSourceStatement> GetStatements(MethodDef method) {
+				if (!method.HasBody)
+					return Array.Empty<ILSourceStatement>();
+				cancellationToken.ThrowIfCancellationRequested();
+				var syntaxTree = decompiler.Decompile([ToEntityHandle(method)]);
+				var output = new SpanTextOutput(_ => null);
+				syntaxTree.AcceptVisitor(new CSharpOutputVisitor(new TextTokenWriter(output, settings), settings.CSharpFormattingOptions));
+				var source = output.ToString();
+				var methodToken = method.MDToken.Raw;
+				var statements = decompiler.CreateSequencePoints(syntaxTree)
+					.Where(pair => GetBodyMethodToken(pair.Key) == methodToken)
+					.SelectMany(pair => pair.Value)
+					.Where(point => !point.IsHidden && point.EndOffset > point.Offset)
+					.Select(point => new ILSourceStatement(point.Offset, point.EndOffset, ExtractSource(source, point.StartLine, point.StartColumn, point.EndLine, point.EndColumn)))
+					.Where(statement => !string.IsNullOrWhiteSpace(statement.Text))
+					.Distinct()
+					.OrderBy(statement => statement.Offset)
+					.ThenBy(statement => statement.EndOffset)
+					.ToArray();
+				if (statements.Length != 0)
+					return statements;
+
+				var fallback = source.Trim();
+				return fallback.Length == 0
+					? Array.Empty<ILSourceStatement>()
+					: [new ILSourceStatement(0, int.MaxValue, fallback)];
+			}
+
+			static uint? GetBodyMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
+				var method = function.MoveNextMethod ?? function.Method;
+				if (method is null || method.MetadataToken.IsNil)
+					return null;
+				return unchecked((uint)MetadataTokens.GetToken(method.MetadataToken));
+			}
+
+			static string ExtractSource(string source, int startLine, int startColumn, int endLine, int endColumn) {
+				var lines = source.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n');
+				if (startLine <= 0 || endLine < startLine || startLine > lines.Length)
+					return string.Empty;
+				endLine = Math.Min(endLine, lines.Length);
+				var firstLine = startLine - 1;
+				var lastLine = endLine - 1;
+				var firstColumn = Math.Clamp(startColumn - 1, 0, lines[firstLine].Length);
+				var lastColumn = Math.Clamp(endColumn - 1, 0, lines[lastLine].Length);
+				if (firstLine == lastLine)
+					return lines[firstLine][firstColumn..Math.Max(firstColumn, lastColumn)].Trim();
+
+				var result = new List<string> { lines[firstLine][firstColumn..] };
+				for (var line = firstLine + 1; line < lastLine; line++)
+					result.Add(lines[line]);
+				result.Add(lines[lastLine][..lastColumn]);
+				return string.Join('\n', result).Trim();
+			}
+		}
+
 		sealed class ModuleEntry(string path, ModuleDefMD module) {
 			public string Id { get; set; } = string.Empty;
 			public string Path { get; } = path;
@@ -1139,6 +1252,7 @@ public sealed class WorkspaceManager : IDisposable {
 		sealed record NamespaceValue(string Name, IReadOnlyList<TypeDef> Types);
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
+		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);
 		sealed class NodeEntry(string id, string key, NodeKind kind, object value, ModuleEntry module) {
 			public string Id { get; } = id;
 			public string Key { get; } = key;
@@ -1224,7 +1338,7 @@ public sealed class WorkspaceManager : IDisposable {
 		}
 
 		static class ILFormatter {
-			public static string Format(NodeEntry node) {
+			public static string Format(NodeEntry node, Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider = null) {
 				var builder = new StringBuilder();
 				switch (node.Value) {
 					case ModuleDef module:
@@ -1236,22 +1350,22 @@ public sealed class WorkspaceManager : IDisposable {
 					case NamespaceValue ns:
 						builder.AppendLine($"// namespace {ns.Name}");
 						foreach (var type in ns.Types)
-							FormatType(builder, type);
+							FormatType(builder, type, sourceProvider);
 						break;
 					case TypeDef type:
-						FormatType(builder, type);
+						FormatType(builder, type, sourceProvider);
 						break;
 					case MethodDef method:
-						FormatMethod(builder, method);
+						FormatMethod(builder, method, sourceProvider: sourceProvider);
 						break;
 					case FieldDef field:
 						builder.AppendLine($".field {field.Attributes} {field.FieldType.FullName} {field.Name}");
 						break;
 					case PropertyDef property:
-						builder.AppendLine($".property {property.PropertySig?.RetType.FullName ?? "<unknown>"} {property.Name}");
+						FormatProperty(builder, property, sourceProvider);
 						break;
 					case EventDef @event:
-						builder.AppendLine($".event {@event.EventType.FullName} {@event.Name}");
+						FormatEvent(builder, @event, sourceProvider);
 						break;
 					case AssemblyRef reference:
 						builder.AppendLine($".assembly extern {reference.Name}");
@@ -1270,19 +1384,39 @@ public sealed class WorkspaceManager : IDisposable {
 
 			static void FormatTypeHeader(StringBuilder builder, TypeDef type) => builder.AppendLine($".class {type.Attributes} {type.FullName}");
 
-			static void FormatType(StringBuilder builder, TypeDef type) {
+			static void FormatType(StringBuilder builder, TypeDef type, Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider) {
 				FormatTypeHeader(builder, type);
 				builder.AppendLine("{");
 				foreach (var field in type.Fields)
 					builder.AppendLine($"  .field {field.Attributes} {field.FieldType.FullName} {field.Name}");
 				foreach (var method in type.Methods) {
 					builder.AppendLine();
-					FormatMethod(builder, method, "  ");
+					FormatMethod(builder, method, "  ", sourceProvider);
 				}
 				builder.AppendLine("}");
 			}
 
-			static void FormatMethod(StringBuilder builder, MethodDef method, string indent = "") {
+			static void FormatProperty(StringBuilder builder, PropertyDef property, Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider) {
+				builder.AppendLine($".property {property.PropertySig?.RetType.FullName ?? "<unknown>"} {property.Name}");
+				foreach (var method in new[] { property.GetMethod, property.SetMethod }.Concat(property.OtherMethods).OfType<MethodDef>().Distinct()) {
+					builder.AppendLine();
+					FormatMethod(builder, method, sourceProvider: sourceProvider);
+				}
+			}
+
+			static void FormatEvent(StringBuilder builder, EventDef @event, Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider) {
+				builder.AppendLine($".event {@event.EventType.FullName} {@event.Name}");
+				foreach (var method in new[] { @event.AddMethod, @event.RemoveMethod, @event.InvokeMethod }.Concat(@event.OtherMethods).OfType<MethodDef>().Distinct()) {
+					builder.AppendLine();
+					FormatMethod(builder, method, sourceProvider: sourceProvider);
+				}
+			}
+
+			static void FormatMethod(
+				StringBuilder builder,
+				MethodDef method,
+				string indent = "",
+				Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider = null) {
 				builder.AppendLine($"{indent}.method {method.Attributes} {method.ReturnType.FullName} {method.Name}{FormatParameterList(method)}");
 				builder.AppendLine($"{indent}{{");
 				if (method.HasBody) {
@@ -1290,10 +1424,25 @@ public sealed class WorkspaceManager : IDisposable {
 					if (method.Body.HasVariables) {
 						builder.AppendLine($"{indent}  .locals {string.Join(", ", method.Body.Variables.Select(v => $"[{v.Index}] {v.Type.FullName}"))}");
 					}
-					foreach (var instruction in method.Body.Instructions)
+					var statements = sourceProvider?.Invoke(method) ?? Array.Empty<ILSourceStatement>();
+					var statementIndex = 0;
+					foreach (var instruction in method.Body.Instructions) {
+						while (statementIndex < statements.Count && statements[statementIndex].Offset <= instruction.Offset) {
+							if (instruction.Offset < statements[statementIndex].EndOffset)
+								AppendSourceComment(builder, indent + "  ", statements[statementIndex].Text);
+							statementIndex++;
+						}
 						builder.AppendLine($"{indent}  IL_{instruction.Offset:X4}: {instruction.OpCode.Name,-12} {FormatOperand(instruction.Operand)}".TrimEnd());
+					}
 				}
 				builder.AppendLine($"{indent}}}");
+			}
+
+			static void AppendSourceComment(StringBuilder builder, string indent, string source) {
+				builder.AppendLine();
+				foreach (var line in source.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+					builder.Append(indent).Append("// ").AppendLine(line.TrimEnd());
+				builder.AppendLine();
 			}
 
 			static string FormatOperand(object? operand) => operand switch {

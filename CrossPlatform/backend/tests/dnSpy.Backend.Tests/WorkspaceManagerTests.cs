@@ -48,6 +48,22 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.CSharp),
 			TestContext.Current.CancellationToken);
 		Assert.Contains(getCodeDocument.Spans, span => span.Kind == "reference" && span.TargetNodeId is not null && span.TargetNodeId != getCode.Id);
+		var mixed = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.ILWithCSharp),
+			TestContext.Current.CancellationToken);
+		Assert.Equal("il", mixed.Language);
+		Assert.Contains(".method", mixed.Text, StringComparison.Ordinal);
+		Assert.Contains("IL_", mixed.Text, StringComparison.Ordinal);
+		Assert.True(
+			mixed.Text.IndexOf("//", StringComparison.Ordinal) < mixed.Text.IndexOf("IL_", StringComparison.Ordinal),
+			$"Expected decompiled C# before the matching IL instructions:{Environment.NewLine}{mixed.Text}");
+		var codeProperty = Assert.Single(rpcMembers.Nodes, member => member.Kind == "property" && member.Label == "Code");
+		var mixedProperty = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, codeProperty.Id, DecompilerLanguage.ILWithCSharp),
+			TestContext.Current.CancellationToken);
+		Assert.Contains(".property", mixedProperty.Text, StringComparison.Ordinal);
+		Assert.Contains(".method", mixedProperty.Text, StringComparison.Ordinal);
+		Assert.Contains("//", mixedProperty.Text, StringComparison.Ordinal);
 		var visualBasic = await manager.DecompileAsync(
 			new DecompileRequest(opened.WorkspaceId, rpcException.Id, DecompilerLanguage.VisualBasic),
 			TestContext.Current.CancellationToken);
@@ -244,6 +260,13 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.CSharp),
 			TestContext.Current.CancellationToken);
 		Assert.Contains("42", csharp.Text, StringComparison.Ordinal);
+		var mixed = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.ILWithCSharp),
+			TestContext.Current.CancellationToken);
+		Assert.True(
+			mixed.Text.Split('\n').Any(line => line.TrimStart().StartsWith("//", StringComparison.Ordinal) && line.Contains("42", StringComparison.Ordinal)),
+			$"Expected the updated constant in a C# source comment:{Environment.NewLine}{mixed.Text}");
+		Assert.Contains("ldc.i4", mixed.Text, StringComparison.Ordinal);
 	}
 
 	[Fact]

@@ -122,6 +122,8 @@ test('switches to Simplified Chinese and persists the language', async () => {
 
 test('opens a real assembly, expands the tree and decompiles a type', async () => {
   await openAssemblyAndNamespace()
+  const browserWindow = await application.browserWindow(page)
+  await browserWindow.evaluate((window) => window.setSize(1500, 700))
 
   const typeRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
   await expect(typeRow).toBeVisible()
@@ -133,6 +135,27 @@ test('opens a real assembly, expands the tree and decompiles a type', async () =
 
   await page.getByLabel('Decompiler language').selectOption('il')
   await expect.poll(async () => editor.locator('.view-lines').innerText()).toContain('.class')
+  await expect(editor).toHaveAttribute('data-language-id', 'il')
+  await editor.click()
+  await expect.poll(async () => editor.locator('.view-lines').innerText()).toContain('<ProtocolVersion>k__BackingField')
+  const ilTokens = await editor.locator('.view-lines span[class*="mtk"]').evaluateAll((tokens) => tokens.map((token) => ({
+    text: token.textContent,
+    color: getComputedStyle(token).color,
+    fontWeight: getComputedStyle(token).fontWeight,
+  })).filter((token) => token.text?.trim()))
+  expect(ilTokens.find((token) => token.text === '.method')?.color).toBe('rgb(86, 156, 214)')
+  expect(ilTokens.find((token) => token.text === 'IL_0000')?.color).toBe('rgb(215, 186, 125)')
+  expect(ilTokens.find((token) => token.text === 'ldarg.0')?.color).toBe('rgb(197, 134, 192)')
+  expect(ilTokens.find((token) => token.text === 'ldarg.0')?.fontWeight).toBe('700')
+  expect(ilTokens.find((token) => token.text === 'System.Int32')?.color).toBe('rgb(78, 201, 176)')
+  expect(ilTokens.find((token) => token.text === '<ProtocolVersion>k__BackingField')?.color).toBe('rgb(220, 220, 170)')
+  await page.screenshot({ path: 'test-results/dnspy-il-highlighting.png' })
+
+  await page.getByLabel('Decompiler language').selectOption('ilWithCSharp')
+  await editor.click()
+  await page.keyboard.press('PageDown')
+  await expect.poll(async () => editor.locator('.view-lines').innerText()).toContain('//')
+  await expect.poll(async () => editor.locator('.view-lines').innerText()).toContain('IL_')
   await page.screenshot({ path: 'test-results/dnspy-shell.png' })
 })
 

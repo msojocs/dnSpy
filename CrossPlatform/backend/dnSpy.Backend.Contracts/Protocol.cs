@@ -92,6 +92,7 @@ public enum DecompilerLanguage {
 	CSharp,
 	VisualBasic,
 	IL,
+	ILWithCSharp,
 }
 
 public sealed record DecompileRequest(string WorkspaceId, string NodeId, DecompilerLanguage Language);

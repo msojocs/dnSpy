@@ -6,7 +6,7 @@ Linux 版使用 Electron/React 前端和独立的 .NET 10 后端，无需 Wine�
 
 - 打开单个或多个 `.dll`、`.exe`、`.netmodule`、`.winmd` 文件。
 - 展开程序集、命名空间、类型、成员、引用、资源和 `.resources` 条目。
-- 反编译 C#、Visual Basic、IL，以及把 BAML 恢复为 XAML。
+- 反编译 C#、Visual Basic、带语法高亮的 IL、带 C# 源语句的 IL，以及把 BAML 恢复为 XAML。
 - 名称/字符串搜索、引用分析、模块信息和分页十六进制查看。
 - 类型及成员重命名、结构化 IL 方法体编辑、嵌入资源替换和原子另存。
 - 启动或附加 Linux .NET/CoreCLR 进程，使用函数断点、异常断点、继续、暂停、单步、线程、调用栈、局部变量、监视和模块窗口。

@@ -35,7 +35,7 @@ export interface TreeNodesResponse {
   nodes: TreeNode[]
 }
 
-export type DecompilerLanguage = 'cSharp' | 'visualBasic' | 'il'
+export type DecompilerLanguage = 'cSharp' | 'visualBasic' | 'il' | 'ilWithCSharp'
 
 export interface TextSpan {
   start: number
