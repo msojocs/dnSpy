@@ -1,0 +1,370 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { RotateCcw, Search, X } from 'lucide-react'
+import { useLanguage } from '../localization'
+import {
+  defaultDebuggerOptions,
+  loadDebuggerOptions,
+  resetDebuggerOptions,
+  saveDebuggerOptions,
+  type DebuggerOptions,
+} from './debug-options'
+
+interface DebugOptionsDialogProps {
+  onClose(): void
+}
+
+type OptionKey = keyof DebuggerOptions
+
+interface CheckboxSpec {
+  key: OptionKey
+  labelKey: string
+  /** Optional dependency: disable this checkbox until the listed key is enabled. */
+  enabledWhen?: OptionKey
+}
+
+interface CategorySpec {
+  id: string
+  titleKey: string
+  descriptionKey?: string
+  checkboxes: CheckboxSpec[]
+}
+
+const ANTI_DETECTION_KEYS: OptionKey[] = [
+  'preventManagedDebuggerDetection',
+  'antiIsDebuggerPresent',
+  'antiCheckRemoteDebuggerPresent',
+  'antiNtRaiseHardError',
+  'antiCloseHandle',
+]
+
+const antiDetectionCategory: CategorySpec = {
+  id: 'anti-debug',
+  titleKey: 'Anti-Debug Detection',
+  descriptionKey: 'Configure how the debugger hides itself from the target process.',
+  checkboxes: ANTI_DETECTION_KEYS.map((key) => {
+    if (key === 'preventManagedDebuggerDetection') return { key, labelKey: 'Anti System.Diagnostics.Debugger' }
+    if (key === 'antiIsDebuggerPresent') return { key, labelKey: 'Anti IsDebuggerPresent' }
+    if (key === 'antiCheckRemoteDebuggerPresent') return { key, labelKey: 'Anti CheckRemoteDebuggerPresent' }
+    if (key === 'antiNtRaiseHardError') return { key, labelKey: 'Anti NtRaiseHardError' }
+    return { key, labelKey: 'Anti CloseHandle' }
+  }),
+}
+
+const jitCategory: CategorySpec = {
+  id: 'jit-optimization',
+  titleKey: 'Suppress JIT optimization on module load',
+  descriptionKey: 'Keep debugger code easy to step through by disabling JIT optimizations at module load.',
+  checkboxes: [
+    { key: 'suppressJitOptimizationSystemModules', labelKey: 'System modules' },
+    { key: 'suppressJitOptimizationProgramModules', labelKey: 'Program modules' },
+  ],
+}
+
+const generalCategory: CategorySpec = {
+  id: 'general',
+  titleKey: 'General',
+  descriptionKey: 'Everyday behaviour of the debugger, such as opening the Locals window or syntax highlighting.',
+  checkboxes: [
+    { key: 'autoOpenLocalsWindow', labelKey: 'Show the Locals window when the debugger starts' },
+    { key: 'useHexadecimal', labelKey: 'Use hexadecimal numbers' },
+    { key: 'useDigitSeparators', labelKey: 'Use digit separators' },
+    { key: 'syntaxHighlight', labelKey: 'Syntax highlight' },
+  ],
+}
+
+const moduleCategory: CategorySpec = {
+  id: 'modules',
+  titleKey: 'Modules',
+  descriptionKey: 'Choose which module to use when debugging and when to break across processes.',
+  checkboxes: [
+    { key: 'useMemoryModules', labelKey: 'Debug files loaded from the process\' memory (uncheck to use disk files)' },
+    { key: 'breakAllProcesses', labelKey: 'Break all processes when one process breaks' },
+  ],
+}
+
+const evaluationCategory: CategorySpec = {
+  id: 'evaluation',
+  titleKey: 'Evaluation',
+  descriptionKey: 'Configure property evaluation and stepping over members in the variables windows.',
+  checkboxes: [
+    { key: 'propertyEvalAndFunctionCalls', labelKey: 'Enable property evaluation and other implicit function calls' },
+    { key: 'useStringConversionFunction', labelKey: 'Call string-conversion function on objects in variables windows', enabledWhen: 'propertyEvalAndFunctionCalls' },
+    { key: 'stepOverPropertiesAndOperators', labelKey: 'Step over properties and operators' },
+  ],
+}
+
+const steppingCategory: CategorySpec = {
+  id: 'stepping',
+  titleKey: 'Stepping',
+  descriptionKey: 'Tune single-step navigation, Just My Code support and managed debugging assistants.',
+  checkboxes: [
+    { key: 'ignoreBreakInstructions', labelKey: 'Ignore Debugger.Break() and break instructions' },
+    { key: 'asyncDebugging', labelKey: 'Enable async debugging' },
+    { key: 'enableJustMyCodeDebugging', labelKey: 'Enable Just My Code debugging support' },
+    { key: 'stepOverCodeInSystemModules', labelKey: 'Step over code in system modules', enabledWhen: 'enableJustMyCodeDebugging' },
+    { key: 'onlyStepIntoCodeInPrimaryModule', labelKey: 'Only step into code located in primary module', enabledWhen: 'enableJustMyCodeDebugging' },
+    { key: 'enableManagedDebuggingAssistants', labelKey: 'Enable Managed Debugging Assistants (MDA)' },
+  ],
+}
+
+const focusCategory: CategorySpec = {
+  id: 'focus',
+  titleKey: 'Focus',
+  descriptionKey: 'Decide where focus goes when a debug event happens or when console output is produced.',
+  checkboxes: [
+    { key: 'focusActiveProcess', labelKey: 'Give focus to debugged process' },
+    { key: 'focusDebuggerWhenProcessBreaks', labelKey: 'Bring dnSpy to the foreground when breaking in the debugger' },
+    { key: 'redirectGuiConsoleOutput', labelKey: 'Redirect GUI applications\' console output to the Output window' },
+  ],
+}
+
+const exceptionsCategory: CategorySpec = {
+  id: 'exceptions',
+  titleKey: 'Exceptions',
+  descriptionKey: 'Control how the debugger reacts to unhandled exceptions thrown by the target.',
+  checkboxes: [
+    { key: 'ignoreUnhandledExceptions', labelKey: 'Ignore unhandled exceptions' },
+  ],
+}
+
+const variablesCategory: CategorySpec = {
+  id: 'variables',
+  titleKey: 'Variables',
+  descriptionKey: 'Customise how values are displayed in the Locals, Watch and Autos windows.',
+  checkboxes: [
+    { key: 'highlightChangedVariables', labelKey: 'Highlight changed variables in variables windows' },
+    { key: 'showRawStructureOfObjects', labelKey: 'Show raw structure of objects in variables windows' },
+    { key: 'showRawLocals', labelKey: 'Show raw locals' },
+    { key: 'showReturnValues', labelKey: 'Show return values' },
+    { key: 'sortParameters', labelKey: 'Sort parameters' },
+    { key: 'sortLocals', labelKey: 'Sort locals' },
+    { key: 'groupParametersAndLocalsTogether', labelKey: 'Group parameters and locals together' },
+    { key: 'showCompilerGeneratedVariables', labelKey: 'Show compiler generated variables' },
+    { key: 'showDecompilerGeneratedVariables', labelKey: 'Show decompiler generated variables' },
+    { key: 'hideCompilerGeneratedMembers', labelKey: 'Hide compiler generated members' },
+    { key: 'respectHideMemberAttributes', labelKey: 'Respect attributes that hide members' },
+    { key: 'hideDeprecatedError', labelKey: 'Hide deprecated members in variables windows' },
+    { key: 'showOnlyPublicMembers', labelKey: 'Show only public members in variables windows' },
+  ],
+}
+
+const CATEGORIES: CategorySpec[] = [
+  generalCategory,
+  moduleCategory,
+  antiDetectionCategory,
+  jitCategory,
+  evaluationCategory,
+  steppingCategory,
+  focusCategory,
+  exceptionsCategory,
+  variablesCategory,
+]
+
+const normalizeForSearch = (value: string): string => value.toLowerCase().trim()
+
+const CheckboxRow = ({
+  optionKey,
+  labelKey,
+  enabledWhen,
+  options,
+  onToggle,
+  t,
+  highlight,
+}: {
+  optionKey: OptionKey
+  labelKey: string
+  enabledWhen?: OptionKey
+  options: DebuggerOptions
+  onToggle(key: OptionKey, value: boolean): void
+  t: (message: string, values?: Record<string, string | number>) => string
+  highlight?: string
+}): React.JSX.Element => {
+  const disabled = enabledWhen !== undefined && !options[enabledWhen]
+  const label = t(labelKey)
+  return (
+    <label className={`debug-options-row${disabled ? ' debug-options-row-disabled' : ''}${highlight ? ' debug-options-row-match' : ''}`}>
+      <input
+        type="checkbox"
+        checked={options[optionKey]}
+        disabled={disabled}
+        onChange={(event) => onToggle(optionKey, event.target.checked)}
+      />
+      <span>{label}</span>
+    </label>
+  )
+}
+
+export const DebugOptionsDialog = ({ onClose }: DebugOptionsDialogProps): React.JSX.Element => {
+  const dialog = useRef<HTMLDivElement>(null)
+  const searchInput = useRef<HTMLInputElement>(null)
+  const resetButton = useRef<HTMLButtonElement>(null)
+  const { t } = useLanguage()
+  const [options, setOptions] = useState<DebuggerOptions>(() => loadDebuggerOptions())
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(CATEGORIES[0]?.id ?? '')
+  const [search, setSearch] = useState('')
+
+  useEffect(() => searchInput.current?.focus(), [])
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
+
+  const keepFocusInDialog = (event: React.KeyboardEvent): void => {
+    if (event.key !== 'Tab' || !dialog.current)
+      return
+    const focusable = [...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
+    if (focusable.length === 0)
+      return
+    const first = focusable[0]
+    const last = focusable.at(-1)!
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault()
+      last.focus()
+    }
+    else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault()
+      first.focus()
+    }
+  }
+
+  const toggle = (key: OptionKey, value: boolean): void => {
+    setOptions((current) => {
+      const next: DebuggerOptions = { ...current, [key]: value }
+      // Mirror upstream: toggling "Enable Just My Code" auto-disables dependent options.
+      if (key === 'enableJustMyCodeDebugging' && !value) {
+        next.stepOverCodeInSystemModules = false
+        next.onlyStepIntoCodeInPrimaryModule = false
+      }
+      // Disabling property evaluation also disables the string conversion function.
+      if (key === 'propertyEvalAndFunctionCalls' && !value) {
+        next.useStringConversionFunction = false
+      }
+      return next
+    })
+  }
+
+  const handleReset = (): void => {
+    setOptions(resetDebuggerOptions())
+  }
+
+  const handleApply = (): void => {
+    saveDebuggerOptions(options)
+    onClose()
+  }
+
+  const normalizedSearch = normalizeForSearch(search)
+
+  const filteredCategories = useMemo(() => {
+    if (!normalizedSearch)
+      return CATEGORIES
+    return CATEGORIES.filter((category) => {
+      const haystacks = [
+        t(category.titleKey),
+        category.descriptionKey ? t(category.descriptionKey) : '',
+        ...category.checkboxes.map((spec) => t(spec.labelKey)),
+      ]
+      return haystacks.some((text) => normalizeForSearch(text).includes(normalizedSearch))
+    })
+  }, [normalizedSearch, t])
+
+  useEffect(() => {
+    if (filteredCategories.length === 0)
+      return
+    if (!filteredCategories.some((category) => category.id === selectedCategoryId))
+      setSelectedCategoryId(filteredCategories[0]!.id)
+  }, [filteredCategories, selectedCategoryId])
+
+  const selectedCategory = filteredCategories.find((category) => category.id === selectedCategoryId) ?? filteredCategories[0]
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div ref={dialog} className="modal debug-options-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-options-title" onKeyDown={keepFocusInDialog}>
+        <div className="modal-title">
+          <span id="debug-options-title">{t('Debug Options')}</span>
+          <button type="button" className="icon-button" aria-label={t('Close')} title={t('Close')} onClick={onClose}><X size={14} /></button>
+        </div>
+        <div className="debug-options-body">
+          <div className="debug-options-sidebar" role="group" aria-label={t('Categories')}>
+            <div className="debug-options-search">
+                  <Search size={13} aria-hidden="true" />
+                  <input
+                    ref={searchInput}
+                    type="search"
+                    placeholder={t('Search settings')}
+                    aria-label={t('Search settings')}
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                  {search && (
+                    <button type="button" className="icon-button" aria-label={t('Clear search')} title={t('Clear')} onClick={() => setSearch('')}>
+                      <X size={12} />
+                    </button>
+                  )}
+            </div>
+            <nav className="debug-options-category-list" role="listbox" aria-label={t('Categories')}>
+              {filteredCategories.length === 0 && (
+                <div className="debug-options-no-results">{t('No categories match your search.')}</div>
+              )}
+              {filteredCategories.map((category) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={category.id === selectedCategoryId}
+                  key={category.id}
+                  className={`debug-options-category${category.id === selectedCategoryId ? ' debug-options-category-selected' : ''}`}
+                  onClick={() => setSelectedCategoryId(category.id)}
+                >
+                  <span className="debug-options-category-title">{t(category.titleKey)}</span>
+                  <span className="debug-options-category-count">{category.checkboxes.length}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
+          <section className="debug-options-detail" aria-live="polite">
+            {selectedCategory ? (
+              <>
+                <header className="debug-options-detail-header">
+                  <h2 className="debug-options-detail-title">{t(selectedCategory.titleKey)}</h2>
+                  {selectedCategory.descriptionKey && (
+                    <p className="debug-options-detail-description">{t(selectedCategory.descriptionKey)}</p>
+                  )}
+                </header>
+                <div className="debug-options-detail-body">
+                  {selectedCategory.checkboxes.map((spec) => (
+                    <CheckboxRow
+                      key={spec.key}
+                      optionKey={spec.key}
+                      labelKey={spec.labelKey}
+                      enabledWhen={spec.enabledWhen}
+                      options={options}
+                      onToggle={toggle}
+                      t={t}
+                      highlight={normalizedSearch}
+                    />
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="debug-options-empty">{t('Select a category to view its settings.')}</div>
+            )}
+          </section>
+        </div>
+        <div className="modal-actions">
+          <button type="button" ref={resetButton} onClick={handleReset}>
+            <RotateCcw size={13} /> {t('Restore Defaults')}
+          </button>
+          <span className="modal-action-spacer" />
+          <button type="button" onClick={onClose}>{t('Cancel')}</button>
+          <button type="button" className="primary" onClick={handleApply}>{t('Apply')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}

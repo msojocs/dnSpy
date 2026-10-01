@@ -70,6 +70,7 @@ interface MenuBarProps {
   onSetLanguage(language: LanguagePreference): void
   onAbout(): void
   onQuit(): void
+  onShowOptions(category?: 'environment' | 'decompiler' | 'debugger'): void
 }
 
 interface MenuItem {
@@ -147,6 +148,7 @@ export const MenuBar = ({
   onSetLanguage,
   onAbout,
   onQuit,
+  onShowOptions,
 }: MenuBarProps): React.JSX.Element => {
   const [openMenu, setOpenMenu] = useState<string>()
   const host = useRef<HTMLDivElement>(null)
@@ -202,6 +204,7 @@ export const MenuBar = ({
         })),
       },
       { separator: true },
+      { label: t('Options...'), action: () => onShowOptions('environment') },
       { label: t('Hex View'), disabled: !canInspectModule, action: onHex },
       { label: t('Module Information'), disabled: !canInspectModule, action: onModuleInfo },
     ],
@@ -240,6 +243,8 @@ export const MenuBar = ({
         { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
         { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: false, action: onStopDebug },
       ] : []),
+      { separator: true },
+      { label: t('Options...'), action: () => onShowOptions('debugger') },
     ],
     [t('Help')]: [
       { label: t('Latest Release'), action: () => openExternal(`${repositoryUrl}/releases/latest`) },

@@ -12,6 +12,7 @@ import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { AttachDialog } from './components/AttachDialog'
 import { AboutDialog } from './components/AboutDialog'
+import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
 import { translate, useLanguage } from './localization'
 
@@ -126,6 +127,7 @@ export const App = (): React.JSX.Element => {
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
+  const [optionsDialogCategory, setOptionsDialogCategory] = useState<'environment' | 'decompiler' | 'debugger' | undefined>(undefined)
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
   const [layoutVersion, forceLayoutUpdate] = useState(0)
   const previousWorkspaceId = useRef<string | undefined | null>(null)
@@ -532,6 +534,7 @@ export const App = (): React.JSX.Element => {
         onSetLanguage={setLanguage}
         onAbout={() => setAboutDialogOpen(true)}
         onQuit={() => void window.dnSpy.quit()}
+        onShowOptions={(category) => setOptionsDialogCategory(category ?? 'environment')}
       />
       <ToolBar
         hasWorkspace={Boolean(workspaceId)} busy={busy} onOpen={() => void chooseAndOpen()} onSave={() => void saveModuleAs()} onSearch={() => showBorderTab('search')}
@@ -590,6 +593,9 @@ export const App = (): React.JSX.Element => {
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
       {aboutDialogOpen && <AboutDialog onClose={() => setAboutDialogOpen(false)} />}
+      {optionsDialogCategory !== undefined && (
+        <OptionsDialog initialCategory={optionsDialogCategory} onClose={() => setOptionsDialogCategory(undefined)} />
+      )}
     </div>
   )
 }

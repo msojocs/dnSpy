@@ -1,0 +1,121 @@
+export interface DebuggerOptions {
+  // General
+  useHexadecimal: boolean
+  useDigitSeparators: boolean
+  syntaxHighlight: boolean
+  autoOpenLocalsWindow: boolean
+  // Modules
+  useMemoryModules: boolean
+  // Evaluation
+  propertyEvalAndFunctionCalls: boolean
+  useStringConversionFunction: boolean
+  // Anti-debug
+  preventManagedDebuggerDetection: boolean
+  antiIsDebuggerPresent: boolean
+  antiCheckRemoteDebuggerPresent: boolean
+  antiNtRaiseHardError: boolean
+  antiCloseHandle: boolean
+  // Stepping
+  ignoreBreakInstructions: boolean
+  breakAllProcesses: boolean
+  enableManagedDebuggingAssistants: boolean
+  enableJustMyCodeDebugging: boolean
+  stepOverCodeInSystemModules: boolean
+  onlyStepIntoCodeInPrimaryModule: boolean
+  stepOverPropertiesAndOperators: boolean
+  asyncDebugging: boolean
+  // Variables display
+  highlightChangedVariables: boolean
+  showRawStructureOfObjects: boolean
+  showRawLocals: boolean
+  showReturnValues: boolean
+  sortParameters: boolean
+  sortLocals: boolean
+  groupParametersAndLocalsTogether: boolean
+  showCompilerGeneratedVariables: boolean
+  showDecompilerGeneratedVariables: boolean
+  hideCompilerGeneratedMembers: boolean
+  respectHideMemberAttributes: boolean
+  hideDeprecatedError: boolean
+  showOnlyPublicMembers: boolean
+  // JIT optimization
+  suppressJitOptimizationSystemModules: boolean
+  suppressJitOptimizationProgramModules: boolean
+  // UI
+  focusActiveProcess: boolean
+  focusDebuggerWhenProcessBreaks: boolean
+  redirectGuiConsoleOutput: boolean
+  // Exceptions
+  ignoreUnhandledExceptions: boolean
+}
+
+export const defaultDebuggerOptions: DebuggerOptions = {
+  useHexadecimal: true,
+  useDigitSeparators: false,
+  syntaxHighlight: true,
+  autoOpenLocalsWindow: true,
+  useMemoryModules: false,
+  propertyEvalAndFunctionCalls: true,
+  useStringConversionFunction: true,
+  preventManagedDebuggerDetection: true,
+  antiIsDebuggerPresent: true,
+  antiCheckRemoteDebuggerPresent: true,
+  antiNtRaiseHardError: false,
+  antiCloseHandle: true,
+  ignoreBreakInstructions: false,
+  breakAllProcesses: true,
+  enableManagedDebuggingAssistants: true,
+  enableJustMyCodeDebugging: false,
+  stepOverCodeInSystemModules: false,
+  onlyStepIntoCodeInPrimaryModule: false,
+  stepOverPropertiesAndOperators: true,
+  asyncDebugging: true,
+  highlightChangedVariables: true,
+  showRawStructureOfObjects: false,
+  showRawLocals: false,
+  showReturnValues: true,
+  sortParameters: false,
+  sortLocals: false,
+  groupParametersAndLocalsTogether: false,
+  showCompilerGeneratedVariables: false,
+  showDecompilerGeneratedVariables: true,
+  hideCompilerGeneratedMembers: true,
+  respectHideMemberAttributes: true,
+  hideDeprecatedError: false,
+  showOnlyPublicMembers: false,
+  suppressJitOptimizationSystemModules: true,
+  suppressJitOptimizationProgramModules: true,
+  focusActiveProcess: true,
+  focusDebuggerWhenProcessBreaks: true,
+  redirectGuiConsoleOutput: true,
+  ignoreUnhandledExceptions: false,
+}
+
+const STORAGE_KEY = 'dnspy.debuggerOptions.v1'
+
+export const loadDebuggerOptions = (): DebuggerOptions => {
+  if (typeof localStorage === 'undefined')
+    return { ...defaultDebuggerOptions }
+  const raw = localStorage.getItem(STORAGE_KEY)
+  if (!raw)
+    return { ...defaultDebuggerOptions }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    return { ...defaultDebuggerOptions, ...parsed }
+  }
+  catch {
+    return { ...defaultDebuggerOptions }
+  }
+}
+
+export const saveDebuggerOptions = (options: DebuggerOptions): void => {
+  if (typeof localStorage === 'undefined')
+    return
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(options))
+}
+
+export const resetDebuggerOptions = (): DebuggerOptions => {
+  if (typeof localStorage !== 'undefined')
+    localStorage.removeItem(STORAGE_KEY)
+  return { ...defaultDebuggerOptions }
+}

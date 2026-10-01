@@ -1,0 +1,148 @@
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DebugOptionsDialog } from './DebugOptionsDialog'
+import { defaultDebuggerOptions, saveDebuggerOptions, loadDebuggerOptions } from './debug-options'
+
+afterEach(() => {
+  cleanup()
+  localStorage.clear()
+  vi.restoreAllMocks()
+})
+
+const openDialog = (): void => {
+  render(<DebugOptionsDialog onClose={vi.fn()} />)
+}
+
+const selectCategory = (title: string): void => {
+  fireEvent.click(screen.getByRole('option', { name: new RegExp('^' + title) }))
+}
+
+describe('DebugOptionsDialog', () => {
+  it('renders a sidebar with search and category list, and a detail pane with the first category selected', () => {
+    openDialog()
+
+    const dialog = screen.getByRole('dialog', { name: 'Debug Options' })
+    expect(dialog).toBeVisible()
+
+    const sidebar = within(dialog).getByRole('group', { name: 'Categories' })
+    expect(within(sidebar).getByLabelText('Search settings')).toBeInTheDocument()
+    expect(within(sidebar).getByRole('listbox', { name: 'Categories' })).toBeInTheDocument()
+
+    const options = within(sidebar).getAllByRole('option')
+    // Mirrors the upstream Options dialog: every debugger group is a left-side entry.
+    expect(options.map((node) => node.textContent)).toEqual([
+      'General4',
+      'Modules2',
+      'Anti-Debug Detection5',
+      'Suppress JIT optimization on module load2',
+      'Evaluation3',
+      'Stepping6',
+      'Focus3',
+      'Exceptions1',
+      'Variables13',
+    ])
+
+    // First category is selected and shown on the right.
+    expect(within(sidebar).getByRole('option', { name: /^General/ }).getAttribute('aria-selected')).toBe('true')
+    expect(within(dialog).getByRole('heading', { name: 'General', level: 2 })).toBeInTheDocument()
+  })
+
+  it('switches the detail pane when a different category is selected', () => {
+    openDialog()
+    expect(screen.getByRole('heading', { name: 'General', level: 2 })).toBeInTheDocument()
+
+    selectCategory('Anti-Debug Detection')
+    expect(screen.getByRole('heading', { name: 'Anti-Debug Detection', level: 2 })).toBeInTheDocument()
+    // Anti-detection row label is the bare P/Invoke name.
+    expect(screen.getByLabelText('Anti IsDebuggerPresent')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Show the Locals window when the debugger starts')).not.toBeInTheDocument()
+
+    selectCategory('Stepping')
+    expect(screen.getByRole('heading', { name: 'Stepping', level: 2 })).toBeInTheDocument()
+    expect(screen.getByLabelText('Enable Just My Code debugging support')).toBeInTheDocument()
+  })
+
+  it('filters the category list using the search box', () => {
+    openDialog()
+    const sidebar = within(screen.getByRole('dialog', { name: 'Debug Options' })).getByRole('group', { name: 'Categories' })
+    const search = within(sidebar).getByLabelText('Search settings')
+
+    fireEvent.change(search, { target: { value: 'hexadecimal' } })
+    const visible = within(sidebar).getAllByRole('option').map((node) => node.textContent)
+    expect(visible).toEqual(['General4'])
+    // The detail pane now points to the matching category.
+    expect(screen.getByRole('heading', { name: 'General', level: 2 })).toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: 'Just My Code' } })
+    expect(within(sidebar).getAllByRole('option').map((node) => node.textContent)).toEqual(['Stepping6'])
+
+    fireEvent.change(search, { target: { value: 'no-such-setting' } })
+    expect(within(sidebar).queryAllByRole('option')).toHaveLength(0)
+    expect(screen.getByText('No categories match your search.')).toBeInTheDocument()
+
+    // Clearing the search restores every category.
+    fireEvent.click(within(sidebar).getByRole('button', { name: 'Clear search' }))
+    expect(within(sidebar).getAllByRole('option')).toHaveLength(9)
+    expect((search as HTMLInputElement).value).toBe('')
+  })
+
+  it('persists changes to local storage only when Apply is pressed', () => {
+    openDialog()
+    selectCategory('Stepping')
+    fireEvent.click(screen.getByLabelText('Ignore Debugger.Break() and break instructions'))
+    expect(localStorage.getItem('dnspy.debuggerOptions.v1')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    const stored = loadDebuggerOptions()
+    expect(stored.ignoreBreakInstructions).toBe(true)
+  })
+
+  it('disables dependent options until their prerequisite is enabled', () => {
+    openDialog()
+    selectCategory('Evaluation')
+    const callConversion = screen.getByLabelText('Call string-conversion function on objects in variables windows')
+    expect(callConversion).not.toBeDisabled()
+
+    fireEvent.click(screen.getByLabelText('Enable property evaluation and other implicit function calls'))
+    expect(callConversion).toBeDisabled()
+    expect(callConversion).not.toBeChecked()
+  })
+
+  it('disables Just-My-Code stepping options until Just My Code is enabled', () => {
+    openDialog()
+    selectCategory('Stepping')
+    const stepOverSystem = screen.getByLabelText('Step over code in system modules')
+    expect(stepOverSystem).toBeDisabled()
+
+    fireEvent.click(screen.getByLabelText('Enable Just My Code debugging support'))
+    expect(stepOverSystem).not.toBeDisabled()
+  })
+
+  it('closes the dialog when the close button is pressed or Escape is pressed', () => {
+    const onClose = vi.fn()
+    render(<DebugOptionsDialog onClose={onClose} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onClose).toHaveBeenCalledOnce()
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('restores the upstream debugger defaults when Restore Defaults is clicked', async () => {
+    openDialog()
+    selectCategory('Stepping')
+    fireEvent.click(screen.getByLabelText('Ignore Debugger.Break() and break instructions'))
+    expect(screen.getByLabelText('Ignore Debugger.Break() and break instructions')).toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restore Defaults' }))
+    await waitFor(() => expect(screen.getByLabelText('Ignore Debugger.Break() and break instructions')).not.toBeChecked())
+  })
+
+  it('preloads any previously saved overrides from local storage', () => {
+    saveDebuggerOptions({ ...defaultDebuggerOptions, ignoreBreakInstructions: true })
+    openDialog()
+    selectCategory('Stepping')
+    expect(screen.getByLabelText('Ignore Debugger.Break() and break instructions')).toBeChecked()
+  })
+})

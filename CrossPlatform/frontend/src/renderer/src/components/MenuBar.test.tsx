@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from './MenuBar'
 
 type DebugState = 'inactive' | 'starting' | 'running' | 'stopped'
-const renderMenu = (debugAvailable = false, onAbout = vi.fn(), debugState: DebugState = 'inactive'): void => {
+const renderMenu = (debugAvailable = false, onAbout = vi.fn(), debugState: DebugState = 'inactive', onShowOptions = vi.fn()): void => {
   render(<MenuBar
     hasWorkspace={true}
     canRename={true}
@@ -63,6 +63,7 @@ const renderMenu = (debugAvailable = false, onAbout = vi.fn(), debugState: Debug
     onSetLanguage={vi.fn()}
     onAbout={onAbout}
     onQuit={vi.fn()}
+    onShowOptions={onShowOptions}
   />)
 }
 
@@ -249,6 +250,7 @@ describe('MenuBar', () => {
       onSetLanguage={vi.fn()}
       onAbout={vi.fn()}
       onQuit={vi.fn()}
+      onShowOptions={vi.fn()}
     />)
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
@@ -341,6 +343,7 @@ describe('MenuBar', () => {
       onSetLanguage={vi.fn()}
       onAbout={vi.fn()}
       onQuit={vi.fn()}
+      onShowOptions={vi.fn()}
     />)
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
@@ -359,6 +362,29 @@ describe('MenuBar', () => {
 
     expect(onAbout).toHaveBeenCalledOnce()
     expect(screen.queryByRole('menuitem', { name: 'About dnSpy' })).not.toBeInTheDocument()
+  })
+
+  it('opens the Debug → Options dialog from the Debug menu', () => {
+    const onShowOptions = vi.fn()
+    renderMenu(false, vi.fn(), 'inactive', onShowOptions)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
+    const optionsItem = screen.getByRole('menuitem', { name: /^Options\.\.\.$/ })
+    // Upstream keeps Options as a separator-less, always-enabled entry at the bottom of the Debug menu.
+    expect(optionsItem).toBeEnabled()
+
+    fireEvent.click(optionsItem)
+    expect(onShowOptions).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menuitem', { name: /^Options\.\.\.$/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps Debug → Options available while a debug session is running', () => {
+    const onShowOptions = vi.fn()
+    renderMenu(true, vi.fn(), 'running', onShowOptions)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
+    // Options stays present and reachable during a live debug session, matching upstream.
+    expect(screen.getByRole('menuitem', { name: /^Options\.\.\.$/ })).toBeInTheDocument()
   })
 
   it.each([

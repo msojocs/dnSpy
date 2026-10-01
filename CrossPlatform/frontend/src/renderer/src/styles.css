@@ -1161,4 +1161,355 @@ select:focus-visible,
   .menu-root > button {
     padding-inline: 6px;
   }
+
+  .options-body {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+.options-dialog {
+  grid-template-rows: 33px minmax(0, 1fr) 43px;
+  width: min(96vw, 940px);
+  height: min(92vh, 720px);
+}
+
+.options-body {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.options-sidebar {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.options-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.options-search input[type="search"] {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.options-search input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.options-search input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+.options-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+}
+
+.options-tree-category,
+.options-tree-pages {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.options-tree-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.options-tree-category-button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.options-tree-category-button:hover {
+  background: var(--selection);
+}
+
+.options-tree-category-selected > .options-tree-category-button {
+  background: var(--selection);
+  font-weight: 600;
+}
+
+.options-tree-chevron {
+  flex-shrink: 0;
+  transition: transform 120ms ease-out;
+}
+
+.options-tree-chevron-expanded {
+  transform: rotate(90deg);
+}
+
+.options-tree-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.options-tree-count,
+.options-tree-page-count {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.options-tree-page {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 4px 10px 4px 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A leaf node (a page with no children) renders as a plain, childless tree node. */
+.options-tree-page-leaf {
+  position: relative;
+  min-height: 26px;
+}
+
+.options-tree-page:hover {
+  background: var(--selection);
+}
+
+.options-tree-page-selected {
+  background: var(--selection);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.options-tree-page-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  width: 3px;
+  height: 24px;
+  background: var(--accent);
+}
+
+.options-tree-page-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.options-empty {
+  padding: 16px;
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+}
+
+.options-detail {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  background: var(--surface);
+}
+
+.options-detail-header {
+  display: grid;
+  gap: 4px;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.options-detail-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.options-detail-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.options-detail-description {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.options-detail-body {
+  display: grid;
+  align-content: start;
+  /* Group spacing lives here rather than on each block, so a bordered region and a
+     plain list sit the same distance apart. */
+  gap: 8px;
+  padding: 10px 18px 18px;
+  overflow: auto;
+}
+
+/*
+ * Mirrors the WPF GroupBox. A titled group is a bordered region whose legend sits in
+ * the top border line; an untitled group is a plain list, because the page heading
+ * above it already names the block.
+ */
+.options-group {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* The untitled variant is a bare grid of rows. */
+div.options-group {
+  display: grid;
+  gap: 2px;
+}
+
+/*
+ * `display: block` is what keeps the browser's legend rendering, which notches the
+ * title into the top border. A grid or flex fieldset would demote the legend to an
+ * ordinary box inside the frame instead.
+ */
+fieldset.options-group {
+  display: block;
+  min-width: 0;
+  padding: 2px 10px 9px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.options-group-title {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.options-group-body {
+  display: grid;
+  gap: 2px;
+}
+
+.options-group-columns {
+  column-gap: 12px;
+}
+
+.options-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  padding: 4px 6px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.options-row:hover {
+  background: var(--selection);
+}
+
+.options-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.options-row-disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+}
+
+.options-row-disabled input[type="checkbox"] {
+  opacity: 0.5;
+}
+
+.options-row-select,
+.options-row-number,
+.options-row-text {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, 200px);
+  gap: 8px;
+}
+
+/* A multi-line value (the background-image path list) needs a full-width box below its label. */
+.options-row-textarea {
+  display: grid;
+  gap: 4px;
+}
+
+.options-row-label {
+  font-weight: 500;
+}
+
+.options-row-select-input,
+.options-row-number-input,
+.options-row-text-input,
+.options-row-textarea-input {
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.options-row-textarea-input {
+  height: auto;
+  padding: 4px 6px;
+  resize: vertical;
 }
