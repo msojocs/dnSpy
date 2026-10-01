@@ -256,12 +256,16 @@ export interface DnSpyApi {
   toggleMaximizeWindow(): Promise<boolean>
   closeWindow(): Promise<void>
   isWindowMaximized(): Promise<boolean>
+  setFullScreen(fullScreen: boolean): Promise<boolean>
+  toggleFullScreen(): Promise<boolean>
+  isFullScreen(): Promise<boolean>
   quit(): Promise<void>
   getBackendStatus(): Promise<BackendStatus>
   getInitialPaths(): Promise<string[]>
   getProcessId(): Promise<number>
   setLocale(locale: UiLocale): Promise<void>
   onWindowMaximizedChange(callback: (isMaximized: boolean) => void): () => void
+  onFullScreenChange(callback: (isFullScreen: boolean) => void): () => void
   onBackendStatus(callback: (status: BackendStatus) => void): () => void
   onDebugEvent(callback: (event: DebugEvent) => void): () => void
 }

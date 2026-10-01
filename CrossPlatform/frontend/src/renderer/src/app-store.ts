@@ -58,6 +58,10 @@ interface AppState {
   functionBreakpoints: string[]
   exceptionBreakpoints: string[]
   error?: string
+  wordWrap: boolean
+  highlightCurrentLine: boolean
+  setWordWrap(value: boolean): void
+  setHighlightCurrentLine(value: boolean): void
   setBackendStatus(status: BackendStatus): void
   chooseAndOpen(): Promise<void>
   openPaths(paths: string[]): Promise<void>
@@ -95,6 +99,13 @@ interface AppState {
 
 const timestamp = (): string => new Date().toLocaleTimeString(getActiveLocale())
 
+const loadBool = (key: string, fallback: boolean): boolean => {
+  if (typeof localStorage === 'undefined')
+    return fallback
+  const saved = localStorage.getItem(key)
+  return saved === null ? fallback : saved === 'true'
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   backendStatus: { state: 'starting' },
   modules: [],
@@ -103,6 +114,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   parents: {},
   expanded: {},
   loadingNodes: {},
+  wordWrap: typeof localStorage === 'undefined' ? false : localStorage.getItem('dnspy.wordWrap') === 'true',
+  highlightCurrentLine: typeof localStorage === 'undefined' ? true : localStorage.getItem('dnspy.highlightCurrentLine') !== 'false',
   documents: {},
   searchResults: [],
   references: [],
@@ -642,6 +655,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   })),
 
   clearError: () => set({ error: undefined }),
+
+  setWordWrap: (value) => {
+    if (typeof localStorage !== 'undefined')
+      localStorage.setItem('dnspy.wordWrap', String(value))
+    set({ wordWrap: value })
+  },
+  setHighlightCurrentLine: (value) => {
+    if (typeof localStorage !== 'undefined')
+      localStorage.setItem('dnspy.highlightCurrentLine', String(value))
+    set({ highlightCurrentLine: value })
+  },
 }))
 
 const findNode = (state: Pick<AppState, 'roots' | 'children'>, nodeId: string): TreeNode | undefined => {

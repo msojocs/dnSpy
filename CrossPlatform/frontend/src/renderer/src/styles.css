@@ -165,6 +165,21 @@ select:focus-visible,
   box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
 }
 
+.menu-item-row {
+  position: relative;
+}
+
+.menu-submenu {
+  position: absolute;
+  top: -4px;
+  left: 100%;
+  min-width: 200px;
+}
+
+.menu-item.menu-item-open {
+  background: var(--selection);
+}
+
 .menu-item {
   display: grid;
   grid-template-columns: 18px minmax(100px, 1fr) auto;

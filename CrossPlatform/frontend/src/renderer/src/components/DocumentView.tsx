@@ -8,6 +8,8 @@ import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
 
 export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
+  const wordWrap = useAppStore((state) => state.wordWrap)
+  const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const document = useAppStore((state) => state.documents[documentId])
   const changeLanguage = useAppStore((state) => state.changeDocumentLanguage)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
@@ -123,6 +125,8 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             options={{
               readOnly: true,
               automaticLayout: true,
+              wordWrap: wordWrap ? 'on' : 'off',
+              renderLineHighlight: highlightCurrentLine ? 'all' : 'none',
               fontFamily: "'Cascadia Mono', 'JetBrains Mono', monospace",
               fontSize: 13,
               lineHeight: 20,

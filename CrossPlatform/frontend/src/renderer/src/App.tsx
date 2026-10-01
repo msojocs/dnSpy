@@ -91,6 +91,11 @@ const loadTheme = (): ThemeName => {
 export const App = (): React.JSX.Element => {
   const [model] = useState(loadLayout)
   const [theme, setTheme] = useState<ThemeName>(loadTheme)
+  const wordWrap = useAppStore((state) => state.wordWrap)
+  const setWordWrap = useAppStore((state) => state.setWordWrap)
+  const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
+  const setHighlightCurrentLine = useAppStore((state) => state.setHighlightCurrentLine)
+  const [fullScreen, setFullScreen] = useState<boolean>(false)
   const [renameNode, setRenameNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
@@ -128,7 +133,7 @@ export const App = (): React.JSX.Element => {
   const pauseDebug = useAppStore((state) => state.pauseDebug)
   const stepDebug = useAppStore((state) => state.stepDebug)
   const stopDebug = useAppStore((state) => state.stopDebug)
-  const { locale, t } = useLanguage()
+  const { locale, setLanguage, t } = useLanguage()
 
   useEffect(() => {
     const unsubscribe = window.dnSpy.onBackendStatus(setBackendStatus)
@@ -159,6 +164,18 @@ export const App = (): React.JSX.Element => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('dnspy.theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    let mounted = true
+    void window.dnSpy.isFullScreen().then((value) => {
+      if (mounted) setFullScreen(value)
+    })
+    const unsubscribe = window.dnSpy.onFullScreenChange(setFullScreen)
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [])
 
   useEffect(() => {
     const names: Record<string, string> = {
@@ -243,6 +260,9 @@ export const App = (): React.JSX.Element => {
       } else if (event.key === 'F11' && debugState === 'stopped' && !editingText) {
         event.preventDefault()
         void stepDebug('stepIn')
+      } else if (event.key === 'F11' && !editingText) {
+        event.preventDefault()
+        void window.dnSpy.toggleFullScreen()
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -441,6 +461,13 @@ export const App = (): React.JSX.Element => {
         onShowOutput={() => showBorderTab('output')}
         onShowSearch={() => showBorderTab('search')}
         onTheme={setTheme}
+        wordWrap={wordWrap}
+        highlightCurrentLine={highlightCurrentLine}
+        fullScreen={fullScreen}
+        onToggleWordWrap={() => setWordWrap(!wordWrap)}
+        onToggleHighlightCurrentLine={() => setHighlightCurrentLine(!highlightCurrentLine)}
+        onToggleFullScreen={() => void window.dnSpy.toggleFullScreen()}
+        onSetLanguage={setLanguage}
         onAbout={() => setAboutDialogOpen(true)}
         onQuit={() => void window.dnSpy.quit()}
       />

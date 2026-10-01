@@ -107,6 +107,11 @@ const createWindow = (): void => {
   }
   mainWindow.on('maximize', sendMaximizedState)
   mainWindow.on('unmaximize', sendMaximizedState)
+  const sendFullScreenState = (): void => {
+    mainWindow?.webContents.send('window:fullscreen-changed', mainWindow.isFullScreen())
+  }
+  mainWindow.on('enter-full-screen', sendFullScreenState)
+  mainWindow.on('leave-full-screen', sendFullScreenState)
 
   if (process.env.ELECTRON_RENDERER_URL)
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -326,6 +331,22 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('window:close', (event) => BrowserWindow.fromWebContents(event.sender)?.close())
   ipcMain.handle('window:isMaximized', (event) => BrowserWindow.fromWebContents(event.sender)?.isMaximized() ?? false)
+  ipcMain.handle('window:setFullScreen', (event, fullScreen: boolean) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window)
+      return false
+    window.setFullScreen(fullScreen)
+    return window.isFullScreen()
+  })
+  ipcMain.handle('window:toggleFullScreen', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window)
+      return false
+    const next = !window.isFullScreen()
+    window.setFullScreen(next)
+    return next
+  })
+  ipcMain.handle('window:isFullScreen', (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false)
   ipcMain.handle('backend:status:get', () => lastBackendStatus)
   ipcMain.handle('app:initialPaths', () => initialPaths)
   ipcMain.handle('app:processId', () => process.pid)

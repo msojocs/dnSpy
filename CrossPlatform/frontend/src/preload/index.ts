@@ -50,6 +50,9 @@ const api: DnSpyApi = {
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggleMaximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
   isWindowMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  setFullScreen: (fullScreen: boolean) => ipcRenderer.invoke('window:setFullScreen', fullScreen),
+  toggleFullScreen: () => ipcRenderer.invoke('window:toggleFullScreen'),
+  isFullScreen: () => ipcRenderer.invoke('window:isFullScreen'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getBackendStatus: () => ipcRenderer.invoke('backend:status:get'),
   getInitialPaths: () => ipcRenderer.invoke('app:initialPaths'),
@@ -59,6 +62,11 @@ const api: DnSpyApi = {
     const listener = (_event: Electron.IpcRendererEvent, isMaximized: boolean): void => callback(isMaximized)
     ipcRenderer.on('window:maximized-changed', listener)
     return () => ipcRenderer.removeListener('window:maximized-changed', listener)
+  },
+  onFullScreenChange: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, isFullScreen: boolean): void => callback(isFullScreen)
+    ipcRenderer.on('window:fullscreen-changed', listener)
+    return () => ipcRenderer.removeListener('window:fullscreen-changed', listener)
   },
   onBackendStatus: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, status: BackendStatus): void => callback(status)
