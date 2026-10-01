@@ -10,6 +10,7 @@ import {
   Square,
   StepForward,
 } from 'lucide-react'
+import { useLanguage } from '../localization'
 
 interface ToolBarProps {
   hasWorkspace: boolean
@@ -34,21 +35,24 @@ const ToolButton = ({ label, disabled, onClick, children }: React.PropsWithChild
   <button className="icon-button toolbar-button" title={label} aria-label={label} disabled={disabled} onClick={onClick}>{children}</button>
 )
 
-export const ToolBar = ({ hasWorkspace, busy, onOpen, onSave, onSearch, canGoBack, canGoForward, onBack, onForward, debugAvailable, debugState, onStart, onContinue, onPause, onStep, onStop }: ToolBarProps): React.JSX.Element => (
-  <div className="tool-bar" role="toolbar" aria-label="Main toolbar">
-    <ToolButton label="Open Assembly" onClick={onOpen}><FolderOpen size={16} /></ToolButton>
-    <ToolButton label="Save As" disabled={!hasWorkspace} onClick={onSave}><Save size={16} /></ToolButton>
-    <span className="toolbar-separator" />
-    <ToolButton label="Back" disabled={!canGoBack} onClick={onBack}><ArrowLeft size={16} /></ToolButton>
-    <ToolButton label="Forward" disabled={!canGoForward} onClick={onForward}><ArrowRight size={16} /></ToolButton>
-    <span className="toolbar-separator" />
-    <ToolButton label="Search" disabled={!hasWorkspace} onClick={onSearch}><Search size={16} /></ToolButton>
-    <span className="toolbar-spacer" />
-    <span className="debug-target"><Bug size={14} /> .NET</span>
-    <ToolButton label={debugState === 'stopped' ? 'Continue' : 'Start Debugging'} disabled={!debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped')} onClick={debugState === 'stopped' ? onContinue : onStart}><Play size={16} /></ToolButton>
-    <ToolButton label="Pause" disabled={debugState !== 'running'} onClick={onPause}><Pause size={16} /></ToolButton>
-    <ToolButton label="Step Over" disabled={debugState !== 'stopped'} onClick={onStep}><StepForward size={16} /></ToolButton>
-    <ToolButton label="Stop" disabled={debugState === 'inactive'} onClick={onStop}><Square size={15} /></ToolButton>
-    {busy && <span className="toolbar-busy">Working</span>}
-  </div>
-)
+export const ToolBar = ({ hasWorkspace, busy, onOpen, onSave, onSearch, canGoBack, canGoForward, onBack, onForward, debugAvailable, debugState, onStart, onContinue, onPause, onStep, onStop }: ToolBarProps): React.JSX.Element => {
+  const { t } = useLanguage()
+  return (
+    <div className="tool-bar" role="toolbar" aria-label={t('Main toolbar')}>
+      <ToolButton label={t('Open Assembly')} onClick={onOpen}><FolderOpen size={16} /></ToolButton>
+      <ToolButton label={t('Save As')} disabled={!hasWorkspace} onClick={onSave}><Save size={16} /></ToolButton>
+      <span className="toolbar-separator" />
+      <ToolButton label={t('Back')} disabled={!canGoBack} onClick={onBack}><ArrowLeft size={16} /></ToolButton>
+      <ToolButton label={t('Forward')} disabled={!canGoForward} onClick={onForward}><ArrowRight size={16} /></ToolButton>
+      <span className="toolbar-separator" />
+      <ToolButton label={t('Search')} disabled={!hasWorkspace} onClick={onSearch}><Search size={16} /></ToolButton>
+      <span className="toolbar-spacer" />
+      <span className="debug-target"><Bug size={14} /> .NET</span>
+      <ToolButton label={debugState === 'stopped' ? t('Continue') : t('Start Debugging')} disabled={!debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped')} onClick={debugState === 'stopped' ? onContinue : onStart}><Play size={16} /></ToolButton>
+      <ToolButton label={t('Pause')} disabled={debugState !== 'running'} onClick={onPause}><Pause size={16} /></ToolButton>
+      <ToolButton label={t('Step Over')} disabled={debugState !== 'stopped'} onClick={onStep}><StepForward size={16} /></ToolButton>
+      <ToolButton label={t('Stop')} disabled={debugState === 'inactive'} onClick={onStop}><Square size={15} /></ToolButton>
+      {busy && <span className="toolbar-busy">{t('Working')}</span>}
+    </div>
+  )
+}

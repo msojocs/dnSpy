@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import appIconUrl from '../../../../../packaging/linux/icons/128x128.png'
+import { useLanguage } from '../localization'
 
 interface AboutDialogProps {
   onClose(): void
@@ -9,6 +10,7 @@ interface AboutDialogProps {
 export const AboutDialog = ({ onClose }: AboutDialogProps): React.JSX.Element => {
   const dialog = useRef<HTMLDivElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
+  const { t } = useLanguage()
 
   useEffect(() => closeButton.current?.focus(), [])
 
@@ -44,23 +46,23 @@ export const AboutDialog = ({ onClose }: AboutDialogProps): React.JSX.Element =>
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div ref={dialog} className="modal about-dialog" role="dialog" aria-modal="true" aria-labelledby="about-title" aria-describedby="about-description" onKeyDown={keepFocusInDialog}>
         <div className="modal-title">
-          <span id="about-title">About dnSpy</span>
-          <button ref={closeButton} type="button" className="icon-button" aria-label="Close About" title="Close" onClick={onClose}><X size={14} /></button>
+          <span id="about-title">{t('About dnSpy')}</span>
+          <button ref={closeButton} type="button" className="icon-button" aria-label={t('Close About')} title={t('Close')} onClick={onClose}><X size={14} /></button>
         </div>
         <div className="about-content">
           <div className="about-brand">
             <img className="about-logo" src={appIconUrl} alt="" />
             <div>
               <div className="about-name">dnSpy</div>
-              <div className="about-version">Version 1.0.0</div>
+              <div className="about-version">{t('Version 1.0.0')}</div>
             </div>
           </div>
-          <p id="about-description">Cross-platform .NET assembly browser, decompiler, editor and debugger.</p>
-          <p className="about-license">Licensed under GNU GPL v3.0 only.</p>
+          <p id="about-description">{t('Cross-platform .NET assembly browser, decompiler, editor and debugger.')}</p>
+          <p className="about-license">{t('Licensed under GNU GPL v3.0 only.')}</p>
         </div>
         <div className="modal-actions">
           <span className="modal-action-spacer" />
-          <button type="button" className="primary" onClick={onClose}>Close</button>
+          <button type="button" className="primary" onClick={onClose}>{t('Close')}</button>
         </div>
       </div>
     </div>

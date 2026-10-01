@@ -5,6 +5,7 @@ import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { DecompilerLanguage } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
   const document = useAppStore((state) => state.documents[documentId])
@@ -12,6 +13,7 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   const spansRef = useRef(document?.spans ?? [])
+  const { locale, t } = useLanguage()
   spansRef.current = document?.spans ?? []
 
   useEffect(() => {
@@ -30,14 +32,14 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
         },
         options: {
           inlineClassName: span.kind === 'definition' ? 'code-definition' : 'code-reference',
-          hoverMessage: { value: span.kind === 'definition' ? 'Definition' : 'Go to definition (F12)' },
+          hoverMessage: { value: span.kind === 'definition' ? t('Definition') : t('Go to definition (F12)') },
         },
       }
     }))
-  }, [document?.spans, document?.text])
+  }, [document?.spans, document?.text, locale])
 
   if (!document)
-    return <div className="pane-empty">Document closed</div>
+    return <div className="pane-empty">{t('Document closed')}</div>
 
   const editorLanguage = document.language === 'visual-basic'
     ? 'vb'
@@ -53,7 +55,7 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
       <div className="document-toolbar">
         {['csharp', 'visual-basic', 'il'].includes(document.language) ? (
           <select
-            aria-label="Decompiler language"
+            aria-label={t('Decompiler language')}
             value={document.requestedLanguage}
             onChange={(event) => void changeLanguage(document.nodeId, event.target.value as DecompilerLanguage)}
           >
@@ -70,7 +72,7 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
       </div>
       <div className="editor-host">
         {document.loading ? (
-          <div className="loading-state"><LoaderCircle className="spin" size={18} /> Loading</div>
+          <div className="loading-state"><LoaderCircle className="spin" size={18} /> {t('Loading')}</div>
         ) : (
           <Editor
             path={`${document.nodeId}.${editorLanguage}`}
@@ -89,7 +91,7 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
                   range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
                   options: {
                     inlineClassName: span.kind === 'definition' ? 'code-definition' : 'code-reference',
-                    hoverMessage: { value: span.kind === 'definition' ? 'Definition' : 'Go to definition (F12)' },
+                    hoverMessage: { value: span.kind === 'definition' ? t('Definition') : t('Go to definition (F12)') },
                   },
                 }
               }))

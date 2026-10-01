@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import type { ModuleInfoResponse } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 const pageSize = 4096
 
@@ -11,6 +12,7 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
   const [offset, setOffset] = useState(0)
   const [bytes, setBytes] = useState<Uint8Array>(new Uint8Array())
   const [loading, setLoading] = useState(false)
+  const { locale, t } = useLanguage()
 
   useEffect(() => {
     if (!workspaceId) return
@@ -44,14 +46,14 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
   return (
     <div className="special-document">
       <div className="document-toolbar hex-toolbar">
-        <button className="icon-button" title="Previous page" aria-label="Previous page" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}><ChevronLeft size={15} /></button>
-        <button className="icon-button" title="Next page" aria-label="Next page" disabled={offset + pageSize >= length} onClick={() => setOffset(offset + pageSize)}><ChevronRight size={15} /></button>
-        <label>Offset <input value={`0x${offset.toString(16).toUpperCase()}`} onChange={(event) => {
+        <button className="icon-button" title={t('Previous page')} aria-label={t('Previous page')} disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}><ChevronLeft size={15} /></button>
+        <button className="icon-button" title={t('Next page')} aria-label={t('Next page')} disabled={offset + pageSize >= length} onClick={() => setOffset(offset + pageSize)}><ChevronRight size={15} /></button>
+        <label>{t('Offset')} <input value={`0x${offset.toString(16).toUpperCase()}`} onChange={(event) => {
           const parsed = Number.parseInt(event.target.value.replace(/^0x/i, ''), 16)
           if (Number.isFinite(parsed) && parsed >= 0 && parsed < length)
             setOffset(Math.floor(parsed / pageSize) * pageSize)
         }} /></label>
-        <span>{offset.toLocaleString()} / {length.toLocaleString()}</span>
+        <span>{offset.toLocaleString(locale)} / {length.toLocaleString(locale)}</span>
         {loading && <RefreshCw className="spin" size={14} />}
       </div>
       <pre className="hex-content">{lines}</pre>
@@ -62,6 +64,7 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
 export const ModuleInfoView = ({ moduleId }: { moduleId: string }): React.JSX.Element => {
   const workspaceId = useAppStore((state) => state.workspaceId)
   const [info, setInfo] = useState<ModuleInfoResponse>()
+  const { locale, t } = useLanguage()
 
   useEffect(() => {
     if (workspaceId)
@@ -69,29 +72,29 @@ export const ModuleInfoView = ({ moduleId }: { moduleId: string }): React.JSX.El
   }, [workspaceId, moduleId])
 
   if (!info)
-    return <div className="loading-state">Loading</div>
+    return <div className="loading-state">{t('Loading')}</div>
 
   return (
     <div className="module-info-view">
       <dl>
-        <dt>Name</dt><dd>{info.name}</dd>
-        <dt>Path</dt><dd>{info.path}</dd>
-        <dt>Runtime</dt><dd>{info.runtimeVersion}</dd>
-        <dt>Architecture</dt><dd>{info.architecture}</dd>
-        <dt>Kind</dt><dd>{info.moduleKind}</dd>
+        <dt>{t('Name')}</dt><dd>{info.name}</dd>
+        <dt>{t('Path')}</dt><dd>{info.path}</dd>
+        <dt>{t('Runtime')}</dt><dd>{info.runtimeVersion}</dd>
+        <dt>{t('Architecture')}</dt><dd>{info.architecture}</dd>
+        <dt>{t('Kind')}</dt><dd>{info.moduleKind}</dd>
         <dt>MVID</dt><dd>{info.mvid}</dd>
-        <dt>Entry point</dt><dd>{info.entryPoint ?? 'None'}</dd>
-        <dt>Types</dt><dd>{info.typeCount.toLocaleString()}</dd>
-        <dt>Resources</dt><dd>{info.resourceCount.toLocaleString()}</dd>
+        <dt>{t('Entry point')}</dt><dd>{info.entryPoint ?? t('None')}</dd>
+        <dt>{t('Types')}</dt><dd>{info.typeCount.toLocaleString(locale)}</dd>
+        <dt>{t('Resources')}</dt><dd>{info.resourceCount.toLocaleString(locale)}</dd>
       </dl>
-      <h3>Assembly References</h3>
+      <h3>{t('Assembly References')}</h3>
       <ul>{info.assemblyReferences.map((reference) => <li key={reference}>{reference}</li>)}</ul>
-      <h3>PE Headers</h3>
+      <h3>{t('PE Headers')}</h3>
       <dl>{Object.entries(info.peHeaders).map(([name, value]) => <div className="definition-row" key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl>
-      <h3>Metadata Tables</h3>
-      <div className="metadata-table-list" role="table" aria-label="Metadata Tables">
-        <div className="metadata-table-header">Table</div><div className="metadata-table-header">Rows</div>
-        {Object.entries(info.metadataTables).map(([name, rows]) => <div className="metadata-table-row" role="row" key={name}><span>{name}</span><span>{rows.toLocaleString()}</span></div>)}
+      <h3>{t('Metadata Tables')}</h3>
+      <div className="metadata-table-list" role="table" aria-label={t('Metadata Tables')}>
+        <div className="metadata-table-header">{t('Table')}</div><div className="metadata-table-header">{t('Rows')}</div>
+        {Object.entries(info.metadataTables).map(([name, rows]) => <div className="metadata-table-row" role="row" key={name}><span>{name}</span><span>{rows.toLocaleString(locale)}</span></div>)}
       </div>
     </div>
   )

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { Actions, DockLocation, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
+import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { TreeNode } from '../../shared/protocol'
 import { useAppStore } from './app-store'
@@ -12,13 +12,14 @@ import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { AttachDialog } from './components/AttachDialog'
 import { AboutDialog } from './components/AboutDialog'
+import { translate, useLanguage } from './localization'
 
 const DocumentView = lazy(async () => {
   const module = await import('./components/DocumentView')
   return { default: module.DocumentView }
 })
 
-const defaultLayout: IJsonModel = {
+const createDefaultLayout = (): IJsonModel => ({
   global: {
     tabEnableRename: false,
     tabEnableFloat: false,
@@ -34,7 +35,7 @@ const defaultLayout: IJsonModel = {
       location: 'left',
       size: 250,
       selected: 0,
-      children: [{ type: 'tab', id: 'explorer', name: 'Assembly Explorer', component: 'explorer', enableClose: false }],
+      children: [{ type: 'tab', id: 'explorer', name: translate('Assembly Explorer'), component: 'explorer', enableClose: false }],
     },
     {
       type: 'border',
@@ -42,15 +43,15 @@ const defaultLayout: IJsonModel = {
       size: 220,
       selected: 0,
       children: [
-        { type: 'tab', id: 'output', name: 'Output', component: 'output', enableClose: false },
-        { type: 'tab', id: 'search', name: 'Search', component: 'search', enableClose: false },
-        { type: 'tab', id: 'analysis', name: 'Analyzer', component: 'analysis', enableClose: false },
-        { type: 'tab', id: 'locals', name: 'Locals', component: 'locals', enableClose: false },
-        { type: 'tab', id: 'watch', name: 'Watch', component: 'watch', enableClose: false },
-        { type: 'tab', id: 'callstack', name: 'Call Stack', component: 'callstack', enableClose: false },
-        { type: 'tab', id: 'breakpoints', name: 'Breakpoints', component: 'breakpoints', enableClose: false },
-        { type: 'tab', id: 'threads', name: 'Threads', component: 'threads', enableClose: false },
-        { type: 'tab', id: 'modules', name: 'Modules', component: 'modules', enableClose: false },
+        { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: false },
+        { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: false },
+        { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: false },
+        { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: false },
+        { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: false },
+        { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: false },
+        { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: false },
+        { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: false },
+        { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: false },
       ],
     },
   ],
@@ -61,18 +62,18 @@ const defaultLayout: IJsonModel = {
       id: 'documents',
       weight: 100,
       selected: 0,
-      children: [{ type: 'tab', id: 'start', name: 'Start', component: 'start', enableClose: false }],
+      children: [{ type: 'tab', id: 'start', name: translate('Start'), component: 'start', enableClose: false }],
     }],
   },
-}
+})
 
 const loadLayout = (): Model => {
   try {
     const saved = localStorage.getItem('dnspy.layout.v1')
-    const model = Model.fromJson(saved ? JSON.parse(saved) as IJsonModel : defaultLayout)
-    return model.getNodeById('documents') ? model : Model.fromJson(defaultLayout)
+    const model = Model.fromJson(saved ? JSON.parse(saved) as IJsonModel : createDefaultLayout())
+    return model.getNodeById('documents') ? model : Model.fromJson(createDefaultLayout())
   } catch {
-    return Model.fromJson(defaultLayout)
+    return Model.fromJson(createDefaultLayout())
   }
 }
 
@@ -120,6 +121,7 @@ export const App = (): React.JSX.Element => {
   const pauseDebug = useAppStore((state) => state.pauseDebug)
   const stepDebug = useAppStore((state) => state.stepDebug)
   const stopDebug = useAppStore((state) => state.stopDebug)
+  const { locale, t } = useLanguage()
 
   useEffect(() => {
     const unsubscribe = window.dnSpy.onBackendStatus(setBackendStatus)
@@ -150,6 +152,29 @@ export const App = (): React.JSX.Element => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('dnspy.theme', theme)
   }, [theme])
+
+  useEffect(() => {
+    const names: Record<string, string> = {
+      explorer: t('Assembly Explorer'),
+      output: t('Output'),
+      search: t('Search'),
+      analysis: t('Analyzer'),
+      locals: t('Locals'),
+      watch: t('Watch'),
+      callstack: t('Call Stack'),
+      breakpoints: t('Breakpoints'),
+      threads: t('Threads'),
+      modules: t('Modules'),
+      start: t('Start'),
+    }
+    for (const [id, name] of Object.entries(names)) {
+      const node = model.getNodeById(id)
+      if (node instanceof TabNode && node.getName() !== name)
+        model.doAction(Actions.renameTab(id, name))
+    }
+    localStorage.setItem('dnspy.layout.v1', JSON.stringify(model.toJson()))
+    forceLayoutUpdate((value) => value + 1)
+  }, [locale, model, t])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -206,10 +231,10 @@ export const App = (): React.JSX.Element => {
     for (const tabId of tabsToClose)
       model.doAction(Actions.deleteTab(tabId))
     if (!model.getNodeById('start') && model.getNodeById('documents')) {
-      model.doAction(Actions.addNode({ type: 'tab', id: 'start', name: 'Start', component: 'start', enableClose: false }, 'documents', DockLocation.CENTER, -1, true))
+      model.doAction(Actions.addNode({ type: 'tab', id: 'start', name: t('Start'), component: 'start', enableClose: false }, 'documents', DockLocation.CENTER, -1, true))
     }
     forceLayoutUpdate((value) => value + 1)
-  }, [model, workspaceId])
+  }, [model, workspaceId, t])
 
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent): void => {
@@ -255,7 +280,7 @@ export const App = (): React.JSX.Element => {
       const node = await window.dnSpy.getNode(workspaceId, nodeId)
       await addDocumentTab(node)
     } catch (reason) {
-      useAppStore.getState().appendOutput(`Navigation failed: ${reason instanceof Error ? reason.message : String(reason)}`)
+      useAppStore.getState().appendOutput(t('Navigation failed: {message}', { message: reason instanceof Error ? reason.message : String(reason) }))
     }
   }
 
@@ -303,7 +328,7 @@ export const App = (): React.JSX.Element => {
       model.doAction(Actions.addNode({
         type: 'tab',
         id: tabId,
-        name: component === 'hex' ? `${module.label} [Hex]` : `${module.label} [Info]`,
+        name: component === 'hex' ? `${module.label} [${t('Hex')}]` : `${module.label} [${t('Info')}]`,
         component,
         config: { moduleId: module.id },
       }, 'documents', DockLocation.CENTER, -1, true))
@@ -313,14 +338,14 @@ export const App = (): React.JSX.Element => {
   }
 
   const closeCurrentWorkspace = (): void => {
-    if (!dirty || window.confirm('Discard unsaved changes and close the workspace?'))
+    if (!dirty || window.confirm(t('Discard unsaved changes and close the workspace?')))
       void closeWorkspace()
   }
 
   const factory = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
       case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} />
-      case 'document': return <Suspense fallback={<div className="loading-state">Loading</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
+      case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
       case 'output': return <OutputPane />
       case 'search': return <SearchPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
       case 'analysis': return <AnalysisPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
@@ -335,7 +360,7 @@ export const App = (): React.JSX.Element => {
       case 'start': return (
         <div className="start-view">
           <button className="command-button" disabled={backendStatus.state !== 'ready'} onClick={() => void chooseAndOpen()}>
-            <FolderOpen size={16} /> Open Assembly
+            <FolderOpen size={16} /> {t('Open Assembly')}
           </button>
         </div>
       )
@@ -394,7 +419,7 @@ export const App = (): React.JSX.Element => {
         <div className="error-banner" role="alert">
           <AlertCircle size={15} />
           <span>{error}</span>
-          <button className="icon-button" aria-label="Dismiss" onClick={clearError}><X size={14} /></button>
+          <button className="icon-button" aria-label={t('Dismiss')} onClick={clearError}><X size={14} /></button>
         </div>
       )}
       <main className="workspace-host">
@@ -405,16 +430,17 @@ export const App = (): React.JSX.Element => {
             localStorage.setItem('dnspy.layout.v1', JSON.stringify(nextModel.toJson()))
             forceLayoutUpdate((value) => value + 1)
           }}
+          i18nTranslator={(key) => t(I18nLabelDefaults[key] ?? key)}
         />
       </main>
       <footer className="status-bar">
         <span className={`status-indicator status-${backendStatus.state}`} />
-        <span>{backendStatus.state === 'ready' ? 'Ready' : backendStatus.message ?? backendStatus.state}</span>
+        <span>{backendStatus.state === 'ready' ? t('Ready') : backendStatus.message ?? t(backendStatus.state)}</span>
         <span className="status-spacer" />
-        {selectedNode && <span title={selectedNode.description}>{selectedNode.label}</span>}
-        {workspaceId && <span>Workspace</span>}
-        {dirty && <span className="dirty-indicator">Modified</span>}
-        {debugState !== 'inactive' && <span>{debugState === 'stopped' ? `Stopped: ${stoppedReason ?? 'unknown'}` : debugState}</span>}
+        {selectedNode && <span title={selectedNode.description}>{selectedNode.kind === 'referencesgroup' ? t('Assembly References') : selectedNode.kind === 'resourcesgroup' ? t('Resources') : selectedNode.label}</span>}
+        {workspaceId && <span>{t('Workspace')}</span>}
+        {dirty && <span className="dirty-indicator">{t('Modified')}</span>}
+        {debugState !== 'inactive' && <span>{debugState === 'stopped' ? t('Stopped: {reason}', { reason: t(stoppedReason ?? 'unknown') }) : t(debugState)}</span>}
       </footer>
       {renameNode && <RenameDialog node={renameNode} onClose={() => setRenameNode(undefined)} />}
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}

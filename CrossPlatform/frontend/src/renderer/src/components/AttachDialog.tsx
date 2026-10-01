@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { RefreshCw, X } from 'lucide-react'
 import type { DebugProcess } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 export const AttachDialog = ({ onClose }: { onClose(): void }): React.JSX.Element => {
   const [processes, setProcesses] = useState<DebugProcess[]>([])
@@ -9,6 +10,7 @@ export const AttachDialog = ({ onClose }: { onClose(): void }): React.JSX.Elemen
   const [loading, setLoading] = useState(false)
   const [selectedProcessId, setSelectedProcessId] = useState<number>()
   const attachDebug = useAppStore((state) => state.attachDebug)
+  const { t } = useLanguage()
   const refresh = (): void => {
     setLoading(true)
     void window.dnSpy.listDebugProcesses().then(setProcesses).finally(() => setLoading(false))
@@ -22,8 +24,8 @@ export const AttachDialog = ({ onClose }: { onClose(): void }): React.JSX.Elemen
   return (
     <div className="modal-backdrop">
       <div className="modal attach-dialog" role="dialog" aria-modal="true" aria-labelledby="attach-title">
-        <div className="modal-title"><span id="attach-title">Attach to Process</span><button className="icon-button" aria-label="Close" onClick={onClose}><X size={14} /></button></div>
-        <div className="attach-filter"><input autoFocus aria-label="Filter processes" placeholder="Filter" value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" title="Refresh" aria-label="Refresh" onClick={refresh}><RefreshCw className={loading ? 'spin' : ''} size={14} /></button></div>
+        <div className="modal-title"><span id="attach-title">{t('Attach to Process')}</span><button className="icon-button" aria-label={t('Close')} onClick={onClose}><X size={14} /></button></div>
+        <div className="attach-filter"><input autoFocus aria-label={t('Filter processes')} placeholder={t('Filter')} value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" title={t('Refresh')} aria-label={t('Refresh')} onClick={refresh}><RefreshCw className={loading ? 'spin' : ''} size={14} /></button></div>
         <div className="process-list" role="list">
           {filtered.map((process) => (
             <button key={process.processId} className={`process-row${selectedProcessId === process.processId ? ' selected' : ''}`} onClick={() => setSelectedProcessId(process.processId)} onDoubleClick={() => void attachDebug(process.processId).then(onClose)}>
@@ -31,7 +33,7 @@ export const AttachDialog = ({ onClose }: { onClose(): void }): React.JSX.Elemen
             </button>
           ))}
         </div>
-        <div className="modal-actions"><span className="modal-action-spacer" /><button onClick={onClose}>Cancel</button><button className="primary" disabled={selectedProcessId === undefined} onClick={() => { if (selectedProcessId !== undefined) void attachDebug(selectedProcessId).then(onClose) }}>Attach</button></div>
+        <div className="modal-actions"><span className="modal-action-spacer" /><button onClick={onClose}>{t('Cancel')}</button><button className="primary" disabled={selectedProcessId === undefined} onClick={() => { if (selectedProcessId !== undefined) void attachDebug(selectedProcessId).then(onClose) }}>{t('Attach')}</button></div>
       </div>
     </div>
   )

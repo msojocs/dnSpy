@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import type { DebugVariable } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 export const LocalsPane = (): React.JSX.Element => {
   const variables = useAppStore((state) => state.debugVariables)
+  const { t } = useLanguage()
   return (
-    <div className="debug-table" role="table" aria-label="Locals">
-      <div className="debug-table-header">Name</div><div className="debug-table-header">Value</div><div className="debug-table-header">Type</div>
+    <div className="debug-table" role="table" aria-label={t('Locals')}>
+      <div className="debug-table-header">{t('Name')}</div><div className="debug-table-header">{t('Value')}</div><div className="debug-table-header">{t('Type')}</div>
       {variables.map((variable, index) => <VariableRow variable={variable} depth={0} key={`${variable.name}:${index}`} />)}
     </div>
   )
@@ -18,6 +20,7 @@ const VariableRow = ({ variable, depth }: { variable: DebugVariable; depth: numb
   const [expanded, setExpanded] = useState(false)
   const [loading, setLoading] = useState(false)
   const [children, setChildren] = useState<DebugVariable[]>()
+  const { t } = useLanguage()
   const toggle = async (): Promise<void> => {
     if (!sessionId || variable.variablesReference === 0) return
     if (!expanded && !children) {
@@ -31,7 +34,7 @@ const VariableRow = ({ variable, depth }: { variable: DebugVariable; depth: numb
     <>
       <div className="debug-table-row" role="row">
         <span className="debug-variable-name" style={{ paddingLeft: `${7 + depth * 15}px` }}>
-          <button className="tree-expander" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${variable.name}`} disabled={variable.variablesReference === 0} onClick={() => void toggle()}>
+          <button className="tree-expander" aria-label={t(expanded ? 'Collapse {name}' : 'Expand {name}', { name: variable.name })} disabled={variable.variablesReference === 0} onClick={() => void toggle()}>
             {loading ? <LoaderCircle className="spin" size={12} /> : expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </button>
           {variable.name}
@@ -49,6 +52,7 @@ export const WatchPane = (): React.JSX.Element => {
   const values = useAppStore((state) => state.watchValues)
   const addWatch = useAppStore((state) => state.addWatch)
   const removeWatch = useAppStore((state) => state.removeWatch)
+  const { t } = useLanguage()
   const submit = (): void => {
     if (expression.trim()) {
       void addWatch(expression)
@@ -58,15 +62,15 @@ export const WatchPane = (): React.JSX.Element => {
   return (
     <div className="debug-tool-pane">
       <div className="debug-input-row">
-        <input aria-label="Watch expression" placeholder="Expression" value={expression} disabled={debugState !== 'stopped'} onChange={(event) => setExpression(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
-        <button className="icon-button" aria-label="Add watch" title="Add watch" disabled={debugState !== 'stopped' || !expression.trim()} onClick={submit}><Plus size={14} /></button>
+        <input aria-label={t('Watch expression')} placeholder={t('Expression')} value={expression} disabled={debugState !== 'stopped'} onChange={(event) => setExpression(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
+        <button className="icon-button" aria-label={t('Add watch')} title={t('Add watch')} disabled={debugState !== 'stopped' || !expression.trim()} onClick={submit}><Plus size={14} /></button>
       </div>
-      <div className="debug-table debug-table-watch" role="table" aria-label="Watch">
-        <div className="debug-table-header">Expression</div><div className="debug-table-header">Value</div><div className="debug-table-header">Type</div><div />
+      <div className="debug-table debug-table-watch" role="table" aria-label={t('Watch')}>
+        <div className="debug-table-header">{t('Expression')}</div><div className="debug-table-header">{t('Value')}</div><div className="debug-table-header">{t('Type')}</div><div />
         {values.map((variable) => (
           <div className="debug-table-row" role="row" key={variable.name}>
             <span>{variable.name}</span><span title={variable.value}>{variable.value}</span><span>{variable.type}</span>
-            <button className="icon-button" aria-label={`Remove ${variable.name}`} onClick={() => removeWatch(variable.name)}><Trash2 size={13} /></button>
+            <button className="icon-button" aria-label={t('Remove {name}', { name: variable.name })} onClick={() => removeWatch(variable.name)}><Trash2 size={13} /></button>
           </div>
         ))}
       </div>
@@ -78,8 +82,9 @@ export const CallStackPane = (): React.JSX.Element => {
   const frames = useAppStore((state) => state.debugFrames)
   const selectedFrameId = useAppStore((state) => state.selectedDebugFrameId)
   const selectFrame = useAppStore((state) => state.selectDebugFrame)
+  const { t } = useLanguage()
   return (
-    <div className="result-list" role="list" aria-label="Call Stack">
+    <div className="result-list" role="list" aria-label={t('Call Stack')}>
       {frames.map((frame) => (
         <button key={frame.id} className={`result-row stack-row${selectedFrameId === frame.id ? ' selected' : ''}`} onClick={() => void selectFrame(frame.id)}>
           <span className="result-name">{frame.name}</span>
@@ -94,8 +99,9 @@ export const ThreadsPane = (): React.JSX.Element => {
   const threads = useAppStore((state) => state.debugThreads)
   const selectedThreadId = useAppStore((state) => state.selectedDebugThreadId)
   const selectThread = useAppStore((state) => state.selectDebugThread)
+  const { t } = useLanguage()
   return (
-    <div className="result-list" role="list" aria-label="Threads">
+    <div className="result-list" role="list" aria-label={t('Threads')}>
       {threads.map((thread) => (
         <button key={thread.id} className={`result-row thread-row${selectedThreadId === thread.id ? ' selected' : ''}`} onClick={() => void selectThread(thread.id)}>
           <span className="result-name">{thread.name}</span><span className="result-location">{thread.id}</span>
@@ -112,6 +118,7 @@ export const BreakpointsPane = (): React.JSX.Element => {
   const removeBreakpoint = useAppStore((state) => state.removeFunctionBreakpoint)
   const exceptionBreakpoints = useAppStore((state) => state.exceptionBreakpoints)
   const setExceptionBreakpoint = useAppStore((state) => state.setExceptionBreakpoint)
+  const { t } = useLanguage()
   const submit = (): void => {
     if (name.trim()) {
       void addBreakpoint(name)
@@ -121,14 +128,14 @@ export const BreakpointsPane = (): React.JSX.Element => {
   return (
     <div className="debug-tool-pane">
       <div className="debug-input-row">
-        <input aria-label="Function breakpoint" placeholder="Namespace.Type.Method" value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
-        <button className="icon-button" aria-label="Add function breakpoint" title="Add function breakpoint" disabled={!name.trim()} onClick={submit}><Plus size={14} /></button>
+        <input aria-label={t('Function breakpoint')} placeholder="Namespace.Type.Method" value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
+        <button className="icon-button" aria-label={t('Add function breakpoint')} title={t('Add function breakpoint')} disabled={!name.trim()} onClick={submit}><Plus size={14} /></button>
       </div>
       <div className="result-list">
-        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> All thrown exceptions</label>
-        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> User-unhandled exceptions</label>
+        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> {t('All thrown exceptions')}</label>
+        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}</label>
         {breakpoints.map((breakpoint) => (
-          <div className="breakpoint-row" key={breakpoint}><span>{breakpoint}</span><button className="icon-button" aria-label={`Remove ${breakpoint}`} onClick={() => void removeBreakpoint(breakpoint)}><Trash2 size={13} /></button></div>
+          <div className="breakpoint-row" key={breakpoint}><span>{breakpoint}</span><button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint })} onClick={() => void removeBreakpoint(breakpoint)}><Trash2 size={13} /></button></div>
         ))}
       </div>
     </div>
@@ -137,9 +144,10 @@ export const BreakpointsPane = (): React.JSX.Element => {
 
 export const ModulesPane = (): React.JSX.Element => {
   const modules = useAppStore((state) => state.debugModules)
+  const { t } = useLanguage()
   return (
-    <div className="debug-table modules-table" role="table" aria-label="Modules">
-      <div className="debug-table-header">Name</div><div className="debug-table-header">Path</div><div className="debug-table-header">Symbols</div>
+    <div className="debug-table modules-table" role="table" aria-label={t('Modules')}>
+      <div className="debug-table-header">{t('Name')}</div><div className="debug-table-header">{t('Path')}</div><div className="debug-table-header">{t('Symbols')}</div>
       {modules.map((module) => (
         <div className="debug-table-row" role="row" key={String(module.id)}>
           <span>{module.name}</span><span title={module.path}>{module.path}</span><span>{module.symbolStatus}</span>
@@ -152,6 +160,7 @@ export const ModulesPane = (): React.JSX.Element => {
 export const DebugStatusPane = (): React.JSX.Element => {
   const state = useAppStore((appState) => appState.debugState)
   const reason = useAppStore((appState) => appState.stoppedReason)
-  const label = useMemo(() => state === 'stopped' && reason ? `Stopped: ${reason}` : state, [state, reason])
+  const { locale, t } = useLanguage()
+  const label = useMemo(() => state === 'stopped' && reason ? t('Stopped: {reason}', { reason: t(reason) }) : t(state), [state, reason, locale])
   return <div className="pane-empty">{label}</div>
 }

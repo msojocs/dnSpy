@@ -98,6 +98,25 @@ test('persists themes across renderer reloads', async () => {
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'hc')
 })
 
+test('switches to Simplified Chinese and persists the language', async () => {
+  await page.getByRole('menuitem', { name: 'Language' }).click()
+  await page.getByRole('menuitem', { name: 'Simplified Chinese' }).click()
+
+  await expect(page.getByRole('menuitem', { name: '文件' })).toBeVisible()
+  await expect(page.getByText('就绪', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '程序集资源管理器' }).first()).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await page.getByRole('button', { name: '打开程序集' }).first().click()
+  await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+  await expect(page.locator('.tree-row[data-kind="referencesgroup"]')).toContainText('程序集引用')
+  await page.screenshot({ path: 'test-results/dnspy-shell-zh-CN.png' })
+
+  await page.reload()
+  await expect(page.getByRole('menuitem', { name: '语言' })).toBeVisible()
+  await expect(page.getByText('就绪', { exact: true })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+})
+
 test('opens a real assembly, expands the tree and decompiles a type', async () => {
   await openAssemblyAndNamespace()
 

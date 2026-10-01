@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check } from 'lucide-react'
+import { useLanguage } from '../localization'
 import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
@@ -55,53 +56,59 @@ interface MenuItem {
 export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceResource, canInspectModule, debugAvailable, debugState, recentWorkspaces, canUndo, canRedo, theme, onOpen, onOpenRecent, onClose, onSave, onFind, onUndo, onRedo, onRename, onEditMethod, onReplaceResource, onHex, onModuleInfo, onStartDebug, onAttachDebug, onContinueDebug, onPauseDebug, onStepIn, onStepOver, onStopDebug, onShowExplorer, onShowOutput, onShowSearch, onTheme, onAbout, onQuit }: MenuBarProps): React.JSX.Element => {
   const [openMenu, setOpenMenu] = useState<string>()
   const host = useRef<HTMLDivElement>(null)
+  const { language, setLanguage, t } = useLanguage()
   const menus: Record<string, MenuItem[]> = {
-    File: [
-      { label: 'Open...', shortcut: 'Ctrl+O', action: onOpen },
-      { label: 'Save As...', shortcut: 'Ctrl+Shift+S', disabled: !hasWorkspace, action: onSave },
-      { label: 'Close Workspace', disabled: !hasWorkspace, action: onClose },
+    [t('File')]: [
+      { label: t('Open...'), shortcut: 'Ctrl+O', action: onOpen },
+      { label: t('Save As...'), shortcut: 'Ctrl+Shift+S', disabled: !hasWorkspace, action: onSave },
+      { label: t('Close Workspace'), disabled: !hasWorkspace, action: onClose },
       ...(recentWorkspaces.length > 0 ? [
         { separator: true },
-        ...recentWorkspaces.map((paths, index) => ({ label: `${index + 1}  ${recentLabel(paths)}`, action: () => onOpenRecent(paths) })),
+        ...recentWorkspaces.map((paths, index) => ({ label: `${index + 1}  ${recentLabel(paths, t('Workspace'))}`, action: () => onOpenRecent(paths) })),
       ] : []),
       { separator: true },
-      { label: 'Exit', shortcut: 'Alt+F4', action: onQuit },
+      { label: t('Exit'), shortcut: 'Alt+F4', action: onQuit },
     ],
-    Edit: [
-      { label: 'Undo', shortcut: 'Ctrl+Z', disabled: !canUndo, action: onUndo },
-      { label: 'Redo', shortcut: 'Ctrl+Y', disabled: !canRedo, action: onRedo },
+    [t('Edit')]: [
+      { label: t('Undo'), shortcut: 'Ctrl+Z', disabled: !canUndo, action: onUndo },
+      { label: t('Redo'), shortcut: 'Ctrl+Y', disabled: !canRedo, action: onRedo },
       { separator: true },
-      { label: 'Find', shortcut: 'Ctrl+F', disabled: !hasWorkspace, action: onFind },
+      { label: t('Find'), shortcut: 'Ctrl+F', disabled: !hasWorkspace, action: onFind },
       { separator: true },
-      { label: 'Rename...', shortcut: 'F2', disabled: !canRename, action: onRename },
-      { label: 'Edit IL Body...', disabled: !canEditMethod, action: onEditMethod },
-      { label: 'Replace Resource...', disabled: !canReplaceResource, action: onReplaceResource },
+      { label: t('Rename...'), shortcut: 'F2', disabled: !canRename, action: onRename },
+      { label: t('Edit IL Body...'), disabled: !canEditMethod, action: onEditMethod },
+      { label: t('Replace Resource...'), disabled: !canReplaceResource, action: onReplaceResource },
     ],
-    View: [
-      { label: 'Blue Theme', checked: theme === 'blue', action: () => onTheme('blue') },
-      { label: 'Light Theme', checked: theme === 'light', action: () => onTheme('light') },
-      { label: 'Dark Theme', checked: theme === 'dark', action: () => onTheme('dark') },
-      { label: 'High Contrast', checked: theme === 'hc', action: () => onTheme('hc') },
+    [t('View')]: [
+      { label: t('Blue Theme'), checked: theme === 'blue', action: () => onTheme('blue') },
+      { label: t('Light Theme'), checked: theme === 'light', action: () => onTheme('light') },
+      { label: t('Dark Theme'), checked: theme === 'dark', action: () => onTheme('dark') },
+      { label: t('High Contrast'), checked: theme === 'hc', action: () => onTheme('hc') },
       { separator: true },
-      { label: 'Hex View', disabled: !canInspectModule, action: onHex },
-      { label: 'Module Information', disabled: !canInspectModule, action: onModuleInfo },
+      { label: t('Hex View'), disabled: !canInspectModule, action: onHex },
+      { label: t('Module Information'), disabled: !canInspectModule, action: onModuleInfo },
     ],
-    Debug: [
-      { label: debugState === 'stopped' ? 'Continue' : 'Start Debugging', shortcut: 'F5', disabled: !debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped'), action: debugState === 'stopped' ? onContinueDebug : onStartDebug },
-      { label: 'Attach to Process...', disabled: !debugAvailable || debugState !== 'inactive', action: onAttachDebug },
+    [t('Language')]: [
+      { label: t('System Default'), checked: language === 'system', action: () => setLanguage('system') },
+      { label: t('English'), checked: language === 'en', action: () => setLanguage('en') },
+      { label: t('Simplified Chinese'), checked: language === 'zh-CN', action: () => setLanguage('zh-CN') },
+    ],
+    [t('Debug')]: [
+      { label: debugState === 'stopped' ? t('Continue') : t('Start Debugging'), shortcut: 'F5', disabled: !debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped'), action: debugState === 'stopped' ? onContinueDebug : onStartDebug },
+      { label: t('Attach to Process...'), disabled: !debugAvailable || debugState !== 'inactive', action: onAttachDebug },
       { separator: true },
-      { label: 'Pause', disabled: debugState !== 'running', action: onPauseDebug },
-      { label: 'Step Into', shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
-      { label: 'Step Over', shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
-      { label: 'Stop Debugging', shortcut: 'Shift+F5', disabled: debugState === 'inactive', action: onStopDebug },
+      { label: t('Pause'), disabled: debugState !== 'running', action: onPauseDebug },
+      { label: t('Step Into'), shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
+      { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
+      { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: debugState === 'inactive', action: onStopDebug },
     ],
-    Window: [
-      { label: 'Assembly Explorer', checked: true, action: onShowExplorer },
-      { label: 'Output', checked: true, action: onShowOutput },
-      { label: 'Search', checked: true, action: onShowSearch },
+    [t('Window')]: [
+      { label: t('Assembly Explorer'), checked: true, action: onShowExplorer },
+      { label: t('Output'), checked: true, action: onShowOutput },
+      { label: t('Search'), checked: true, action: onShowSearch },
     ],
-    Help: [
-      { label: 'About dnSpy', action: onAbout },
+    [t('Help')]: [
+      { label: t('About dnSpy'), action: onAbout },
     ],
   }
 
@@ -154,7 +161,7 @@ export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceReso
   )
 }
 
-const recentLabel = (paths: string[]): string => {
-  const first = paths[0]?.split(/[\\/]/).at(-1) ?? 'Workspace'
+const recentLabel = (paths: string[], workspaceLabel: string): string => {
+  const first = paths[0]?.split(/[\\/]/).at(-1) ?? workspaceLabel
   return paths.length > 1 ? `${first} +${paths.length - 1}` : first
 }

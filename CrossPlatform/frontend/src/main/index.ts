@@ -2,12 +2,38 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'elec
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
-import type { BackendStatus } from '../shared/protocol'
+import type { BackendStatus, UiLocale } from '../shared/protocol'
 
 let mainWindow: BrowserWindow | undefined
 let backend: BackendClient | undefined
 let lastBackendStatus: BackendStatus = { state: 'starting' }
+let uiLocale: UiLocale = 'en'
 const initialPaths = parseInitialPaths(process.argv)
+
+const nativeMessages = {
+  'zh-CN': {
+    openAssembly: '打开程序集',
+    dotNetAssemblies: '.NET 程序集',
+    allFiles: '所有文件',
+    replaceResource: '替换嵌入的资源',
+    resourceTooLarge: '资源文件不能超过 64 MiB。',
+    saveModuleAs: '模块另存为',
+    selectDebugTarget: '选择要调试的 .NET 程序',
+    dotNetPrograms: '.NET 程序',
+  },
+  en: {
+    openAssembly: 'Open Assembly',
+    dotNetAssemblies: '.NET Assemblies',
+    allFiles: 'All Files',
+    replaceResource: 'Replace Embedded Resource',
+    resourceTooLarge: 'Resource files are limited to 64 MiB.',
+    saveModuleAs: 'Save Module As',
+    selectDebugTarget: 'Select .NET Program to Debug',
+    dotNetPrograms: '.NET Programs',
+  },
+} as const
+
+const nativeText = () => nativeMessages[uiLocale]
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'app',
@@ -137,11 +163,11 @@ const registerIpc = (): void => {
     if (!app.isPackaged && process.env.DNSPY_E2E_ASSEMBLY)
       return process.env.DNSPY_E2E_ASSEMBLY.split(path.delimiter).filter(Boolean)
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Open Assembly',
+      title: nativeText().openAssembly,
       properties: ['openFile', 'multiSelections'],
       filters: [
-        { name: '.NET Assemblies', extensions: ['dll', 'exe', 'netmodule', 'winmd'] },
-        { name: 'All Files', extensions: ['*'] },
+        { name: nativeText().dotNetAssemblies, extensions: ['dll', 'exe', 'netmodule', 'winmd'] },
+        { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })
     return result.canceled ? [] : result.filePaths
@@ -171,15 +197,15 @@ const registerIpc = (): void => {
   }))
   ipcMain.handle('edit:replaceResourceFromFile', async (_event, workspaceId: string, transactionId: string, resourceNodeId: string) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Replace Embedded Resource',
+      title: nativeText().replaceResource,
       properties: ['openFile'],
-      filters: [{ name: 'All Files', extensions: ['*'] }],
+      filters: [{ name: nativeText().allFiles, extensions: ['*'] }],
     })
     if (result.canceled || result.filePaths.length === 0)
       return false
     const data = await readFile(result.filePaths[0])
     if (data.length > 64 * 1024 * 1024)
-      throw new Error('Resource files are limited to 64 MiB.')
+      throw new Error(nativeText().resourceTooLarge)
     await requireBackend().invoke('edit/replaceResource', {
       workspaceId,
       transactionId,
@@ -202,11 +228,11 @@ const registerIpc = (): void => {
       })
     }
     const result = await dialog.showSaveDialog(mainWindow!, {
-      title: 'Save Module As',
+      title: nativeText().saveModuleAs,
       defaultPath: suggestedName,
       filters: [
-        { name: '.NET Assemblies', extensions: ['dll', 'exe', 'netmodule'] },
-        { name: 'All Files', extensions: ['*'] },
+        { name: nativeText().dotNetAssemblies, extensions: ['dll', 'exe', 'netmodule'] },
+        { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })
     if (result.canceled || !result.filePath)
@@ -222,11 +248,11 @@ const registerIpc = (): void => {
     if (!app.isPackaged && process.env.DNSPY_E2E_DEBUG_TARGET)
       return process.env.DNSPY_E2E_DEBUG_TARGET
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Select .NET Program to Debug',
+      title: nativeText().selectDebugTarget,
       properties: ['openFile'],
       filters: [
-        { name: '.NET Programs', extensions: ['dll', 'exe'] },
-        { name: 'All Files', extensions: ['*'] },
+        { name: nativeText().dotNetPrograms, extensions: ['dll', 'exe'] },
+        { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })
     return result.canceled ? undefined : result.filePaths[0]
@@ -265,10 +291,15 @@ const registerIpc = (): void => {
   ipcMain.handle('backend:status:get', () => lastBackendStatus)
   ipcMain.handle('app:initialPaths', () => initialPaths)
   ipcMain.handle('app:processId', () => process.pid)
+  ipcMain.handle('app:setLocale', (_event, locale: UiLocale) => {
+    if (locale === 'en' || locale === 'zh-CN')
+      uiLocale = locale
+  })
   ipcMain.handle('app:quit', () => app.quit())
 }
 
 app.whenReady().then(async () => {
+  uiLocale = app.getLocale().toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
   Menu.setApplicationMenu(null)
   registerAppProtocol()
   registerIpc()

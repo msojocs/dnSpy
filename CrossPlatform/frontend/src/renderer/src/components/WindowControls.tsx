@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Copy, Minus, Square, X } from 'lucide-react'
+import { useLanguage } from '../localization'
 
 export const WindowControls = (): React.JSX.Element => {
   const [isMaximized, setIsMaximized] = useState(false)
+  const { t } = useLanguage()
 
   useEffect(() => {
     let mounted = true
@@ -21,12 +23,12 @@ export const WindowControls = (): React.JSX.Element => {
   }
 
   return (
-    <div className="window-controls" role="group" aria-label="Window controls">
+    <div className="window-controls" role="group" aria-label={t('Window controls')}>
       <button
         type="button"
         className="window-control-button"
-        aria-label="Minimize window"
-        title="Minimize"
+        aria-label={t('Minimize window')}
+        title={t('Minimize')}
         onClick={() => void window.dnSpy.minimizeWindow()}
       >
         <Minus size={15} strokeWidth={1.5} />
@@ -34,8 +36,8 @@ export const WindowControls = (): React.JSX.Element => {
       <button
         type="button"
         className="window-control-button"
-        aria-label={isMaximized ? 'Restore window' : 'Maximize window'}
-        title={isMaximized ? 'Restore' : 'Maximize'}
+        aria-label={isMaximized ? t('Restore window') : t('Maximize window')}
+        title={isMaximized ? t('Restore') : t('Maximize')}
         onClick={() => void toggleMaximize()}
       >
         {isMaximized ? <Copy size={12} strokeWidth={1.4} /> : <Square size={12} strokeWidth={1.4} />}
@@ -43,8 +45,8 @@ export const WindowControls = (): React.JSX.Element => {
       <button
         type="button"
         className="window-control-button window-close-button"
-        aria-label="Close window"
-        title="Close"
+        aria-label={t('Close window')}
+        title={t('Close')}
         onClick={() => void window.dnSpy.closeWindow()}
       >
         <X size={16} strokeWidth={1.5} />

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import 'flexlayout-react/style/light.css'
 import './styles.css'
 import { App } from './App'
+import { LanguageProvider } from './localization'
 
 const root = document.getElementById('root')
 if (!root)
@@ -10,6 +11,8 @@ if (!root)
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <LanguageProvider>
+      <App />
+    </LanguageProvider>
   </StrictMode>,
 )

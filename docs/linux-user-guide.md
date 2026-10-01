@@ -47,7 +47,9 @@ AppImage 需要系统允许 Chromium user namespace sandbox。在启用了严格
 - 缓存：`${XDG_CACHE_HOME:-$HOME/.cache}/dnspy`
 - Electron 配置：`${XDG_CONFIG_HOME:-$HOME/.config}/dnSpy`
 
-应用布局和主题由 Electron 用户数据目录保存。布局损坏时，可以在应用关闭后删除对应 Electron 配置目录中的 Local Storage；下次启动会恢复默认布局。
+界面语言默认跟随系统语言，也可以从“语言”菜单选择 `English` 或“简体中文”；更改后立即生效。
+
+应用布局、主题和语言选择由 Electron 用户数据目录保存。布局损坏时，可以在应用关闭后删除对应 Electron 配置目录中的 Local Storage；下次启动会恢复默认布局和系统语言设置。
 
 ## 常用快捷键
 

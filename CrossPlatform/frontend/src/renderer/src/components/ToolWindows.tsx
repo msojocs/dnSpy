@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Search } from 'lucide-react'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 export const OutputPane = (): React.JSX.Element => {
   const output = useAppStore((state) => state.output)
@@ -16,6 +17,7 @@ export const SearchPane = ({ onOpenNodeId }: { onOpenNodeId(nodeId: string): voi
   const workspaceId = useAppStore((state) => state.workspaceId)
   const results = useAppStore((state) => state.searchResults)
   const runSearch = useAppStore((state) => state.runSearch)
+  const { t } = useLanguage()
 
   const submit = (): void => {
     if (workspaceId)
@@ -27,13 +29,13 @@ export const SearchPane = ({ onOpenNodeId }: { onOpenNodeId(nodeId: string): voi
       <div className="search-controls">
         <input
           value={query}
-          placeholder="Search assemblies"
-          aria-label="Search assemblies"
+          placeholder={t('Search assemblies')}
+          aria-label={t('Search assemblies')}
           disabled={!workspaceId}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter') submit() }}
         />
-        <button className="icon-button" title="Search" aria-label="Search" disabled={!workspaceId || !query.trim()} onClick={submit}>
+        <button className="icon-button" title={t('Search')} aria-label={t('Search')} disabled={!workspaceId || !query.trim()} onClick={submit}>
           <Search size={15} />
         </button>
       </div>
@@ -57,6 +59,7 @@ export const SearchPane = ({ onOpenNodeId }: { onOpenNodeId(nodeId: string): voi
 
 export const AnalysisPane = ({ onOpenNodeId }: { onOpenNodeId(nodeId: string): void }): React.JSX.Element => {
   const references = useAppStore((state) => state.references)
+  const { t } = useLanguage()
 
   return (
     <div className="result-list">
@@ -69,7 +72,7 @@ export const AnalysisPane = ({ onOpenNodeId }: { onOpenNodeId(nodeId: string): v
           }}
         >
           <span className="result-name">{reference.sourceName}</span>
-          <span className="result-location">{reference.kind} · {reference.location}</span>
+          <span className="result-location">{reference.kind === 'base-type' ? t('Base type') : reference.kind === 'instruction' ? t('Instruction') : reference.kind} · {reference.location}</span>
         </button>
       ))}
     </div>

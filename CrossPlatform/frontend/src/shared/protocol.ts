@@ -208,6 +208,8 @@ export interface DebugEvent {
   body?: Record<string, unknown>
 }
 
+export type UiLocale = 'en' | 'zh-CN'
+
 export interface DnSpyApi {
   openAssemblies(): Promise<string[]>
   openWorkspace(paths: string[]): Promise<OpenWorkspaceResponse>
@@ -257,6 +259,7 @@ export interface DnSpyApi {
   getBackendStatus(): Promise<BackendStatus>
   getInitialPaths(): Promise<string[]>
   getProcessId(): Promise<number>
+  setLocale(locale: UiLocale): Promise<void>
   onWindowMaximizedChange(callback: (isMaximized: boolean) => void): () => void
   onBackendStatus(callback: (status: BackendStatus) => void): () => void
   onDebugEvent(callback: (event: DebugEvent) => void): () => void

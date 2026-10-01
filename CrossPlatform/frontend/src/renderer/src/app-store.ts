@@ -15,6 +15,7 @@ import type {
   SearchResult,
   TreeNode,
 } from '../../shared/protocol'
+import { getActiveLocale, translate as t } from './localization'
 
 export interface DocumentState extends DecompileResponse {
   nodeId: string
@@ -91,7 +92,7 @@ interface AppState {
   clearError(): void
 }
 
-const timestamp = (): string => new Date().toLocaleTimeString()
+const timestamp = (): string => new Date().toLocaleTimeString(getActiveLocale())
 
 export const useAppStore = create<AppState>((set, get) => ({
   backendStatus: { state: 'starting' },
@@ -122,7 +123,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setBackendStatus: (status) => {
     set({ backendStatus: status })
-    get().appendOutput(status.message ? `Backend: ${status.state} - ${status.message}` : `Backend: ${status.state}`)
+    get().appendOutput(status.message
+      ? t('Backend: {state} - {message}', { state: t(status.state), message: status.message })
+      : t('Backend: {state}', { state: t(status.state) }))
   },
 
   chooseAndOpen: async () => {
@@ -158,11 +161,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         canRedo: false,
         recentWorkspaces: rememberWorkspace(paths),
       })
-      get().appendOutput(`Opened ${opened.modules.length} module${opened.modules.length === 1 ? '' : 's'}.`)
+      get().appendOutput(t('Opened {count} module(s).', { count: opened.modules.length }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Open failed: ${message}`)
+      get().appendOutput(t('Open failed: {message}', { message }))
     } finally {
       set({ busy: false })
     }
@@ -189,7 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       canUndo: false,
       canRedo: false,
     })
-    get().appendOutput('Workspace closed.')
+    get().appendOutput(t('Workspace closed.'))
   },
 
   toggleNode: async (node) => {
@@ -224,7 +227,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         error: message,
         loadingNodes: { ...state.loadingNodes, [node.id]: false },
       }))
-      get().appendOutput(`Tree load failed: ${message}`)
+      get().appendOutput(t('Tree load failed: {message}', { message }))
     }
   },
 
@@ -233,7 +236,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   openDocument: async (node, language = 'cSharp') => {
     const workspaceId = get().workspaceId
     if (!workspaceId)
-      throw new Error('No workspace is open.')
+      throw new Error(t('No workspace is open.'))
     const documentId = node.id
     set((state) => ({
       selectedNode: node,
@@ -279,7 +282,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           },
         },
       }))
-      get().appendOutput(`Decompile failed: ${message}`)
+      get().appendOutput(t('Decompile failed: {message}', { message }))
     }
     return documentId
   },
@@ -301,11 +304,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const response = await window.dnSpy.search(workspaceId, query.trim(), kinds)
       set({ searchResults: response.results })
-      get().appendOutput(`Search returned ${response.results.length}${response.truncated ? '+' : ''} result(s).`)
+      get().appendOutput(t('Search returned {count} result(s).', { count: `${response.results.length}${response.truncated ? '+' : ''}` }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Search failed: ${message}`)
+      get().appendOutput(t('Search failed: {message}', { message }))
     } finally {
       set({ busy: false })
     }
@@ -319,12 +322,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const response = await window.dnSpy.analyzeReferences(workspaceId, node.id)
       set({ references: response.results })
-      get().appendOutput(`Analysis returned ${response.results.length}${response.truncated ? '+' : ''} reference(s).`)
+      get().appendOutput(t('Analysis returned {count} reference(s).', { count: `${response.results.length}${response.truncated ? '+' : ''}` }))
       return response
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Analysis failed: ${message}`)
+      get().appendOutput(t('Analysis failed: {message}', { message }))
       return undefined
     } finally {
       set({ busy: false })
@@ -356,7 +359,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...state.documents, [node.id]: { ...state.documents[node.id], title: newName.trim() } }
           : state.documents,
       }))
-      get().appendOutput(`Renamed ${node.label} to ${newName.trim()}.`)
+      get().appendOutput(t('Renamed {oldName} to {newName}.', { oldName: node.label, newName: newName.trim() }))
       return true
     } catch (error) {
       if (transactionId) {
@@ -364,7 +367,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Rename failed: ${message}`)
+      get().appendOutput(t('Rename failed: {message}', { message }))
       return false
     } finally {
       set({ busy: false })
@@ -396,7 +399,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         canUndo: committed.canUndo,
         canRedo: committed.canRedo,
       }))
-      get().appendOutput(`Replaced resource ${node.label}.`)
+      get().appendOutput(t('Replaced resource {name}.', { name: node.label }))
       return true
     } catch (error) {
       if (transactionId) {
@@ -404,7 +407,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Resource replacement failed: ${message}`)
+      get().appendOutput(t('Resource replacement failed: {message}', { message }))
       return false
     } finally {
       set({ busy: false })
@@ -424,12 +427,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!saved)
         return false
       set((state) => ({ dirty: false, savedStateId: state.workspaceStateId }))
-      get().appendOutput(`Saved ${saved.path} (${saved.length.toLocaleString()} bytes, SHA-256 ${saved.sha256}).`)
+      get().appendOutput(t('Saved {path} ({length} bytes, SHA-256 {sha256}).', { path: saved.path, length: saved.length.toLocaleString(getActiveLocale()), sha256: saved.sha256 }))
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
-      get().appendOutput(`Save failed: ${message}`)
+      get().appendOutput(t('Save failed: {message}', { message }))
       return false
     } finally {
       set({ busy: false })
@@ -445,7 +448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
     if (get().documents[node.id])
       await get().openDocument(node, 'il')
-    get().appendOutput(`Updated IL body for ${node.label}.`)
+    get().appendOutput(t('Updated IL body for {name}.', { name: node.label }))
   },
 
   undoEdit: async () => {
@@ -454,9 +457,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await window.dnSpy.undoEdit(workspaceId)
       await refreshAfterEdit(get, set, result)
-      get().appendOutput('Undo completed.')
+      get().appendOutput(t('Undo completed.'))
     } catch (error) {
-      get().appendOutput(`Undo failed: ${error instanceof Error ? error.message : String(error)}`)
+      get().appendOutput(t('Undo failed: {message}', { message: error instanceof Error ? error.message : String(error) }))
     }
   },
 
@@ -466,9 +469,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await window.dnSpy.redoEdit(workspaceId)
       await refreshAfterEdit(get, set, result)
-      get().appendOutput('Redo completed.')
+      get().appendOutput(t('Redo completed.'))
     } catch (error) {
-      get().appendOutput(`Redo failed: ${error instanceof Error ? error.message : String(error)}`)
+      get().appendOutput(t('Redo failed: {message}', { message: error instanceof Error ? error.message : String(error) }))
     }
   },
 
@@ -483,11 +486,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         await window.dnSpy.setFunctionBreakpoints(started.sessionId, get().functionBreakpoints)
       if (get().exceptionBreakpoints.length > 0)
         await window.dnSpy.setExceptionBreakpoints(started.sessionId, get().exceptionBreakpoints)
-      get().appendOutput(`Started debugging ${target}.`)
+      get().appendOutput(t('Started debugging {target}.', { target }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ debugState: 'inactive', error: message })
-      get().appendOutput(`Debug launch failed: ${message}`)
+      get().appendOutput(t('Debug launch failed: {message}', { message }))
     }
   },
 
@@ -496,11 +499,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const started = await window.dnSpy.attachDebug(processId)
       set({ debugSessionId: started.sessionId })
-      get().appendOutput(`Attached to process ${processId}.`)
+      get().appendOutput(t('Attached to process {processId}.', { processId }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       set({ debugState: 'inactive', error: message })
-      get().appendOutput(`Debug attach failed: ${message}`)
+      get().appendOutput(t('Debug attach failed: {message}', { message }))
     }
   },
 
@@ -513,7 +516,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedDebugThreadId: threadId,
         stoppedReason: typeof event.body?.reason === 'string' ? event.body.reason : 'stopped',
       })
-      get().appendOutput(`Debugger stopped: ${typeof event.body?.reason === 'string' ? event.body.reason : 'unknown'}.`)
+      const reason = typeof event.body?.reason === 'string' ? event.body.reason : 'unknown'
+      get().appendOutput(t('Debugger stopped: {reason}.', { reason: t(reason) }))
       await refreshDebugState(get, set, threadId)
       set({ debugState: 'stopped' })
     } else if (event.event === 'continued') {
@@ -531,7 +535,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         debugModules: [],
         watchValues: [],
       })
-      get().appendOutput(event.event === 'exited' ? `Debug target exited with code ${String(event.body?.exitCode ?? '')}.` : 'Debug session terminated.')
+      get().appendOutput(event.event === 'exited'
+        ? t('Debug target exited with code {code}.', { code: String(event.body?.exitCode ?? '') })
+        : t('Debug session terminated.'))
     }
   },
 
@@ -667,7 +673,7 @@ const refreshDebugState = async (get: StoreGet, set: StoreSet, preferredThreadId
     if (frameId !== undefined)
       await refreshDebugVariables(get, set, frameId)
   } catch (error) {
-    get().appendOutput(`Could not refresh debugger state: ${error instanceof Error ? error.message : String(error)}`)
+    get().appendOutput(t('Could not refresh debugger state: {message}', { message: error instanceof Error ? error.message : String(error) }))
   }
 }
 

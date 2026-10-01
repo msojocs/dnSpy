@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import type { TreeNode } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
+import { useLanguage } from '../localization'
 
 interface AssemblyExplorerProps {
   onOpenNode(node: TreeNode): void
@@ -45,6 +46,8 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
   const selected = useAppStore((state) => state.selectedNode?.id === node.id)
   const toggleNode = useAppStore((state) => state.toggleNode)
   const selectNode = useAppStore((state) => state.selectNode)
+  const { t } = useLanguage()
+  const label = node.kind === 'referencesgroup' ? t('Assembly References') : node.kind === 'resourcesgroup' ? t('Resources') : node.label
 
   const open = (): void => {
     selectNode(node)
@@ -62,7 +65,7 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
         aria-expanded={node.hasChildren ? expanded : undefined}
         aria-selected={selected}
         tabIndex={selected ? 0 : -1}
-        title={node.description ?? node.label}
+        title={node.description ?? label}
         onClick={() => selectNode(node)}
         onDoubleClick={open}
         onKeyDown={(event) => {
@@ -79,7 +82,7 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
       >
         <button
           className="tree-expander"
-          aria-label={expanded ? 'Collapse' : 'Expand'}
+          aria-label={expanded ? t('Collapse') : t('Expand')}
           disabled={!node.hasChildren}
           onClick={(event) => {
             event.stopPropagation()
@@ -89,7 +92,7 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
           {loading ? <LoaderCircle className="spin" size={13} /> : node.hasChildren ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
         </button>
         <span className={`tree-icon kind-${node.kind}`}><NodeIcon icon={node.icon} /></span>
-        <span className="tree-label">{node.label}</span>
+        <span className="tree-label">{label}</span>
       </div>
       {expanded && children?.map((child) => (
         <TreeRow key={child.id} node={child} depth={depth + 1} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} />
@@ -102,6 +105,7 @@ export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode }: AssemblyExplorer
   const roots = useAppStore((state) => state.roots)
   const expanded = useAppStore((state) => state.expanded)
   const toggleNode = useAppStore((state) => state.toggleNode)
+  const { t } = useLanguage()
 
   useEffect(() => {
     for (const root of roots) {
@@ -111,10 +115,10 @@ export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode }: AssemblyExplorer
   }, [roots]) // Expanding freshly loaded roots is intentional.
 
   if (roots.length === 0)
-    return <div className="pane-empty">No assemblies loaded</div>
+    return <div className="pane-empty">{t('No assemblies loaded')}</div>
 
   return (
-    <div className="assembly-tree" role="tree" aria-label="Assembly Explorer">
+    <div className="assembly-tree" role="tree" aria-label={t('Assembly Explorer')}>
       {roots.map((root) => (
         <TreeRow key={root.id} node={root} depth={0} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} />
       ))}

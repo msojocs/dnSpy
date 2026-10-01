@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BackendStatus, DecompilerLanguage, DnSpyApi } from '../shared/protocol'
+import type { BackendStatus, DecompilerLanguage, DnSpyApi, UiLocale } from '../shared/protocol'
 
 const api: DnSpyApi = {
   openAssemblies: () => ipcRenderer.invoke('dialog:openAssemblies'),
@@ -53,6 +53,7 @@ const api: DnSpyApi = {
   getBackendStatus: () => ipcRenderer.invoke('backend:status:get'),
   getInitialPaths: () => ipcRenderer.invoke('app:initialPaths'),
   getProcessId: () => ipcRenderer.invoke('app:processId'),
+  setLocale: (locale: UiLocale) => ipcRenderer.invoke('app:setLocale', locale),
   onWindowMaximizedChange: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, isMaximized: boolean): void => callback(isMaximized)
     ipcRenderer.on('window:maximized-changed', listener)
