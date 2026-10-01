@@ -762,6 +762,51 @@ select:focus-visible,
   flex: 1;
 }
 
+.about-dialog {
+  grid-template-rows: 33px auto 43px;
+  width: min(92vw, 460px);
+}
+
+.about-content {
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+}
+
+.about-brand {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.about-logo {
+  width: 64px;
+  height: 64px;
+}
+
+.about-name {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.about-version {
+  margin-top: 5px;
+  color: var(--text-muted);
+}
+
+.about-content p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.about-license {
+  padding-top: 13px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
 .il-editor-dialog {
   grid-template-rows: 33px auto minmax(160px, 1fr) auto 43px;
   width: min(96vw, 1100px);

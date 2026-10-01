@@ -11,6 +11,7 @@ import { MethodBodyEditor, RenameDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { AttachDialog } from './components/AttachDialog'
+import { AboutDialog } from './components/AboutDialog'
 
 const DocumentView = lazy(async () => {
   const module = await import('./components/DocumentView')
@@ -86,6 +87,7 @@ export const App = (): React.JSX.Element => {
   const [renameNode, setRenameNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
+  const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
   const [, forceLayoutUpdate] = useState(0)
   const previousWorkspaceId = useRef<string | undefined | null>(null)
@@ -378,6 +380,7 @@ export const App = (): React.JSX.Element => {
         onShowOutput={() => showBorderTab('output')}
         onShowSearch={() => showBorderTab('search')}
         onTheme={setTheme}
+        onAbout={() => setAboutDialogOpen(true)}
         onQuit={() => void window.dnSpy.quit()}
       />
       <ToolBar
@@ -416,6 +419,7 @@ export const App = (): React.JSX.Element => {
       {renameNode && <RenameDialog node={renameNode} onClose={() => setRenameNode(undefined)} />}
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
+      {aboutDialogOpen && <AboutDialog onClose={() => setAboutDialogOpen(false)} />}
     </div>
   )
 }

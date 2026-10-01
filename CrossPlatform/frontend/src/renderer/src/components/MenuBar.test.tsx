@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from './MenuBar'
 
-const renderMenu = (debugAvailable = false): void => {
+const renderMenu = (debugAvailable = false, onAbout = vi.fn()): void => {
   render(<MenuBar
     hasWorkspace={true}
     canRename={true}
@@ -38,6 +38,7 @@ const renderMenu = (debugAvailable = false): void => {
     onShowOutput={vi.fn()}
     onShowSearch={vi.fn()}
     onTheme={vi.fn()}
+    onAbout={onAbout}
     onQuit={vi.fn()}
   />)
 }
@@ -63,5 +64,16 @@ describe('MenuBar', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
     expect(screen.getByRole('menuitem', { name: /^Start Debugging/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: 'Attach to Process...' })).toBeEnabled()
+  })
+
+  it('opens the About dialog from the Help menu', () => {
+    const onAbout = vi.fn()
+    renderMenu(false, onAbout)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Help' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'About dnSpy' }))
+
+    expect(onAbout).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menuitem', { name: 'About dnSpy' })).not.toBeInTheDocument()
   })
 })

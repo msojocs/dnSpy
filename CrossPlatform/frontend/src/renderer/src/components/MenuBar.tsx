@@ -39,6 +39,7 @@ interface MenuBarProps {
   onShowOutput(): void
   onShowSearch(): void
   onTheme(theme: ThemeName): void
+  onAbout(): void
   onQuit(): void
 }
 
@@ -51,7 +52,7 @@ interface MenuItem {
   action?: () => void
 }
 
-export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceResource, canInspectModule, debugAvailable, debugState, recentWorkspaces, canUndo, canRedo, theme, onOpen, onOpenRecent, onClose, onSave, onFind, onUndo, onRedo, onRename, onEditMethod, onReplaceResource, onHex, onModuleInfo, onStartDebug, onAttachDebug, onContinueDebug, onPauseDebug, onStepIn, onStepOver, onStopDebug, onShowExplorer, onShowOutput, onShowSearch, onTheme, onQuit }: MenuBarProps): React.JSX.Element => {
+export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceResource, canInspectModule, debugAvailable, debugState, recentWorkspaces, canUndo, canRedo, theme, onOpen, onOpenRecent, onClose, onSave, onFind, onUndo, onRedo, onRename, onEditMethod, onReplaceResource, onHex, onModuleInfo, onStartDebug, onAttachDebug, onContinueDebug, onPauseDebug, onStepIn, onStepOver, onStopDebug, onShowExplorer, onShowOutput, onShowSearch, onTheme, onAbout, onQuit }: MenuBarProps): React.JSX.Element => {
   const [openMenu, setOpenMenu] = useState<string>()
   const host = useRef<HTMLDivElement>(null)
   const menus: Record<string, MenuItem[]> = {
@@ -100,7 +101,7 @@ export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceReso
       { label: 'Search', checked: true, action: onShowSearch },
     ],
     Help: [
-      { label: 'About dnSpy', action: () => window.alert('dnSpy 1.0.0\nCross-platform .NET assembly browser, editor and debugger.\nGPL-3.0-only') },
+      { label: 'About dnSpy', action: onAbout },
     ],
   }
 

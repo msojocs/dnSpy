@@ -55,6 +55,24 @@ test('starts the backend and renders the upstream-style shell', async () => {
   await expect(page.getByRole('tab', { name: 'Output' })).toBeVisible()
 })
 
+test('opens and closes the in-app About dialog', async () => {
+  const nativeDialogs: string[] = []
+  page.on('dialog', (dialog) => nativeDialogs.push(dialog.message()))
+
+  await page.getByRole('menuitem', { name: 'Help' }).click()
+  await page.getByRole('menuitem', { name: 'About dnSpy' }).click()
+
+  const about = page.getByRole('dialog', { name: 'About dnSpy' })
+  await expect(about).toBeVisible()
+  await expect(about).toContainText('Version 1.0.0')
+  await expect(about).toContainText('GNU GPL v3.0 only')
+  expect(nativeDialogs).toEqual([])
+
+  await page.keyboard.press('Escape')
+  await expect(about).not.toBeVisible()
+  await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
+})
+
 test('maximizes and restores the window from the title bar', async () => {
   const browserWindow = await application.browserWindow(page)
   await page.getByRole('button', { name: 'Maximize window' }).click()
