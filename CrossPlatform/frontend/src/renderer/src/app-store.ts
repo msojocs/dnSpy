@@ -71,6 +71,7 @@ interface AppState {
   renameNode(node: TreeNode, newName: string): Promise<boolean>
   replaceResource(node: TreeNode): Promise<boolean>
   saveModuleAs(): Promise<boolean>
+  saveCode(documentId: string): Promise<boolean>
   methodBodyChanged(node: TreeNode, result: EditCommitResponse): Promise<void>
   undoEdit(): Promise<void>
   redoEdit(): Promise<void>
@@ -439,6 +440,28 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  saveCode: async (documentId) => {
+    const { busy, documents } = get()
+    const document = documents[documentId]
+    if (busy || !document || document.loading)
+      return false
+    set({ busy: true, error: undefined })
+    try {
+      const savedPath = await window.dnSpy.saveCode(suggestCodeFilename(document.title, document.language), document.text)
+      if (!savedPath)
+        return false
+      get().appendOutput(t('Saved code to {path}.', { path: savedPath }))
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Save code failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
   methodBodyChanged: async (node, result) => {
     set((state) => ({
       dirty: result.stateId !== state.savedStateId,
@@ -635,6 +658,23 @@ const findNode = (state: Pick<AppState, 'roots' | 'children'>, nodeId: string): 
 }
 
 const recentWorkspaceKey = 'dnspy.recentWorkspaces.v1'
+
+export const suggestCodeFilename = (title: string, language: string): string => {
+  const extension = language === 'csharp'
+    ? '.cs'
+    : language === 'visual-basic'
+      ? '.vb'
+      : language === 'il'
+        ? '.il'
+        : language === 'xml'
+          ? '.xml'
+          : '.txt'
+  const baseName = title
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_')
+    .replace(/[. ]+$/g, '')
+    .trim()
+  return `${baseName || 'code'}${extension}`
+}
 
 function loadRecentWorkspaces(): string[][] {
   try {

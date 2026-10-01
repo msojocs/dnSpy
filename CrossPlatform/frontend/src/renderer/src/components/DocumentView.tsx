@@ -7,7 +7,7 @@ import type { DecompilerLanguage } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
 
-export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
+export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
   const document = useAppStore((state) => state.documents[documentId])
   const changeLanguage = useAppStore((state) => state.changeDocumentLanguage)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
@@ -75,7 +75,7 @@ export const DocumentView = ({ documentId, theme, onNavigate }: { documentId: st
           <div className="loading-state"><LoaderCircle className="spin" size={18} /> {t('Loading')}</div>
         ) : (
           <Editor
-            path={`${document.nodeId}.${editorLanguage}`}
+            path={`${viewId}.${editorLanguage}`}
             value={document.text}
             language={editorLanguage}
             theme={editorTheme}

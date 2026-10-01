@@ -233,6 +233,7 @@ export interface DnSpyApi {
   undoEdit(workspaceId: string): Promise<EditCommitResponse>
   redoEdit(workspaceId: string): Promise<EditCommitResponse>
   saveModuleAs(workspaceId: string, moduleId: string, suggestedName: string): Promise<SaveModuleResponse | undefined>
+  saveCode(suggestedName: string, text: string): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   listDebugProcesses(): Promise<DebugProcess[]>
   launchDebug(program: string, args: string[], stopAtEntry: boolean): Promise<DebugStartResponse>

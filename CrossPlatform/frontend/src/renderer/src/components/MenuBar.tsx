@@ -5,6 +5,12 @@ import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
 
+const repositoryUrl = 'https://github.com/msojocs/dnSpy'
+
+const openExternal = (url: string): void => {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 interface MenuBarProps {
   hasWorkspace: boolean
   canRename: boolean
@@ -108,6 +114,10 @@ export const MenuBar = ({ hasWorkspace, canRename, canEditMethod, canReplaceReso
       { label: t('Search'), checked: true, action: onShowSearch },
     ],
     [t('Help')]: [
+      { label: t('Latest Release'), action: () => openExternal(`${repositoryUrl}/releases/latest`) },
+      { label: t('Report Bug'), action: () => openExternal(`${repositoryUrl}/issues/new`) },
+      { label: t('Source Code'), action: () => openExternal(repositoryUrl) },
+      { separator: true },
       { label: t('About dnSpy'), action: onAbout },
     ],
   }

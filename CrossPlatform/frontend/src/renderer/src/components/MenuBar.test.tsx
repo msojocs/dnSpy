@@ -43,7 +43,10 @@ const renderMenu = (debugAvailable = false, onAbout = vi.fn()): void => {
   />)
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 describe('MenuBar', () => {
   it('exposes workspace commands and their shortcuts', () => {
@@ -75,5 +78,19 @@ describe('MenuBar', () => {
 
     expect(onAbout).toHaveBeenCalledOnce()
     expect(screen.queryByRole('menuitem', { name: 'About dnSpy' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['Latest Release', 'https://github.com/msojocs/dnSpy/releases/latest'],
+    ['Report Bug', 'https://github.com/msojocs/dnSpy/issues/new'],
+    ['Source Code', 'https://github.com/msojocs/dnSpy'],
+  ])('opens %s in the system browser', (label, url) => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+    renderMenu()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Help' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: label }))
+
+    expect(open).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
   })
 })

@@ -12,6 +12,7 @@ import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { AttachDialog } from './components/AttachDialog'
 import { AboutDialog } from './components/AboutDialog'
+import { cloneDocumentTab, closeDocumentTab, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
 import { translate, useLanguage } from './localization'
 
 const DocumentView = lazy(async () => {
@@ -24,7 +25,7 @@ const createDefaultLayout = (): IJsonModel => ({
     tabEnableRename: false,
     tabEnableFloat: false,
     tabSetEnableMaximize: true,
-    tabSetEnableDeleteWhenEmpty: false,
+    tabSetEnableDeleteWhenEmpty: true,
     tabSetMinWidth: 120,
     tabSetMinHeight: 80,
     borderMinSize: 120,
@@ -71,11 +72,16 @@ const loadLayout = (): Model => {
   try {
     const saved = localStorage.getItem('dnspy.layout.v1')
     const model = Model.fromJson(saved ? JSON.parse(saved) as IJsonModel : createDefaultLayout())
-    return model.getNodeById('documents') ? model : Model.fromJson(createDefaultLayout())
+    if (!model.getFirstTabSet())
+      return Model.fromJson(createDefaultLayout())
+    model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true }))
+    return model
   } catch {
     return Model.fromJson(createDefaultLayout())
   }
 }
+
+const getTargetDocumentTabSet = (model: Model) => model.getActiveTabset() ?? model.getFirstTabSet()
 
 const loadTheme = (): ThemeName => {
   const saved = localStorage.getItem('dnspy.theme')
@@ -108,6 +114,7 @@ export const App = (): React.JSX.Element => {
   const undoEdit = useAppStore((state) => state.undoEdit)
   const redoEdit = useAppStore((state) => state.redoEdit)
   const saveModuleAs = useAppStore((state) => state.saveModuleAs)
+  const saveCode = useAppStore((state) => state.saveCode)
   const replaceResource = useAppStore((state) => state.replaceResource)
   const openDocument = useAppStore((state) => state.openDocument)
   const analyzeNode = useAppStore((state) => state.analyzeNode)
@@ -186,6 +193,30 @@ export const App = (): React.JSX.Element => {
       } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 's') {
         event.preventDefault()
         void saveModuleAs()
+      } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 's') {
+        const tab = model.getActiveTabset()?.getSelectedNode()
+        const config = tab?.getComponent() === 'document'
+          ? tab.getConfig() as { documentId?: string } | undefined
+          : undefined
+        const document = config?.documentId ? useAppStore.getState().documents[config.documentId] : undefined
+        if (config?.documentId && document && !document.loading) {
+          event.preventDefault()
+          void saveCode(config.documentId)
+        }
+      } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 't') {
+        const tab = model.getActiveTabset()?.getSelectedNode()
+        if (tab?.getComponent() === 'document') {
+          event.preventDefault()
+          cloneDocumentTab(tab)
+          forceLayoutUpdate((value) => value + 1)
+        }
+      } else if (event.ctrlKey && !event.shiftKey && event.key === 'F4') {
+        const tab = model.getActiveTabset()?.getSelectedNode()
+        if (tab?.isCloseable()) {
+          event.preventDefault()
+          closeDocumentTab(tab)
+          forceLayoutUpdate((value) => value + 1)
+        }
       } else if (event.ctrlKey && event.key.toLowerCase() === 'f' && workspaceId) {
         event.preventDefault()
         model.doAction(Actions.selectTab('search'))
@@ -216,7 +247,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, launchDebug, model, redoEdit, saveModuleAs, selectedNode, stepDebug, stopDebug, undoEdit, workspaceId])
+  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, stepDebug, stopDebug, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -230,8 +261,9 @@ export const App = (): React.JSX.Element => {
     })
     for (const tabId of tabsToClose)
       model.doAction(Actions.deleteTab(tabId))
-    if (!model.getNodeById('start') && model.getNodeById('documents')) {
-      model.doAction(Actions.addNode({ type: 'tab', id: 'start', name: t('Start'), component: 'start', enableClose: false }, 'documents', DockLocation.CENTER, -1, true))
+    const targetTabSet = getTargetDocumentTabSet(model)
+    if (!model.getNodeById('start') && targetTabSet) {
+      model.doAction(Actions.addNode({ type: 'tab', id: 'start', name: t('Start'), component: 'start', enableClose: false }, targetTabSet.getId(), DockLocation.CENTER, -1, true))
     }
     forceLayoutUpdate((value) => value + 1)
   }, [model, workspaceId, t])
@@ -261,13 +293,15 @@ export const App = (): React.JSX.Element => {
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
     } else {
+      const targetTabSet = getTargetDocumentTabSet(model)
+      if (!targetTabSet) return
       model.doAction(Actions.addNode({
         type: 'tab',
         id: tabId,
         name: node.label,
         component: 'document',
         config: { documentId },
-      }, 'documents', DockLocation.CENTER, -1, true))
+      }, targetTabSet.getId(), DockLocation.CENTER, -1, true))
       if (model.getNodeById('start'))
         model.doAction(Actions.deleteTab('start'))
     }
@@ -325,13 +359,15 @@ export const App = (): React.JSX.Element => {
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
     } else {
+      const targetTabSet = getTargetDocumentTabSet(model)
+      if (!targetTabSet) return
       model.doAction(Actions.addNode({
         type: 'tab',
         id: tabId,
         name: component === 'hex' ? `${module.label} [${t('Hex')}]` : `${module.label} [${t('Info')}]`,
         component,
         config: { moduleId: module.id },
-      }, 'documents', DockLocation.CENTER, -1, true))
+      }, targetTabSet.getId(), DockLocation.CENTER, -1, true))
       if (model.getNodeById('start')) model.doAction(Actions.deleteTab('start'))
     }
     forceLayoutUpdate((value) => value + 1)
@@ -345,7 +381,7 @@ export const App = (): React.JSX.Element => {
   const factory = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
       case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} />
-      case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
+      case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
       case 'output': return <OutputPane />
       case 'search': return <SearchPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
       case 'analysis': return <AnalysisPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
@@ -429,6 +465,25 @@ export const App = (): React.JSX.Element => {
           onModelChange={(nextModel) => {
             localStorage.setItem('dnspy.layout.v1', JSON.stringify(nextModel.toJson()))
             forceLayoutUpdate((value) => value + 1)
+          }}
+          onContextMenu={(node, event) => {
+            if (!(node instanceof TabNode)) return
+            showDocumentTabContextMenu(node, event, {
+              t,
+              canSave: (tab) => {
+                if (tab.getComponent() !== 'document') return false
+                const config = tab.getConfig() as { documentId?: string } | undefined
+                const state = useAppStore.getState()
+                const document = config?.documentId ? state.documents[config.documentId] : undefined
+                return Boolean(document && !document.loading && !state.busy)
+              },
+              canClone: (tab) => tab.getComponent() === 'document',
+              onSave: (tab) => {
+                const config = tab.getConfig() as { documentId?: string } | undefined
+                if (config?.documentId) void saveCode(config.documentId)
+              },
+              onModelChanged: () => forceLayoutUpdate((value) => value + 1),
+            })
           }}
           i18nTranslator={(key) => t(I18nLabelDefaults[key] ?? key)}
         />

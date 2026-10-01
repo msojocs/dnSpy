@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
 import type { BackendStatus, UiLocale } from '../shared/protocol'
@@ -18,6 +18,8 @@ const nativeMessages = {
     replaceResource: '替换嵌入的资源',
     resourceTooLarge: '资源文件不能超过 64 MiB。',
     saveModuleAs: '模块另存为',
+    saveCode: '保存代码',
+    codeFiles: '代码文件',
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
   },
@@ -28,6 +30,8 @@ const nativeMessages = {
     replaceResource: 'Replace Embedded Resource',
     resourceTooLarge: 'Resource files are limited to 64 MiB.',
     saveModuleAs: 'Save Module As',
+    saveCode: 'Save Code',
+    codeFiles: 'Code Files',
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
   },
@@ -243,6 +247,28 @@ const registerIpc = (): void => {
       destinationPath: result.filePath,
       overwrite: true,
     })
+  })
+  ipcMain.handle('document:saveCode', async (_event, suggestedName: string, text: string) => {
+    if (typeof suggestedName !== 'string' || typeof text !== 'string')
+      throw new TypeError('Invalid save-code request.')
+    if (!app.isPackaged && process.env.DNSPY_E2E_SAVE_CODE_PATH) {
+      await writeFile(process.env.DNSPY_E2E_SAVE_CODE_PATH, text, 'utf8')
+      return process.env.DNSPY_E2E_SAVE_CODE_PATH
+    }
+    const safeName = path.basename(suggestedName) || 'code.txt'
+    const extension = path.extname(safeName).slice(1) || 'txt'
+    const result = await dialog.showSaveDialog(mainWindow!, {
+      title: nativeText().saveCode,
+      defaultPath: safeName,
+      filters: [
+        { name: nativeText().codeFiles, extensions: [extension] },
+        { name: nativeText().allFiles, extensions: ['*'] },
+      ],
+    })
+    if (result.canceled || !result.filePath)
+      return undefined
+    await writeFile(result.filePath, text, 'utf8')
+    return result.filePath
   })
   ipcMain.handle('debug:chooseTarget', async () => {
     if (!app.isPackaged && process.env.DNSPY_E2E_DEBUG_TARGET)

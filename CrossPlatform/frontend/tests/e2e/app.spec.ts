@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -7,12 +7,14 @@ let application: ElectronApplication
 let page: Page
 let userDataDirectory: string
 let savePath: string
+let saveCodePath: string
 const assemblyPath = path.resolve(import.meta.dirname, '../../../backend/dnSpy.Backend.Contracts/bin/Debug/net10.0/dnSpy.Backend.Contracts.dll')
 const debugTargetPath = path.resolve(import.meta.dirname, '../../../backend/tests/DebugTarget/bin/Debug/net10.0/DebugTarget.dll')
 
 test.beforeEach(async () => {
   userDataDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-'))
   savePath = path.join(userDataDirectory, 'saved-module.dll')
+  saveCodePath = path.join(userDataDirectory, 'saved-code.cs')
   application = await electron.launch({
     args: ['.', '--no-sandbox', `--user-data-dir=${userDataDirectory}`],
     cwd: path.resolve(import.meta.dirname, '../..'),
@@ -21,6 +23,7 @@ test.beforeEach(async () => {
       DNSPY_E2E_ASSEMBLY: assemblyPath,
       DNSPY_E2E_DEBUG_TARGET: debugTargetPath,
       DNSPY_E2E_SAVE_PATH: savePath,
+      DNSPY_E2E_SAVE_CODE_PATH: saveCodePath,
     },
   })
   page = await application.firstWindow()
@@ -131,6 +134,54 @@ test('opens a real assembly, expands the tree and decompiles a type', async () =
   await page.getByLabel('Decompiler language').selectOption('il')
   await expect.poll(async () => editor.locator('.view-lines').innerText()).toContain('.class')
   await page.screenshot({ path: 'test-results/dnspy-shell.png' })
+})
+
+test('runs document tab commands from the title context menu', async () => {
+  await openAssemblyAndNamespace()
+  const helloRequest = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
+  const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+  await helloRequest.dblclick()
+  await expect.poll(async () => (await page.locator('.monaco-editor .view-lines').innerText()).replaceAll('\u00a0', ' ')).toContain('record HelloRequest')
+  await rpcException.dblclick()
+  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' })).toBeVisible()
+
+  const helloTab = page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })
+  await helloTab.click({ button: 'right' })
+  const menu = page.getByRole('menu', { name: 'Tab actions' })
+  await expect(menu.getByRole('menuitem', { name: /Save Code/ })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: /^Close Ctrl\+F4$/ })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: 'Close All Tabs' })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: 'Close All But This' })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: 'New Tab' })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: 'New Horizontal Tab Group' })).toBeEnabled()
+  await expect(menu.getByRole('menuitem', { name: 'New Vertical Tab Group' })).toBeEnabled()
+
+  await menu.getByRole('menuitem', { name: /Save Code/ }).click()
+  await expect.poll(() => existsSync(saveCodePath)).toBe(true)
+  expect(readFileSync(saveCodePath, 'utf8')).toContain('record HelloRequest')
+
+  await helloTab.click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Tab' }).click()
+  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })).toHaveCount(2)
+
+  await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' }).last().click({ button: 'right' })
+  await page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' }).click()
+  await expect(page.locator('.flexlayout__tabset')).toHaveCount(2)
+
+  await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' }).click({ button: 'right' })
+  await expect(page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' })).toBeVisible()
+  await expect(page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Vertical Tab Group' })).toHaveCount(0)
+
+  await page.keyboard.press('Escape')
+  rmSync(saveCodePath)
+  await page.keyboard.press('Control+s')
+  await expect.poll(() => existsSync(saveCodePath)).toBe(true)
+  expect(readFileSync(saveCodePath, 'utf8')).toContain('class RpcException')
+
+  await page.keyboard.press('Control+t')
+  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' })).toHaveCount(2)
+  await page.keyboard.press('Control+F4')
+  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' })).toHaveCount(1)
 })
 
 test('navigates C# references with F12 and document history', async () => {

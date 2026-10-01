@@ -24,6 +24,7 @@ const api: DnSpyApi = {
   undoEdit: (workspaceId) => ipcRenderer.invoke('edit:undo', workspaceId),
   redoEdit: (workspaceId) => ipcRenderer.invoke('edit:redo', workspaceId),
   saveModuleAs: (workspaceId, moduleId, suggestedName) => ipcRenderer.invoke('module:saveAs', workspaceId, moduleId, suggestedName),
+  saveCode: (suggestedName, text) => ipcRenderer.invoke('document:saveCode', suggestedName, text),
   chooseDebugTarget: () => ipcRenderer.invoke('debug:chooseTarget'),
   listDebugProcesses: () => ipcRenderer.invoke('debug:listProcesses'),
   launchDebug: (program, args, stopAtEntry) => ipcRenderer.invoke('debug:launch', program, args, stopAtEntry),
