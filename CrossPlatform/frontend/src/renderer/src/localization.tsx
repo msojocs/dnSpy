@@ -76,6 +76,7 @@ const zhCN: Record<string, string> = {
   'Restore Defaults': '恢复默认值',
   'Assembly Explorer': '程序集资源管理器',
   'Output': '输出',
+  'C# Interactive': 'C# 交互',
   'Search': '搜索',
   'Analyzer': '分析器',
   'Locals': '局部变量',
@@ -341,6 +342,23 @@ const zhCN: Record<string, string> = {
   'Settings shared by every debugger engine that the cross-platform backend supports.': '由跨平台后端支持的所有调试器引擎共享的设置。',
   'Cross-cutting settings that affect every part of the app.': '影响应用各个部分的全局设置。',
   'Settings that influence how .NET assemblies are decompiled into source code.': '影响 .NET 程序集如何被反编译为源代码的设置。',
+
+  // C# Interactive: the banner's follow-up hint, the #help text and the per-submission failures.
+  'Type "#help" for more information.': '键入 "#help" 获取更多信息。',
+  'Resetting execution engine.': '正在重置执行引擎。',
+  'Script failed: {message}': '脚本执行失败：{message}',
+  'Keyboard shortcuts:': '键盘快捷键：',
+  'Execute the command': '执行命令',
+  'Insert a new line': '插入新行',
+  'Show previous command': '显示上一条命令',
+  'Show next command': '显示下一条命令',
+  'REPL commands:': 'REPL 命令：',
+  'Clear the script editor': '清空脚本编辑器',
+  'Display the help': '显示帮助',
+  'Reset the execution environment': '重置执行环境',
+  'Script directives:': '脚本指令：',
+  'Add a reference, either an assembly or a path to a file on disk, #r "myfile.dll"': '添加引用，可以是程序集，也可以是磁盘上的文件路径，#r "myfile.dll"',
+  'Load and execute a script, #load "myscript.csx"': '加载并执行脚本，#load "myscript.csx"',
 
   // Compiler, Disassembler, Text Viewer, Code Editor, REPL, Output, Assembly Explorer,
   // BAML, Hex Editor, Background Image and Bookmarks settings pages.

@@ -123,6 +123,11 @@ test.describe('the workspace shell', () => {
     await page.getByRole('button', { name: '打开程序集' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
     await expect(page.locator('.tree-row[data-kind="referencesgroup"]')).toContainText('程序集引用')
+
+    // The C# Interactive window is named the way the WPF menu names it.
+    await page.getByRole('menuitem', { name: '视图' }).click()
+    await expect(page.getByRole('menuitem', { name: 'C# 交互' })).toBeVisible()
+    await page.getByRole('menuitem', { name: '视图' }).click()
     await page.screenshot({ path: 'test-results/dnspy-shell-zh-CN.png' })
 
     await page.reload()
@@ -354,6 +359,58 @@ test.describe('the workspace shell', () => {
     // A second press removes it again, like the upstream Toggle Breakpoint command.
     await page.keyboard.press('F9')
     await expect(breakpointRows).toHaveCount(0)
+  })
+
+  test('runs submissions in the C# Interactive window', async () => {
+    await page.getByRole('menuitem', { name: 'View' }).click()
+    await page.getByRole('menuitem', { name: /^C# Interactive/ }).click()
+
+    // Opening the window builds the session, which prints the engine banner; the first submission
+    // then has to compile, so the waits below are wider than the default.
+    const log = page.locator('.script-log')
+    await expect(log).toContainText('Roslyn C# Compiler version', { timeout: 60_000 })
+    await expect(log).toContainText('Type "#help" for more information.')
+
+    const pane = page.locator('.script-pane')
+    const input = page.locator('.script-input .monaco-editor')
+    // The input box is locked while a submission runs, so every submission below waits for the
+    // previous one to finish before typing — the same thing a user does in front of the window.
+    const submit = async (code: string): Promise<void> => {
+      await expect(pane).toHaveAttribute('data-running', 'false', { timeout: 60_000 })
+      await input.click()
+      await page.keyboard.type(code)
+      await page.keyboard.press('Enter')
+    }
+
+    await submit('1 + 1')
+    await expect(log).toContainText('> 1 + 1')
+    await expect(log.locator('.script-result').last()).toHaveText('2', { timeout: 60_000 })
+
+    // The host's stdout is the JSON-RPC channel, so this is also the check that a script writing to
+    // the console is captured rather than corrupting the protocol — the submission after it still
+    // works, which is what a broken frame would prevent.
+    await submit('Console.WriteLine("hello from the console");')
+    await expect(log).toContainText('hello from the console')
+
+    // The session outlives a submission, so a variable declared in one is visible to the next.
+    await submit('var x = 41;')
+    await expect(log).toContainText('> var x = 41;')
+    await submit('x + 1')
+    await expect(log.locator('.script-result').last()).toHaveText('42', { timeout: 60_000 })
+
+    // #reset drops the session, and the old variable goes with it.
+    await submit('#reset')
+    await expect(log).toContainText('Resetting execution engine.')
+    await submit('x + 1')
+    await expect(log.locator('.script-error').last()).toContainText('CS0103', { timeout: 60_000 })
+
+    // #help is answered by the window itself, like the upstream REPL command.
+    await submit('#help')
+    await expect(log).toContainText('Script directives:')
+    await expect(log).toContainText('#load "myscript.csx"')
+
+    await page.getByRole('button', { name: 'Clear the script editor' }).click()
+    await expect(log).toBeEmpty()
   })
 })
 

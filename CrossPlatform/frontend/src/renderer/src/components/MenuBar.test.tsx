@@ -52,6 +52,7 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   visibleToolWindows: new Set(['explorer', 'output', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules']),
   onShowExplorer: vi.fn(),
   onShowOutput: vi.fn(),
+  onShowCSharpInteractive: vi.fn(),
   onShowModuleBreakpoints: vi.fn(),
   onShowExceptionSettings: vi.fn(),
   onShowAutos: vi.fn(),
@@ -136,6 +137,7 @@ describe('MenuBar', () => {
       'CodeCtrl+Alt+0',
       'Assembly ExplorerCtrl+Alt+L',
       'OutputAlt+2',
+      'C# InteractiveCtrl+Alt+N',
       'Options...',
     ])
     // Items that exist only in the cross-platform build must not leak back in.
@@ -170,6 +172,14 @@ describe('MenuBar', () => {
     expect(code).toBeEnabled()
     fireEvent.click(code)
     expect(onShowCode).toHaveBeenCalledOnce()
+  })
+
+  it('invokes the C# Interactive handler from the View menu', () => {
+    const onShowCSharpInteractive = vi.fn()
+    renderMenuWith({ onShowCSharpInteractive })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^C# Interactive/ }))
+    expect(onShowCSharpInteractive).toHaveBeenCalledOnce()
   })
 
   it('invokes the collapse handler from the View menu', () => {
@@ -308,6 +318,7 @@ describe('MenuBar', () => {
       onDisableAllBreakpoints={vi.fn()}
       onShowExplorer={vi.fn()}
       onShowOutput={onShowOutput}
+      onShowCSharpInteractive={vi.fn()}
       onShowModuleBreakpoints={onShowModuleBreakpoints}
       onShowExceptionSettings={onShowExceptionSettings}
       onShowAutos={onShowAutos}
@@ -408,6 +419,7 @@ describe('MenuBar', () => {
       visibleToolWindows={new Set(['explorer', 'output', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
       onShowExplorer={vi.fn()}
       onShowOutput={vi.fn()}
+      onShowCSharpInteractive={vi.fn()}
       onShowModuleBreakpoints={vi.fn()}
       onShowExceptionSettings={vi.fn()}
       onShowAutos={vi.fn()}

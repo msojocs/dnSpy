@@ -336,6 +336,10 @@ const registerIpc = (): void => {
   debugRequest('debug:setExceptionBreakpoints', 'setExceptionBreakpoints')
   debugRequest('debug:evaluate', 'evaluate')
   ipcMain.handle('debug:disconnect', (_event, sessionId: string, terminateDebuggee: boolean) => requireBackend().invoke('debug/disconnect', { sessionId, terminateDebuggee }))
+  // A submission may legitimately run for minutes, which the 60 s default would cut short; the
+  // resulting system/cancel would look to the user like a script that simply never finished.
+  ipcMain.handle('script:evaluate', (_event, code: string) => requireBackend().invoke('script/evaluate', { code }, 600_000))
+  ipcMain.handle('script:reset', () => requireBackend().invoke('script/reset', {}, 600_000))
   ipcMain.handle('window:minimize', (event) => BrowserWindow.fromWebContents(event.sender)?.minimize())
   ipcMain.handle('window:toggleMaximize', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender)

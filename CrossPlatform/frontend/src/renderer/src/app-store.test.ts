@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodeStatement, DebugBreakpoint, TreeNode } from '../../shared/protocol'
 import { codeStatementAt, lineBreakpointMarkers, methodBreakpointName, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
 import type { LineBreakpoint } from './app-store'
+import { translate } from './localization'
 
 describe('suggestCodeFilename', () => {
   it.each([
@@ -356,5 +357,112 @@ describe('line breakpoints', () => {
     await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
     expect(useAppStore.getState().lineBreakpoints).toHaveLength(1)
     expect(setBreakpoints).not.toHaveBeenCalled()
+  })
+})
+
+describe('C# Interactive', () => {
+  const evaluateScript = vi.fn()
+  const resetScript = vi.fn()
+  const banner = { kind: 'banner', text: 'Microsoft (R) Roslyn C# Compiler version 4.14.0' }
+
+  beforeEach(() => {
+    evaluateScript.mockReset().mockResolvedValue({ entries: [{ kind: 'result', text: '2' }] })
+    resetScript.mockReset().mockResolvedValue({ entries: [banner] })
+    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, evaluateScript, resetScript } })
+    useAppStore.setState({ scriptEntries: [], scriptRunning: false, scriptHistory: [], scriptStarted: false })
+  })
+
+  it('echoes a submission and appends what the host returned', async () => {
+    await useAppStore.getState().evaluateScript('  1 + 1  ')
+
+    expect(evaluateScript).toHaveBeenCalledWith('1 + 1')
+    expect(useAppStore.getState().scriptEntries).toEqual([
+      { kind: 'echo', text: '1 + 1' },
+      { kind: 'result', text: '2' },
+    ])
+    expect(useAppStore.getState().scriptRunning).toBe(false)
+  })
+
+  it('ignores a blank submission', async () => {
+    await useAppStore.getState().evaluateScript('   ')
+
+    expect(evaluateScript).not.toHaveBeenCalled()
+    expect(useAppStore.getState().scriptEntries).toEqual([])
+    expect(useAppStore.getState().scriptHistory).toEqual([])
+  })
+
+  it.each(['#clear', '#cls'])('clears the log for %s without asking the host', async (command) => {
+    useAppStore.setState({ scriptEntries: [{ kind: 'output', text: 'earlier' }] })
+
+    await useAppStore.getState().evaluateScript(command)
+
+    expect(evaluateScript).not.toHaveBeenCalled()
+    expect(useAppStore.getState().scriptEntries).toEqual([])
+  })
+
+  it('prints the help text without asking the host', async () => {
+    await useAppStore.getState().evaluateScript('#help')
+
+    expect(evaluateScript).not.toHaveBeenCalled()
+    const entries = useAppStore.getState().scriptEntries
+    expect(entries[0]).toEqual({ kind: 'echo', text: '#help' })
+    expect(entries.some((entry) => entry.text.includes('#reset'))).toBe(true)
+    expect(entries.some((entry) => entry.text.includes('#load'))).toBe(true)
+  })
+
+  it('resets the session for #reset and reports the new banner', async () => {
+    await useAppStore.getState().evaluateScript('#reset')
+
+    expect(resetScript).toHaveBeenCalledOnce()
+    expect(useAppStore.getState().scriptEntries).toEqual([
+      { kind: 'echo', text: '#reset' },
+      { kind: 'output', text: translate('Resetting execution engine.') },
+      banner,
+    ])
+  })
+
+  it('leaves an unknown #command to the host', async () => {
+    await useAppStore.getState().evaluateScript('#nonsense')
+
+    expect(evaluateScript).toHaveBeenCalledWith('#nonsense')
+  })
+
+  it('keeps a history of submissions, without consecutive duplicates', async () => {
+    await useAppStore.getState().evaluateScript('1 + 1')
+    await useAppStore.getState().evaluateScript('1 + 1')
+    await useAppStore.getState().evaluateScript('2 + 2')
+
+    expect(useAppStore.getState().scriptHistory).toEqual(['1 + 1', '2 + 2'])
+  })
+
+  it('narrates an explicit reset and prints the fresh banner', async () => {
+    await useAppStore.getState().resetScript()
+
+    expect(useAppStore.getState().scriptEntries).toEqual([
+      { kind: 'output', text: translate('Resetting execution engine.') },
+      banner,
+    ])
+  })
+
+  it('builds the session once, printing the banner and the help hint', async () => {
+    await useAppStore.getState().startScript()
+    await useAppStore.getState().startScript()
+
+    expect(resetScript).toHaveBeenCalledOnce()
+    const entries = useAppStore.getState().scriptEntries
+    expect(entries[0]).toEqual(banner)
+    expect(entries[entries.length - 1]).toEqual({ kind: 'help', text: translate('Type "#help" for more information.') })
+  })
+
+  it('reports a host failure as an error line', async () => {
+    evaluateScript.mockRejectedValue(new Error('backend is gone'))
+
+    await useAppStore.getState().evaluateScript('1 + 1')
+
+    expect(useAppStore.getState().scriptEntries[1]).toEqual({
+      kind: 'error',
+      text: translate('Script failed: {message}', { message: 'backend is gone' }),
+    })
+    expect(useAppStore.getState().scriptRunning).toBe(false)
   })
 })

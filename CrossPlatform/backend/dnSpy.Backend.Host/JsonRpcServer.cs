@@ -16,6 +16,7 @@ internal sealed class JsonRpcServer {
 	readonly Stream input;
 	readonly Stream output;
 	readonly WorkspaceManager workspaces;
+	readonly CSharpScriptService scripts;
 	readonly CorDebugSessionManager? debugSessions;
 	readonly HostOptions hostOptions;
 	readonly CancellationTokenSource shutdown;
@@ -24,10 +25,11 @@ internal sealed class JsonRpcServer {
 	readonly JsonSerializerOptions jsonOptions = CreateJsonOptions();
 	volatile bool handshakeComplete;
 
-	public JsonRpcServer(Stream input, Stream output, WorkspaceManager workspaces, CorDebugSessionManager? debugSessions, HostOptions hostOptions, CancellationTokenSource shutdown) {
+	public JsonRpcServer(Stream input, Stream output, WorkspaceManager workspaces, CSharpScriptService scripts, CorDebugSessionManager? debugSessions, HostOptions hostOptions, CancellationTokenSource shutdown) {
 		this.input = input;
 		this.output = output;
 		this.workspaces = workspaces;
+		this.scripts = scripts;
 		this.debugSessions = debugSessions;
 		this.hostOptions = hostOptions;
 		this.shutdown = shutdown;
@@ -201,6 +203,10 @@ internal sealed class JsonRpcServer {
 				return await workspaces.RedoAsync(DeserializeParams<WorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.ModuleSaveAs:
 				return await workspaces.SaveModuleAsync(DeserializeParams<SaveModuleRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.ScriptEvaluate:
+				return await scripts.EvaluateAsync(DeserializeParams<ScriptEvaluateRequest>(request).Code, cancellationToken).ConfigureAwait(false);
+			case RpcMethods.ScriptReset:
+				return await scripts.ResetAsync().ConfigureAwait(false);
 			case RpcMethods.DebugLaunch:
 				return await GetDebugSessions().LaunchAsync(DeserializeParams<DebugLaunchRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.DebugListProcesses:
@@ -241,6 +247,7 @@ internal sealed class JsonRpcServer {
 				["assembly.edit"] = true,
 				["assembly.edit.il"] = true,
 				["assembly.edit.resources"] = true,
+				["script.csharp"] = true,
 				["debug.coreclr.launch"] = debugSessions is not null,
 				["debug.coreclr.attach"] = debugSessions is not null,
 			});

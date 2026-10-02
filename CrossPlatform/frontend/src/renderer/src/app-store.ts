@@ -15,6 +15,7 @@ import type {
   EditCommitResponse,
   OpenedModule,
   ReferenceResult,
+  ScriptOutputEntry,
   SearchResult,
   TreeNode,
 } from '../../shared/protocol'
@@ -103,6 +104,14 @@ interface AppState {
   exceptionBreakpoints: string[]
   /** What the engine says it can do; drives which debug UI stays enabled. */
   debugCapabilities: Record<string, unknown>
+  /** Lines of the C# Interactive window, oldest first. */
+  scriptEntries: ScriptOutputEntry[]
+  /** Set while a submission is running, which is what locks the input box. */
+  scriptRunning: boolean
+  /** Submissions already run, oldest first, for Alt+Up / Alt+Down. */
+  scriptHistory: string[]
+  /** Set once the session has been built, so reopening the window does not rebuild it. */
+  scriptStarted: boolean
   error?: string
   wordWrap: boolean
   highlightCurrentLine: boolean
@@ -156,6 +165,15 @@ interface AppState {
   setExceptionBreakpoint(filter: string, enabled: boolean): Promise<void>
   appendOutput(message: string): void
   clearError(): void
+  /** Builds the C# Interactive session the first time the window is opened, printing the banner. */
+  startScript(): Promise<void>
+  /** Runs one submission, echoing it first; `#`-commands are handled here rather than by the host. */
+  evaluateScript(code: string): Promise<void>
+  /** Rebuilds the session, which is what `#reset` does and what drops the script's variables. */
+  resetScript(): Promise<void>
+  clearScriptOutput(): void
+  /** Reprints the `#help` text without going near the host. */
+  showScriptHelp(): void
 }
 
 const timestamp = (): string => new Date().toLocaleTimeString(getActiveLocale())
@@ -181,6 +199,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   searchResults: [],
   references: [],
   output: [],
+  scriptEntries: [],
+  scriptRunning: false,
+  scriptHistory: [],
+  scriptStarted: false,
   busy: false,
   dirty: false,
   canUndo: false,
@@ -888,6 +910,57 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearError: () => set({ error: undefined }),
 
+  startScript: async () => {
+    if (get().scriptStarted) return
+    set({ scriptStarted: true })
+    await rebuildScriptSession(set)
+    appendScriptEntries(set, [{ kind: 'help', text: t('Type "#help" for more information.') }])
+  },
+
+  resetScript: async () => {
+    // The window narrates every explicit reset — the toolbar button and `#reset` alike, as the
+    // upstream command does. Opening the window is the one case that prints the banner alone.
+    appendScriptEntries(set, [{ kind: 'output', text: t('Resetting execution engine.') }])
+    await rebuildScriptSession(set)
+  },
+
+  evaluateScript: async (code) => {
+    const submission = code.trim()
+    if (!submission || get().scriptRunning) return
+    const history = get().scriptHistory
+    const echo: ScriptOutputEntry = { kind: 'echo', text: submission }
+    set((state) => ({
+      scriptEntries: [...state.scriptEntries, echo].slice(-MAX_SCRIPT_ENTRIES),
+      // Pressing Enter twice on the same line should not fill the history with copies of it.
+      scriptHistory: history[history.length - 1] === submission ? history : [...history, submission].slice(-MAX_SCRIPT_HISTORY),
+    }))
+    switch (scriptCommandOf(submission)) {
+      case 'clear':
+      case 'cls':
+        get().clearScriptOutput()
+        return
+      case 'help':
+        get().showScriptHelp()
+        return
+      case 'reset':
+        await get().resetScript()
+        return
+    }
+    set({ scriptRunning: true })
+    try {
+      const response = await window.dnSpy.evaluateScript(submission)
+      appendScriptEntries(set, response.entries)
+    } catch (error) {
+      appendScriptEntries(set, [scriptFailureEntry(error)])
+    } finally {
+      set({ scriptRunning: false })
+    }
+  },
+
+  clearScriptOutput: () => set({ scriptEntries: [] }),
+
+  showScriptHelp: () => appendScriptEntries(set, scriptHelpEntries()),
+
   setWordWrap: (value) => {
     if (typeof localStorage !== 'undefined')
       localStorage.setItem('dnspy.wordWrap', String(value))
@@ -1054,6 +1127,72 @@ function rememberWorkspace(paths: string[]): string[][] {
   localStorage.setItem(recentWorkspaceKey, JSON.stringify(recent))
   return recent
 }
+
+// A REPL left open all day must not grow without bound; the oldest lines go first.
+const MAX_SCRIPT_ENTRIES = 2000
+const MAX_SCRIPT_HISTORY = 100
+
+/** The `#`-commands the window answers itself; anything else goes to the host as code. */
+const SCRIPT_COMMANDS = ['clear', 'cls', 'help', 'reset']
+
+/**
+ * The `#command` a submission is, or `undefined` when it is code to compile. Matched
+ * case-sensitively and only as the first word, exactly like the window's `#` parser, so `#Help`
+ * reaches the compiler and fails the way it does upstream.
+ */
+const scriptCommandOf = (submission: string): string | undefined => {
+  if (!submission.startsWith('#')) return undefined
+  const [name] = submission.slice(1).trimStart().split(/\s+/)
+  return name !== undefined && SCRIPT_COMMANDS.includes(name) ? name : undefined
+}
+
+const appendScriptEntries = (set: StoreSet, entries: ScriptOutputEntry[]): void => {
+  set((state) => ({ scriptEntries: [...state.scriptEntries, ...entries].slice(-MAX_SCRIPT_ENTRIES) }))
+}
+
+/** Throws the host's session away and reports the banner of the engine that replaced it. */
+const rebuildScriptSession = async (set: StoreSet): Promise<void> => {
+  set({ scriptRunning: true })
+  try {
+    const response = await window.dnSpy.resetScript()
+    appendScriptEntries(set, response.entries)
+  } catch (error) {
+    appendScriptEntries(set, [scriptFailureEntry(error)])
+  } finally {
+    set({ scriptRunning: false })
+  }
+}
+
+const scriptFailureEntry = (error: unknown): ScriptOutputEntry => ({
+  kind: 'error',
+  text: t('Script failed: {message}', { message: error instanceof Error ? error.message : String(error) }),
+})
+
+/** A row of `#help`, padded to the two-column layout the window prints. */
+const helpRow = (command: string, description: string): ScriptOutputEntry => ({
+  kind: 'output',
+  text: `  ${command}${' '.repeat(Math.max(1, 21 - command.length))}${description}`,
+})
+
+/**
+ * The `#help` text. Upstream lists Ctrl+A and Ctrl+Alt+Up/Down as well; those are not bound in
+ * this input box, and advertising a shortcut that does nothing is worse than leaving it out.
+ */
+const scriptHelpEntries = (): ScriptOutputEntry[] => [
+  { kind: 'help', text: t('Keyboard shortcuts:') },
+  helpRow('Enter', t('Execute the command')),
+  helpRow('Ctrl+Enter', t('Execute the command')),
+  helpRow('Shift+Enter', t('Insert a new line')),
+  helpRow('Alt+Up Arrow', t('Show previous command')),
+  helpRow('Alt+Down Arrow', t('Show next command')),
+  { kind: 'help', text: t('REPL commands:') },
+  helpRow('#clear, #cls', t('Clear the script editor')),
+  helpRow('#help', t('Display the help')),
+  helpRow('#reset', t('Reset the execution environment')),
+  { kind: 'help', text: t('Script directives:') },
+  helpRow('#r', t('Add a reference, either an assembly or a path to a file on disk, #r "myfile.dll"')),
+  helpRow('#load', t('Load and execute a script, #load "myscript.csx"')),
+]
 
 type StoreGet = () => AppState
 type StoreSet = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void

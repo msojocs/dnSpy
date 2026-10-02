@@ -49,6 +49,8 @@ const api: DnSpyApi = {
     return { name: expression, value: body?.result ?? '', type: body?.type, variablesReference: body?.variablesReference ?? 0, evaluateName: expression }
   },
   disconnectDebug: (sessionId, terminateDebuggee) => ipcRenderer.invoke('debug:disconnect', sessionId, terminateDebuggee),
+  evaluateScript: (code) => ipcRenderer.invoke('script:evaluate', code),
+  resetScript: () => ipcRenderer.invoke('script:reset'),
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggleMaximize'),
   closeWindow: () => ipcRenderer.invoke('window:close'),

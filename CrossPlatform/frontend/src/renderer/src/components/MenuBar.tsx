@@ -57,6 +57,7 @@ interface MenuBarProps {
   onDisableAllBreakpoints(): void
   onShowExplorer(): void
   onShowOutput(): void
+  onShowCSharpInteractive(): void
   onShowModuleBreakpoints(): void
   onShowExceptionSettings(): void
   onShowAutos(): void
@@ -142,6 +143,7 @@ export const MenuBar = ({
   visibleToolWindows,
   onShowExplorer,
   onShowOutput,
+  onShowCSharpInteractive,
   onShowModuleBreakpoints,
   onShowExceptionSettings,
   onShowAutos,
@@ -216,6 +218,7 @@ export const MenuBar = ({
       { label: t('Code'), shortcut: 'Ctrl+Alt+0', disabled: !canShowCode, action: onShowCode },
       { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', checked: visibleToolWindows.has('explorer'), action: onShowExplorer },
       { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
+      { label: t('C# Interactive'), shortcut: 'Ctrl+Alt+N', checked: visibleToolWindows.has('csharp-interactive'), action: onShowCSharpInteractive },
       { separator: true },
       { label: t('Options...'), action: () => onShowOptions('environment') },
     ],

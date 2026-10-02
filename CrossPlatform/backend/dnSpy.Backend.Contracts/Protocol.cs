@@ -38,6 +38,8 @@ public static class RpcMethods {
 	public const string DebugRequest = "debug/request";
 	public const string DebugDisconnect = "debug/disconnect";
 	public const string DebugEvent = "debug/event";
+	public const string ScriptEvaluate = "script/evaluate";
+	public const string ScriptReset = "script/reset";
 }
 
 public static class ErrorCodes {
@@ -251,6 +253,28 @@ public sealed record DebugAdapterResponse(JsonElement? Body);
 public sealed record DebugDisconnectRequest(string SessionId, bool TerminateDebuggee = false);
 
 public sealed record DebugEventNotification(string SessionId, string Event, JsonElement? Body);
+
+public sealed record ScriptEvaluateRequest(string Code);
+
+/// <summary>
+/// One line of the C# Interactive window. <paramref name="Kind"/> is one of the
+/// <see cref="ScriptOutputEntry"/> constants and picks the colour the client paints it in.
+/// </summary>
+public sealed record ScriptOutputEntry(string Kind, string Text) {
+	/// <summary>Something the script printed — <c>PrintLine</c>, or the script's own <c>Console</c>.</summary>
+	public const string Output = "output";
+
+	/// <summary>The value a submission evaluated to, formatted by the C# object formatter.</summary>
+	public const string Result = "result";
+
+	/// <summary>A compiler diagnostic or a runtime exception.</summary>
+	public const string Error = "error";
+
+	/// <summary>The engine banner shown when the session is built or rebuilt.</summary>
+	public const string Banner = "banner";
+}
+
+public sealed record ScriptEvaluateResponse(IReadOnlyList<ScriptOutputEntry> Entries);
 
 /// <summary>A breakpoint the client asked for, expressed in decompiled-source coordinates.</summary>
 public sealed record BreakpointQuery(string Id, string NodeId, int Line, int? Column = null);

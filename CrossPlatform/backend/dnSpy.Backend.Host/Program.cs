@@ -7,6 +7,7 @@ using dnSpy.Backend.Host;
 var options = HostOptions.Parse(args);
 using var shutdown = new CancellationTokenSource();
 using var workspaceManager = new WorkspaceManager();
+using var scriptService = new CSharpScriptService();
 // The workspace manager resolves decompiled-source breakpoints to IL for the debug engine, so the
 // engine is created after it and handed the interface. A null engine means the host runs without
 // debugging (see DebugManagerFactory).
@@ -20,6 +21,7 @@ var server = new JsonRpcServer(
 	Console.OpenStandardInput(),
 	Console.OpenStandardOutput(),
 	workspaceManager,
+	scriptService,
 	debugManager,
 	options,
 	shutdown);

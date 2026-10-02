@@ -276,6 +276,21 @@ export interface DebugLaunchOptions {
   workspaceId?: string
 }
 
+/**
+ * One line of the C# Interactive log. Mirrors the backend's `ScriptOutputEntry`; `echo` and `help`
+ * are the kinds the window itself produces, the rest come from the host.
+ */
+export type ScriptOutputKind = 'output' | 'result' | 'error' | 'banner' | 'echo' | 'help'
+
+export interface ScriptOutputEntry {
+  kind: ScriptOutputKind
+  text: string
+}
+
+export interface ScriptEvaluateResponse {
+  entries: ScriptOutputEntry[]
+}
+
 export type UiLocale = 'en' | 'zh-CN'
 
 export interface DnSpyApi {
@@ -324,6 +339,10 @@ export interface DnSpyApi {
   setExceptionBreakpoints(sessionId: string, filters: string[]): Promise<Record<string, unknown>>
   evaluateDebugExpression(sessionId: string, frameId: number, expression: string): Promise<DebugVariable>
   disconnectDebug(sessionId: string, terminateDebuggee: boolean): Promise<void>
+  /** Runs one submission in the C# Interactive session and returns the lines it produced. */
+  evaluateScript(code: string): Promise<ScriptEvaluateResponse>
+  /** Drops the C# Interactive session and builds a fresh one, reporting the engine banner. */
+  resetScript(): Promise<ScriptEvaluateResponse>
   minimizeWindow(): Promise<void>
   toggleMaximizeWindow(): Promise<boolean>
   closeWindow(): Promise<void>

@@ -7,6 +7,7 @@ import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
 import { ToolBar } from './components/ToolBar'
 import { AnalysisPane, DebugPlaceholder, OutputPane, SearchPane } from './components/ToolWindows'
+import { CSharpInteractive } from './components/CSharpInteractive'
 import { MethodBodyEditor, RenameDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
@@ -48,6 +49,7 @@ const createDefaultLayout = (): IJsonModel => ({
       selected: 0,
       children: [
         { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: true },
+        { type: 'tab', id: 'csharp-interactive', name: translate('C# Interactive'), component: 'csharp-interactive', enableClose: true },
         { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
         { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
         { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
@@ -81,6 +83,7 @@ interface RestorableBorderTab {
 const restorableBorderTabs: Record<string, RestorableBorderTab> = {
   explorer: { name: 'Assembly Explorer', component: 'explorer', borderId: 'border_left', location: DockLocation.LEFT },
   output: { name: 'Output', component: 'output', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  'csharp-interactive': { name: 'C# Interactive', component: 'csharp-interactive', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   search: { name: 'Search', component: 'search', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   analysis: { name: 'Analyzer', component: 'analysis', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   locals: { name: 'Locals', component: 'locals', borderId: 'border_bottom', location: DockLocation.BOTTOM },
@@ -250,6 +253,7 @@ export const App = (): React.JSX.Element => {
     const names: Record<string, string> = {
       explorer: t('Assembly Explorer'),
       output: t('Output'),
+      'csharp-interactive': t('C# Interactive'),
       search: t('Search'),
       analysis: t('Analyzer'),
       locals: t('Locals'),
@@ -347,6 +351,9 @@ export const App = (): React.JSX.Element => {
       } else if (event.ctrlKey && event.altKey && (event.code === 'Digit0' || event.code === 'Numpad0')) {
         event.preventDefault()
         void showCode()
+      } else if (event.ctrlKey && event.altKey && event.code === 'KeyN') {
+        event.preventDefault()
+        showBorderTab('csharp-interactive')
       } else if (event.ctrlKey && event.key.toLowerCase() === 'f' && workspaceId) {
         event.preventDefault()
         showBorderTab('search')
@@ -510,6 +517,7 @@ export const App = (): React.JSX.Element => {
       case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} onShowHex={(item) => addSpecialTab('hex', item)} onShowModuleInfo={(item) => addSpecialTab('module-info', item)} />
       case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
       case 'output': return <OutputPane />
+      case 'csharp-interactive': return <CSharpInteractive theme={theme} />
       case 'search': return <SearchPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
       case 'analysis': return <AnalysisPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
       case 'hex': return <HexView moduleId={(node.getConfig() as { moduleId: string }).moduleId} />
@@ -575,6 +583,7 @@ export const App = (): React.JSX.Element => {
         onDisableAllBreakpoints={() => enableAllBreakpoints(false)}
         onShowExplorer={() => showBorderTab('explorer')}
         onShowOutput={() => showBorderTab('output')}
+        onShowCSharpInteractive={() => showBorderTab('csharp-interactive')}
         onShowLocals={() => showBorderTab('locals')}
         onShowWatch={() => showBorderTab('watch')}
         onShowCallStack={() => showBorderTab('callstack')}

@@ -13,5 +13,9 @@
     <PackageReference Include="ICSharpCode.CodeConverter" Version="10.0.1.923" />
     <PackageReference Include="ICSharpCode.BamlDecompiler" Version="11.1.0.9782" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.12" />
+    <!-- Pinned to the Roslyn the rest of the graph already resolves (ICSharpCode.CodeConverter brings
+         in Microsoft.CodeAnalysis.* 4.14.0). A newer Scripting package would lift the whole Roslyn
+         stack and drag the decompiler and CodeConverter along with it. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.14.0" />
   </ItemGroup>
 </Project>
