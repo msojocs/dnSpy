@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodeStatement, DebugBreakpoint } from '../../shared/protocol'
+import type { CodeStatement, DebugBreakpoint, TreeNode } from '../../shared/protocol'
 import { codeStatementAt, lineBreakpointMarkers, methodBreakpointName, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
 import type { LineBreakpoint } from './app-store'
 
@@ -208,6 +208,59 @@ describe('function breakpoints', () => {
     await useAppStore.getState().addFunctionBreakpoint('Ns.Type.A')
     expect(useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.A', enabled: true }])
     expect(setFunctionBreakpoints).not.toHaveBeenCalled()
+  })
+})
+
+describe('collapseTreeViewNodes', () => {
+  const node = (id: string, kind = 'type'): TreeNode => ({ id, label: id, kind, hasChildren: true })
+
+  const seed = (overrides: Partial<ReturnType<typeof useAppStore.getState>> = {}): void => {
+    useAppStore.setState({
+      // assembly > ns > type > method, all expanded.
+      expanded: { assembly: true, ns: true, type: true, method: true, other: true },
+      parents: { ns: 'assembly', type: 'ns', method: 'type', other: 'assembly' },
+      children: { assembly: [node('ns')], ns: [node('type')], type: [node('method')] },
+      selectedNode: node('method', 'method'),
+      ...overrides,
+    })
+  }
+
+  it('keeps the selected node and its ancestors expanded and collapses the rest', () => {
+    seed()
+    useAppStore.getState().collapseTreeViewNodes()
+    expect(useAppStore.getState().expanded).toEqual({
+      assembly: true,
+      ns: true,
+      type: true,
+      method: true,
+      other: false,
+    })
+  })
+
+  it('collapses everything when nothing is selected', () => {
+    seed({ selectedNode: undefined })
+    useAppStore.getState().collapseTreeViewNodes()
+    expect(Object.values(useAppStore.getState().expanded).every((value) => !value)).toBe(true)
+  })
+
+  it('keeps an ancestor expanded even when it was never toggled, as long as its children are loaded', () => {
+    seed({ expanded: { method: true, other: true }, selectedNode: node('method', 'method') })
+    useAppStore.getState().collapseTreeViewNodes()
+    expect(useAppStore.getState().expanded).toEqual({
+      assembly: true,
+      ns: true,
+      type: true,
+      method: true,
+      other: false,
+    })
+  })
+
+  it('leaves an unwanted ancestor collapsed when its children were never loaded', () => {
+    // `ns` is on the path to the selection but has no cached children, so expanding it would need a
+    // backend round trip the collapse never asked for.
+    seed({ expanded: { method: true }, parents: { type: 'ns', method: 'type' }, children: { type: [node('method')] } })
+    useAppStore.getState().collapseTreeViewNodes()
+    expect(useAppStore.getState().expanded).toEqual({ type: true, method: true })
   })
 })
 

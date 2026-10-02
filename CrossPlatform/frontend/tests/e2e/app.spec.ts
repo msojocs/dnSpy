@@ -97,8 +97,8 @@ test.describe('the workspace shell', () => {
   test('persists themes across renderer reloads', async () => {
     await page.getByRole('menuitem', { name: 'View' }).click()
     // The themes sit in a submenu, which opens while the pointer rests on its parent row.
-    await page.getByRole('menuitem', { name: /^Themes/ }).hover()
-    await page.getByRole('menuitem', { name: 'Light Theme' }).click()
+    await page.getByRole('menuitem', { name: /^Theme$/ }).hover()
+    await page.getByRole('menuitem', { name: 'Light', exact: true }).click()
     await page.getByRole('tab', { name: 'Search' }).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
     await page.reload()
@@ -106,7 +106,7 @@ test.describe('the workspace shell', () => {
     await expect(page.getByText('Ready', { exact: true })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Search' })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('menuitem', { name: 'View' }).click()
-    await page.getByRole('menuitem', { name: /^Themes/ }).hover()
+    await page.getByRole('menuitem', { name: /^Theme$/ }).hover()
     await page.getByRole('menuitem', { name: 'High Contrast' }).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'hc')
   })
@@ -257,12 +257,14 @@ test.describe('the workspace shell', () => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
 
-    await page.getByRole('menuitem', { name: 'View' }).click()
+    // Module tools live on the module's context menu in the explorer, not in the View menu.
+    const moduleRow = page.locator('.tree-row[data-kind="module"]').first()
+    await moduleRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Module Information' }).click()
     await expect(page.getByText('MVID', { exact: true })).toBeVisible()
     await expect(page.getByRole('table', { name: 'Metadata Tables' })).toContainText('TypeDef')
 
-    await page.getByRole('menuitem', { name: 'View' }).click()
+    await moduleRow.click({ button: 'right' })
     await page.getByRole('menuitem', { name: 'Hex View' }).click()
     await expect(page.locator('.hex-content')).toContainText('4D 5A')
 

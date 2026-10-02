@@ -114,6 +114,8 @@ interface AppState {
   closeWorkspace(): Promise<void>
   toggleNode(node: TreeNode): Promise<void>
   selectNode(node: TreeNode): void
+  /** Collapse every expanded node except the selected node and its ancestors. */
+  collapseTreeViewNodes(): void
   openDocument(node: TreeNode, language?: DecompilerLanguage): Promise<string>
   changeDocumentLanguage(nodeId: string, language: DecompilerLanguage): Promise<void>
   runSearch(query: string, kinds?: string[]): Promise<void>
@@ -307,6 +309,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectNode: (node) => set({ selectedNode: node }),
+
+  collapseTreeViewNodes: () => {
+    const { selectedNode, parents, expanded, children } = get()
+    const keep = new Set<string>()
+    if (selectedNode) {
+      keep.add(selectedNode.id)
+      let id = parents[selectedNode.id]
+      while (id && !keep.has(id)) {
+        keep.add(id)
+        id = parents[id]
+      }
+    }
+    const next: Record<string, boolean> = {}
+    for (const id of Object.keys(expanded))
+      next[id] = keep.has(id)
+    // An ancestor on the path to the selection may never have been toggled, so it is absent from
+    // `expanded`; mark it expanded to keep the selection visible. Only when its children are
+    // already loaded — re-expanding a node with cached children needs no backend round trip.
+    for (const id of keep) {
+      if (id === selectedNode?.id || children[id])
+        next[id] = true
+    }
+    set({ expanded: next })
+  },
 
   openDocument: async (node, language = 'cSharp') => {
     const workspaceId = get().workspaceId

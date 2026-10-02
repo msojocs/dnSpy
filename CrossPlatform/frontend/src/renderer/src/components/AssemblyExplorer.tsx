@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { showPopupMenu, type IPopupMenuItem, type PopupMenuEntry } from 'flexlayout-react'
 import {
   Box,
   Braces,
@@ -21,6 +22,8 @@ import { useLanguage } from '../localization'
 interface AssemblyExplorerProps {
   onOpenNode(node: TreeNode): void
   onAnalyzeNode(node: TreeNode): void
+  onShowHex(node: TreeNode): void
+  onShowModuleInfo(node: TreeNode): void
 }
 
 const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
@@ -39,7 +42,9 @@ const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
   }
 }
 
-const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerProps & { node: TreeNode; depth: number }): React.JSX.Element => {
+const contextMenuItem = (key: string, label: string, onSelect: () => void): IPopupMenuItem => ({ key, label, onSelect })
+
+const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps & { node: TreeNode; depth: number }): React.JSX.Element => {
   const children = useAppStore((state) => state.children[node.id])
   const expanded = useAppStore((state) => state.expanded[node.id] ?? false)
   const loading = useAppStore((state) => state.loadingNodes[node.id] ?? false)
@@ -75,9 +80,24 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
         }}
         onContextMenu={(event) => {
           event.preventDefault()
+          event.stopPropagation()
           selectNode(node)
+          const items: PopupMenuEntry[] = []
           if (['type', 'method', 'field', 'property', 'event'].includes(node.kind))
-            onAnalyzeNode(node)
+            items.push(contextMenuItem('analyze', t('Analyzer'), () => onAnalyzeNode(node)))
+          if (node.kind === 'module') {
+            items.push(contextMenuItem('hex', t('Hex View'), () => onShowHex(node)))
+            items.push(contextMenuItem('module-info', t('Module Information'), () => onShowModuleInfo(node)))
+          }
+          if (items.length === 0)
+            return
+          showPopupMenu({
+            anchor: { x: event.clientX, y: event.clientY },
+            returnFocusTo: event.currentTarget,
+            title: t('Assembly Explorer'),
+            items,
+            onClose: () => undefined,
+          })
         }}
       >
         <button
@@ -95,13 +115,13 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode }: AssemblyExplorerPro
         <span className="tree-label">{label}</span>
       </div>
       {expanded && children?.map((child) => (
-        <TreeRow key={child.id} node={child} depth={depth + 1} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} />
+        <TreeRow key={child.id} node={child} depth={depth + 1} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
       ))}
     </>
   )
 }
 
-export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode }: AssemblyExplorerProps): React.JSX.Element => {
+export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps): React.JSX.Element => {
   const roots = useAppStore((state) => state.roots)
   const expanded = useAppStore((state) => state.expanded)
   const toggleNode = useAppStore((state) => state.toggleNode)
@@ -120,7 +140,7 @@ export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode }: AssemblyExplorer
   return (
     <div className="assembly-tree" role="tree" aria-label={t('Assembly Explorer')}>
       {roots.map((root) => (
-        <TreeRow key={root.id} node={root} depth={0} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} />
+        <TreeRow key={root.id} node={root} depth={0} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
       ))}
     </div>
   )

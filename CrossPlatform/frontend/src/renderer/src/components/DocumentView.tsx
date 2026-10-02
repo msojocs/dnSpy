@@ -6,6 +6,7 @@ import type { editor as MonacoEditor } from 'monaco-editor'
 import type { CodeStatement, DecompilerLanguage } from '../../../shared/protocol'
 import { codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
 import type { LineBreakpoint } from '../app-store'
+import { registerDocumentEditor, unregisterDocumentEditor } from '../editor-registry'
 import { useLanguage } from '../localization'
 
 // One decoration per breakpoint that has a line in this document. A disabled breakpoint keeps its dot but draws it
@@ -57,6 +58,8 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   breakpointsRef.current = lineBreakpoints
   toggleLineBreakpointRef.current = toggleLineBreakpoint
   toggleFunctionBreakpointRef.current = toggleFunctionBreakpoint
+
+  useEffect(() => () => unregisterDocumentEditor(viewId), [viewId])
 
   useEffect(() => {
     const editor = editorRef.current
@@ -150,6 +153,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             theme={editorTheme}
             onMount={(editor, monaco) => {
               editorRef.current = editor
+              registerDocumentEditor(viewId, editor)
               const updateLanguageId = (): void => {
                 const languageId = editor.getModel()?.getLanguageId()
                 if (languageId)

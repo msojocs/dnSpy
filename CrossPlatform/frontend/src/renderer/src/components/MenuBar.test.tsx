@@ -1,8 +1,80 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import type { ComponentProps } from 'react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from './MenuBar'
 
 type DebugState = 'inactive' | 'starting' | 'running' | 'stopped'
+type MenuBarProps = ComponentProps<typeof MenuBar>
+
+const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; items?: { name: string; enabled: boolean }[] } = {}): MenuBarProps => ({
+  hasWorkspace: true,
+  canRename: true,
+  canEditMethod: false,
+  canReplaceResource: false,
+  canShowCode: false,
+  debugAvailable: false,
+  debugState: 'inactive',
+  recentWorkspaces: [],
+  canUndo: false,
+  canRedo: false,
+  theme: 'dark',
+  wordWrap: false,
+  highlightCurrentLine: true,
+  fullScreen: false,
+  onOpen: vi.fn(),
+  onOpenRecent: vi.fn(),
+  onClose: vi.fn(),
+  onSave: vi.fn(),
+  onFind: vi.fn(),
+  onUndo: vi.fn(),
+  onRedo: vi.fn(),
+  onRename: vi.fn(),
+  onEditMethod: vi.fn(),
+  onReplaceResource: vi.fn(),
+  onShowCode: vi.fn(),
+  onCollapseTreeViewNodes: vi.fn(),
+  onStartDebug: vi.fn(),
+  onAttachDebug: vi.fn(),
+  onContinueDebug: vi.fn(),
+  onPauseDebug: vi.fn(),
+  onStepIn: vi.fn(),
+  onStepOver: vi.fn(),
+  onStepOut: vi.fn(),
+  onStopDebug: vi.fn(),
+  canToggleBreakpoint: breakpoints.canToggle ?? false,
+  hasFunctionBreakpoints: (breakpoints.items ?? []).length > 0,
+  canEnableAllBreakpoints: (breakpoints.items ?? []).some((item) => !item.enabled),
+  canDisableAllBreakpoints: (breakpoints.items ?? []).some((item) => item.enabled),
+  onToggleBreakpoint: breakpoints.onToggle ?? vi.fn(),
+  onDeleteAllBreakpoints: vi.fn(),
+  onEnableAllBreakpoints: vi.fn(),
+  onDisableAllBreakpoints: vi.fn(),
+  visibleToolWindows: new Set(['explorer', 'output', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules']),
+  onShowExplorer: vi.fn(),
+  onShowOutput: vi.fn(),
+  onShowModuleBreakpoints: vi.fn(),
+  onShowExceptionSettings: vi.fn(),
+  onShowAutos: vi.fn(),
+  onShowStaticFields: vi.fn(),
+  onShowProcesses: vi.fn(),
+  onShowMemory: vi.fn(),
+  onShowDisassembly: vi.fn(),
+  onShowLocals: vi.fn(),
+  onShowWatch: vi.fn(),
+  onShowCallStack: vi.fn(),
+  onShowBreakpoints: vi.fn(),
+  onShowThreads: vi.fn(),
+  onShowModules: vi.fn(),
+  onTheme: vi.fn(),
+  onToggleWordWrap: vi.fn(),
+  onToggleHighlightCurrentLine: vi.fn(),
+  onToggleFullScreen: vi.fn(),
+  onSetLanguage: vi.fn(),
+  onAbout: vi.fn(),
+  onQuit: vi.fn(),
+  onShowOptions: vi.fn(),
+})
+
 const renderMenu = (
   debugAvailable = false,
   onAbout = vi.fn(),
@@ -10,76 +82,18 @@ const renderMenu = (
   onShowOptions = vi.fn(),
   breakpoints: { canToggle?: boolean; onToggle?: () => void; items?: { name: string; enabled: boolean }[] } = {},
 ): void => {
-  render(<MenuBar
-    hasWorkspace={true}
-    canRename={true}
-    canEditMethod={false}
-    canReplaceResource={false}
-    canInspectModule={true}
-    debugAvailable={debugAvailable}
-    debugState={debugState}
-    recentWorkspaces={[]}
-    canUndo={false}
-    canRedo={false}
-    theme="dark"
-    wordWrap={false}
-    highlightCurrentLine={true}
-    fullScreen={false}
-    onOpen={vi.fn()}
-    onOpenRecent={vi.fn()}
-    onClose={vi.fn()}
-    onSave={vi.fn()}
-    onFind={vi.fn()}
-    onUndo={vi.fn()}
-    onRedo={vi.fn()}
-    onRename={vi.fn()}
-    onEditMethod={vi.fn()}
-    onReplaceResource={vi.fn()}
-    onHex={vi.fn()}
-    onModuleInfo={vi.fn()}
-    onStartDebug={vi.fn()}
-    onAttachDebug={vi.fn()}
-    onContinueDebug={vi.fn()}
-    onPauseDebug={vi.fn()}
-    onStepIn={vi.fn()}
-    onStepOver={vi.fn()}
-    onStepOut={vi.fn()}
-    onStopDebug={vi.fn()}
-    canToggleBreakpoint={breakpoints.canToggle ?? false}
-    hasFunctionBreakpoints={(breakpoints.items ?? []).length > 0}
-    canEnableAllBreakpoints={(breakpoints.items ?? []).some((item) => !item.enabled)}
-    canDisableAllBreakpoints={(breakpoints.items ?? []).some((item) => item.enabled)}
-    onToggleBreakpoint={breakpoints.onToggle ?? vi.fn()}
-    onDeleteAllBreakpoints={vi.fn()}
-    onEnableAllBreakpoints={vi.fn()}
-    onDisableAllBreakpoints={vi.fn()}
-    visibleToolWindows={new Set(['explorer', 'output', 'search', 'analysis', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
-    onShowExplorer={vi.fn()}
-    onShowOutput={vi.fn()}
-    onShowSearch={vi.fn()}
-    onShowAnalysis={vi.fn()}
-    onShowModuleBreakpoints={vi.fn()}
-    onShowExceptionSettings={vi.fn()}
-    onShowAutos={vi.fn()}
-    onShowStaticFields={vi.fn()}
-    onShowProcesses={vi.fn()}
-    onShowMemory={vi.fn()}
-    onShowDisassembly={vi.fn()}
-    onShowLocals={vi.fn()}
-    onShowWatch={vi.fn()}
-    onShowCallStack={vi.fn()}
-    onShowBreakpoints={vi.fn()}
-    onShowThreads={vi.fn()}
-    onShowModules={vi.fn()}
-    onTheme={vi.fn()}
-    onToggleWordWrap={vi.fn()}
-    onToggleHighlightCurrentLine={vi.fn()}
-    onToggleFullScreen={vi.fn()}
-    onSetLanguage={vi.fn()}
-    onAbout={onAbout}
-    onQuit={vi.fn()}
-    onShowOptions={onShowOptions}
-  />)
+  render(<MenuBar {...baseProps(breakpoints)} debugAvailable={debugAvailable} debugState={debugState} onAbout={onAbout} onShowOptions={onShowOptions} />)
+}
+
+/** Render with a few props swapped out — for tests that only care about one menu entry. */
+const renderMenuWith = (overrides: Partial<MenuBarProps>): void => {
+  render(<MenuBar {...baseProps()} {...overrides} />)
+}
+
+/** The labels of the open top-level popup, in render order. */
+const openMenu = (name: string): string[] => {
+  fireEvent.click(screen.getByRole('menuitem', { name }))
+  return within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent ?? '')
 }
 
 afterEach(() => {
@@ -110,16 +124,60 @@ describe('MenuBar', () => {
 
   it('mirrors the upstream View menu layout', () => {
     renderMenu()
+    // Upstream sorts the View menu by group and then by item order, so the options come first
+    // (Word Wrap … Collapse Tree View Nodes, Theme, Language), then the tool windows, then Options.
+    expect(openMenu('View')).toEqual([
+      'Word WrapCtrl+E, Ctrl+W',
+      'Highlight Current Line',
+      'Full ScreenShift+Alt+Enter',
+      'Collapse Tree View NodesCtrl+Shift+P',
+      'Theme',
+      'Language',
+      'CodeCtrl+Alt+0',
+      'Assembly ExplorerCtrl+Alt+L',
+      'OutputAlt+2',
+      'Options...',
+    ])
+    // Items that exist only in the cross-platform build must not leak back in.
+    expect(screen.queryByRole('menuitem', { name: /^Search/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Analyzer/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Hex View/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Module Information/ })).not.toBeInTheDocument()
+  })
+
+  it('orders the Theme submenu like upstream and marks the active theme', () => {
+    renderMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
-    expect(screen.getByRole('menuitem', { name: /^Word Wrap/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Highlight Current Line/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Full Screen/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Assembly Explorer/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Output/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Search/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Analyzer/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Themes/ })).toBeInTheDocument()
-    expect(screen.getByRole('menuitem', { name: /^Language/ })).toBeInTheDocument()
+    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: /^Theme$/ }))
+    // The submenu is the second `role="menu"` in document order, nested inside the View popup.
+    const entries = within(screen.getAllByRole('menu')[1]).getAllByRole('menuitem')
+    expect(entries.map((item) => item.textContent)).toEqual(['Blue', 'Dark', 'Light', 'High Contrast'])
+    expect(entries[0].getAttribute('aria-checked')).toBe('false')
+    expect(entries[1].getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('leaves Code disabled until a document tab is active', () => {
+    renderMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
+    expect(screen.getByRole('menuitem', { name: /^Code/ })).toBeDisabled()
+  })
+
+  it('invokes the Code handler once a document tab is active', () => {
+    const onShowCode = vi.fn()
+    renderMenuWith({ canShowCode: true, onShowCode })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
+    const code = screen.getByRole('menuitem', { name: /^Code/ })
+    expect(code).toBeEnabled()
+    fireEvent.click(code)
+    expect(onShowCode).toHaveBeenCalledOnce()
+  })
+
+  it('invokes the collapse handler from the View menu', () => {
+    const onCollapseTreeViewNodes = vi.fn()
+    renderMenuWith({ onCollapseTreeViewNodes })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Collapse Tree View Nodes/ }))
+    expect(onCollapseTreeViewNodes).toHaveBeenCalledOnce()
   })
 
   it('shows only the always-available tool windows before debugging starts', () => {
@@ -191,8 +249,6 @@ describe('MenuBar', () => {
 
   it('exposes individual callbacks to re-open each closable tool window', () => {
     const onShowOutput = vi.fn()
-    const onShowSearch = vi.fn()
-    const onShowAnalysis = vi.fn()
     const onShowLocals = vi.fn()
     const onShowWatch = vi.fn()
     const onShowCallStack = vi.fn()
@@ -211,7 +267,7 @@ describe('MenuBar', () => {
       canRename={false}
       canEditMethod={false}
       canReplaceResource={false}
-      canInspectModule={true}
+      canShowCode={true}
       debugAvailable={false}
       debugState="stopped"
       recentWorkspaces={[]}
@@ -232,8 +288,8 @@ describe('MenuBar', () => {
       onRename={vi.fn()}
       onEditMethod={vi.fn()}
       onReplaceResource={vi.fn()}
-      onHex={vi.fn()}
-      onModuleInfo={vi.fn()}
+      onShowCode={vi.fn()}
+      onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
       onAttachDebug={vi.fn()}
       onContinueDebug={vi.fn()}
@@ -252,8 +308,6 @@ describe('MenuBar', () => {
       onDisableAllBreakpoints={vi.fn()}
       onShowExplorer={vi.fn()}
       onShowOutput={onShowOutput}
-      onShowSearch={vi.fn()}
-      onShowAnalysis={vi.fn()}
       onShowModuleBreakpoints={onShowModuleBreakpoints}
       onShowExceptionSettings={onShowExceptionSettings}
       onShowAutos={onShowAutos}
@@ -313,7 +367,7 @@ describe('MenuBar', () => {
       canRename={false}
       canEditMethod={false}
       canReplaceResource={false}
-      canInspectModule={true}
+      canShowCode={true}
       debugAvailable={false}
       debugState="inactive"
       recentWorkspaces={[]}
@@ -333,8 +387,8 @@ describe('MenuBar', () => {
       onRename={vi.fn()}
       onEditMethod={vi.fn()}
       onReplaceResource={vi.fn()}
-      onHex={vi.fn()}
-      onModuleInfo={vi.fn()}
+      onShowCode={vi.fn()}
+      onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
       onAttachDebug={vi.fn()}
       onContinueDebug={vi.fn()}
@@ -351,11 +405,9 @@ describe('MenuBar', () => {
       onDeleteAllBreakpoints={vi.fn()}
       onEnableAllBreakpoints={vi.fn()}
       onDisableAllBreakpoints={vi.fn()}
-      visibleToolWindows={new Set(['explorer', 'output', 'search', 'analysis', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
+      visibleToolWindows={new Set(['explorer', 'output', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
       onShowExplorer={vi.fn()}
       onShowOutput={vi.fn()}
-      onShowSearch={vi.fn()}
-      onShowAnalysis={vi.fn()}
       onShowModuleBreakpoints={vi.fn()}
       onShowExceptionSettings={vi.fn()}
       onShowAutos={vi.fn()}
@@ -381,9 +433,14 @@ describe('MenuBar', () => {
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
     const wordWrap = screen.getByRole('menuitem', { name: /^Word Wrap/ })
-    const fullScreen = screen.getByRole('menuitem', { name: /Full Screen/ })
+    const highlight = screen.getByRole('menuitem', { name: /^Highlight Current Line/ })
+    const fullScreen = screen.getByRole('menuitem', { name: /^Full Screen/ })
     expect(wordWrap.getAttribute('aria-checked')).toBe('true')
-    expect(fullScreen.textContent).toContain('Exit Full Screen')
+    expect(highlight.getAttribute('aria-checked')).toBe('true')
+    // Upstream keeps the "Full Screen" label in both states and only toggles the check mark.
+    expect(fullScreen.getAttribute('aria-checked')).toBe('true')
+    expect(fullScreen).toHaveTextContent('Full Screen')
+    expect(screen.queryByRole('menuitem', { name: /Exit Full Screen/ })).not.toBeInTheDocument()
   })
 
   it('opens the About dialog from the Help menu', () => {

@@ -15,6 +15,7 @@ import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
 import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
+import { focusDocumentEditor } from './editor-registry'
 import { translate, useLanguage } from './localization'
 
 const DocumentView = lazy(async () => {
@@ -140,6 +141,10 @@ export const App = (): React.JSX.Element => {
         visible.add(id)
     }
     return visible
+  }, [model, layoutVersion])
+  const canShowCode = useMemo(() => {
+    const tab = model.getActiveTabset()?.getSelectedNode()
+    return tab instanceof TabNode && tab.getComponent() === 'document'
   }, [model, layoutVersion])
   const initialPathsHandled = useRef(false)
   const workspaceId = useAppStore((state) => state.workspaceId)
@@ -287,6 +292,21 @@ export const App = (): React.JSX.Element => {
     forceLayoutUpdate((value) => value + 1)
   }
 
+  const showCode = async (): Promise<void> => {
+    const tab = model.getActiveTabset()?.getSelectedNode()
+    if (!(tab instanceof TabNode) || tab.getComponent() !== 'document')
+      return
+    const documentId = (tab.getConfig() as { documentId?: string } | undefined)?.documentId
+    if (!documentId)
+      return
+    const state = useAppStore.getState()
+    if (state.documents[documentId]?.requestedLanguage !== 'cSharp')
+      await state.changeDocumentLanguage(documentId, 'cSharp')
+    focusDocumentEditor(tab.getId())
+  }
+
+  const collapseTreeViewNodes = (): void => useAppStore.getState().collapseTreeViewNodes()
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null
@@ -321,6 +341,12 @@ export const App = (): React.JSX.Element => {
           closeDocumentTab(tab)
           forceLayoutUpdate((value) => value + 1)
         }
+      } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        collapseTreeViewNodes()
+      } else if (event.ctrlKey && event.altKey && (event.code === 'Digit0' || event.code === 'Numpad0')) {
+        event.preventDefault()
+        void showCode()
       } else if (event.ctrlKey && event.key.toLowerCase() === 'f' && workspaceId) {
         event.preventDefault()
         showBorderTab('search')
@@ -363,7 +389,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, deleteAllBreakpoints, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -455,13 +481,7 @@ export const App = (): React.JSX.Element => {
     showBorderTab('analysis')
   }
 
-  const selectedModule = selectedNode?.kind === 'module'
-    ? selectedNode
-    : undefined
-
-  const addSpecialTab = (component: 'hex' | 'module-info'): void => {
-    const module = selectedModule
-    if (!module) return
+  const addSpecialTab = (component: 'hex' | 'module-info', module: TreeNode): void => {
     const tabId = `${component}:${module.id}`
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
@@ -487,7 +507,7 @@ export const App = (): React.JSX.Element => {
 
   const factory = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
-      case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} />
+      case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} onShowHex={(item) => addSpecialTab('hex', item)} onShowModuleInfo={(item) => addSpecialTab('module-info', item)} />
       case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
       case 'output': return <OutputPane />
       case 'search': return <SearchPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />
@@ -518,7 +538,7 @@ export const App = (): React.JSX.Element => {
         canRename={Boolean(selectedNode && ['type', 'method', 'field', 'property', 'event'].includes(selectedNode.kind))}
         canEditMethod={selectedNode?.kind === 'method'}
         canReplaceResource={selectedNode?.kind === 'resource'}
-        canInspectModule={Boolean(selectedModule)}
+        canShowCode={canShowCode}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true}
         debugState={debugState}
         recentWorkspaces={recentWorkspaces}
@@ -535,8 +555,8 @@ export const App = (): React.JSX.Element => {
         onRename={() => { if (selectedNode) setRenameNode(selectedNode) }}
         onEditMethod={() => { if (selectedNode?.kind === 'method') setEditMethodNode(selectedNode) }}
         onReplaceResource={() => { if (selectedNode) void replaceResource(selectedNode) }}
-        onHex={() => addSpecialTab('hex')}
-        onModuleInfo={() => addSpecialTab('module-info')}
+        onShowCode={() => void showCode()}
+        onCollapseTreeViewNodes={collapseTreeViewNodes}
         onStartDebug={() => setDebugProgramDialogOpen(true)}
         onAttachDebug={() => setAttachDialogOpen(true)}
         onContinueDebug={() => void continueDebug()}
@@ -555,8 +575,6 @@ export const App = (): React.JSX.Element => {
         onDisableAllBreakpoints={() => enableAllBreakpoints(false)}
         onShowExplorer={() => showBorderTab('explorer')}
         onShowOutput={() => showBorderTab('output')}
-        onShowSearch={() => showBorderTab('search')}
-        onShowAnalysis={() => showBorderTab('analysis')}
         onShowLocals={() => showBorderTab('locals')}
         onShowWatch={() => showBorderTab('watch')}
         onShowCallStack={() => showBorderTab('callstack')}

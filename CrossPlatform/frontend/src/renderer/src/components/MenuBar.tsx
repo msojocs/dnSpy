@@ -16,7 +16,7 @@ interface MenuBarProps {
   canRename: boolean
   canEditMethod: boolean
   canReplaceResource: boolean
-  canInspectModule: boolean
+  canShowCode: boolean
   debugAvailable: boolean
   debugState: 'inactive' | 'starting' | 'running' | 'stopped'
   recentWorkspaces: string[][]
@@ -37,8 +37,8 @@ interface MenuBarProps {
   onRename(): void
   onEditMethod(): void
   onReplaceResource(): void
-  onHex(): void
-  onModuleInfo(): void
+  onShowCode(): void
+  onCollapseTreeViewNodes(): void
   onStartDebug(): void
   onAttachDebug(): void
   onContinueDebug(): void
@@ -57,8 +57,6 @@ interface MenuBarProps {
   onDisableAllBreakpoints(): void
   onShowExplorer(): void
   onShowOutput(): void
-  onShowSearch(): void
-  onShowAnalysis(): void
   onShowModuleBreakpoints(): void
   onShowExceptionSettings(): void
   onShowAutos(): void
@@ -103,7 +101,7 @@ export const MenuBar = ({
   canRename,
   canEditMethod,
   canReplaceResource,
-  canInspectModule,
+  canShowCode,
   debugAvailable,
   debugState,
   recentWorkspaces,
@@ -123,8 +121,8 @@ export const MenuBar = ({
   onRename,
   onEditMethod,
   onReplaceResource,
-  onHex,
-  onModuleInfo,
+  onShowCode,
+  onCollapseTreeViewNodes,
   onStartDebug,
   onAttachDebug,
   onContinueDebug,
@@ -144,8 +142,6 @@ export const MenuBar = ({
   visibleToolWindows,
   onShowExplorer,
   onShowOutput,
-  onShowSearch,
-  onShowAnalysis,
   onShowModuleBreakpoints,
   onShowExceptionSettings,
   onShowAutos,
@@ -195,21 +191,16 @@ export const MenuBar = ({
       { label: t('Replace Resource...'), disabled: !canReplaceResource, action: onReplaceResource },
     ],
     [t('View')]: [
-      { label: t('Word Wrap'), shortcut: 'Ctrl+E Ctrl+W', checked: wordWrap, action: onToggleWordWrap },
+      { label: t('Word Wrap'), shortcut: 'Ctrl+E, Ctrl+W', checked: wordWrap, action: onToggleWordWrap },
       { label: t('Highlight Current Line'), checked: highlightCurrentLine, action: onToggleHighlightCurrentLine },
-      { label: fullScreen ? t('Exit Full Screen') : t('Full Screen'), shortcut: 'Shift+Alt+Enter', checked: fullScreen, action: onToggleFullScreen },
-      { separator: true },
-      { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', checked: visibleToolWindows.has('explorer'), action: onShowExplorer },
-      { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
-      { label: t('Search'), shortcut: 'Ctrl+Alt+F', checked: visibleToolWindows.has('search'), action: onShowSearch },
-      { label: t('Analyzer'), shortcut: 'Ctrl+Alt+R', checked: visibleToolWindows.has('analysis'), action: onShowAnalysis },
-      { separator: true },
+      { label: t('Full Screen'), shortcut: 'Shift+Alt+Enter', checked: fullScreen, action: onToggleFullScreen },
+      { label: t('Collapse Tree View Nodes'), shortcut: 'Ctrl+Shift+P', action: onCollapseTreeViewNodes },
       {
-        label: t('Themes'),
+        label: t('Theme'),
         submenu: [
-          { label: t('Blue Theme'), checked: theme === 'blue', action: () => onTheme('blue') },
-          { label: t('Light Theme'), checked: theme === 'light', action: () => onTheme('light') },
-          { label: t('Dark Theme'), checked: theme === 'dark', action: () => onTheme('dark') },
+          { label: t('Blue'), checked: theme === 'blue', action: () => onTheme('blue') },
+          { label: t('Dark'), checked: theme === 'dark', action: () => onTheme('dark') },
+          { label: t('Light'), checked: theme === 'light', action: () => onTheme('light') },
           { label: t('High Contrast'), checked: theme === 'hc', action: () => onTheme('hc') },
         ],
       },
@@ -222,9 +213,11 @@ export const MenuBar = ({
         })),
       },
       { separator: true },
+      { label: t('Code'), shortcut: 'Ctrl+Alt+0', disabled: !canShowCode, action: onShowCode },
+      { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', checked: visibleToolWindows.has('explorer'), action: onShowExplorer },
+      { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
+      { separator: true },
       { label: t('Options...'), action: () => onShowOptions('environment') },
-      { label: t('Hex View'), disabled: !canInspectModule, action: onHex },
-      { label: t('Module Information'), disabled: !canInspectModule, action: onModuleInfo },
     ],
     [t('Debug')]: [
       {
