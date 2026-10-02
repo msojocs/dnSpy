@@ -19,8 +19,10 @@ dotnet test dnSpy.CrossPlatform.slnx
 
 ## Desktop application
 
+The debug engine runs inside the backend and loads the CLR's `libdbgshim.so`, which the build brings in
+with the rest of the native assets — there is no separate debugger to install.
+
 ```bash
-./scripts/install-netcoredbg.sh
 pnpm install --frozen-lockfile
 pnpm dev
 ```

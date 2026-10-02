@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>dnSpy.Backend.Debugging.CorDebug</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ICorDebugSharp wraps ICorDebug/IMetaDataImport and the DbgShim bootstrap API on top of
+         source generated COM, so no native interop assembly of our own is needed. -->
+    <PackageReference Include="ICorDebugSharp" Version="0.1.8" />
+    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.745401" />
+    <!-- Supplies libdbgshim.so. The .NET runtime ships libmscordbi.so but not dbgshim, so this
+         package is the only source of it; the publish output puts it next to the host binary. -->
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim.linux-x64" Version="10.0.745401" />
+  </ItemGroup>
+</Project>

@@ -51,11 +51,29 @@ export interface Diagnostic {
   length?: number
 }
 
-/** Lines of a decompiled document that belong to one method body, so a gutter click can be mapped to that method. */
-export interface BreakpointLocation {
+/**
+ * One sequence point of a decompiled document: the line(s) it covers and the IL range it maps to.
+ * The IL range is what the in-process debug engine turns into an IL-offset breakpoint, so a gutter
+ * click can pick the statement under the cursor instead of only its owning method.
+ */
+export interface CodeStatement {
   startLine: number
   endLine: number
+  startColumn: number
+  endColumn: number
+  ilOffset: number
+  ilEndOffset: number
+  /**
+   * The start of the sequence point tiling the IL at `ilOffset`. The runtime only accepts a
+   * breakpoint on a point boundary, so this is where the engine falls back to when the statement's
+   * own start is refused — the two differ inside a state machine's field store, say.
+   */
+  sequencePointIlOffset: number
+  modulePath: string
+  metadataToken: number
+  sourceMethodToken: number
   description: string
+  isHidden: boolean
 }
 
 export interface DecompileResponse {
@@ -64,7 +82,7 @@ export interface DecompileResponse {
   text: string
   spans: TextSpan[]
   diagnostics: Diagnostic[]
-  breakpointLocations?: BreakpointLocation[]
+  codeStatements?: CodeStatement[]
 }
 
 export interface SearchResult {
@@ -186,6 +204,33 @@ export interface DebugStackFrame {
   line: number
   column: number
   source?: DebugSource
+  /** The tree node the frame's location decompiles to, when the module is in the workspace. */
+  nodeId?: string
+}
+
+/** A breakpoint the client asked for, before or after the engine snapped it to a sequence point. */
+export interface DebugBreakpointRequest {
+  id: string
+  nodeId: string
+  line: number
+  column?: number
+  enabled: boolean
+}
+
+/** The engine's answer: where the breakpoint really is, and whether it is armed. */
+export interface DebugBreakpoint {
+  id: string
+  verified: boolean
+  state: 'bound' | 'pending' | 'unbound'
+  line: number
+  endLine: number
+  column: number
+  message?: string
+  modulePath?: string
+  metadataToken: number
+  ilOffset: number
+  description?: string
+  enabled: boolean
 }
 
 export interface DebugScope {
@@ -244,8 +289,9 @@ export interface DnSpyApi {
   saveCode(suggestedName: string, text: string): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   listDebugProcesses(): Promise<DebugProcess[]>
-  launchDebug(program: string, args: string[], stopAtEntry: boolean): Promise<DebugStartResponse>
-  attachDebug(processId: number): Promise<DebugStartResponse>
+  launchDebug(program: string, args: string[], stopAtEntry: boolean, workspaceId?: string): Promise<DebugStartResponse>
+  attachDebug(processId: number, workspaceId?: string): Promise<DebugStartResponse>
+  setBreakpoints(sessionId: string, breakpoints: DebugBreakpointRequest[]): Promise<DebugBreakpoint[]>
   setFunctionBreakpoints(sessionId: string, names: string[]): Promise<Record<string, unknown>>
   debugContinue(sessionId: string, threadId: number): Promise<Record<string, unknown>>
   debugPause(sessionId: string, threadId: number): Promise<Record<string, unknown>>

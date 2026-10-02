@@ -18,8 +18,6 @@ files:
 extraResources:
   - from: ../artifacts/publish/backend
     to: backend
-  - from: ../artifacts/publish/debugger
-    to: debugger
   - from: ../packaging/licenses
     to: licenses
   - from: ../artifacts/sbom

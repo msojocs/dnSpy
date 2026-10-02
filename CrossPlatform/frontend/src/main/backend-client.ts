@@ -44,8 +44,10 @@ export class BackendClient {
       env: {
         ...process.env,
         DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+        // The debug engine lives in the backend process and loads the CLR's shim from beside its own
+        // binary; in a package that is under resources/backend, not the source tree the backend sees.
         ...(app.isPackaged ? {
-          DNSPY_NETCOREDBG_PATH: path.join(process.resourcesPath, 'debugger', `${process.platform}-${process.arch}`, 'netcoredbg'),
+          DNSPY_DBGSHIM_PATH: path.join(process.resourcesPath, 'backend', `${process.platform}-${process.arch}`, 'libdbgshim.so'),
         } : {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],

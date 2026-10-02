@@ -301,11 +301,14 @@ const registerIpc = (): void => {
     return result.filePaths[0]
   })
   ipcMain.handle('debug:listProcesses', () => requireBackend().invoke('debug/listProcesses', {}))
-  ipcMain.handle('debug:launch', (_event, program: string, args: string[], stopAtEntry: boolean) => requireBackend().invoke('debug/launch', { program, arguments: args, stopAtEntry }))
-  ipcMain.handle('debug:attach', (_event, processId: number) => requireBackend().invoke('debug/attach', { processId }))
+  // The workspace id is what lets the engine resolve decompiled-source breakpoints to IL offsets,
+  // so it travels with launch/attach rather than being inferred later from the session.
+  ipcMain.handle('debug:launch', (_event, program: string, args: string[], stopAtEntry: boolean, workspaceId?: string) => requireBackend().invoke('debug/launch', { program, arguments: args, stopAtEntry, workspaceId }))
+  ipcMain.handle('debug:attach', (_event, processId: number, workspaceId?: string) => requireBackend().invoke('debug/attach', { processId, workspaceId }))
   const debugRequest = (channel: string, command: string): void => {
     ipcMain.handle(channel, (_event, sessionId: string, args: unknown) => requireBackend().invoke('debug/request', { sessionId, command, arguments: args }))
   }
+  debugRequest('debug:setBreakpoints', 'setBreakpoints')
   debugRequest('debug:setFunctionBreakpoints', 'setFunctionBreakpoints')
   debugRequest('debug:continue', 'continue')
   debugRequest('debug:pause', 'pause')

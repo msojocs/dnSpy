@@ -10,7 +10,6 @@
 
 ```bash
 cd CrossPlatform
-./scripts/install-netcoredbg.sh
 dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false --configuration Release
 pnpm --dir frontend test
 pnpm --dir frontend build
@@ -25,7 +24,7 @@ pnpm package:linux
 - 前端使用 Electron、React 和 TypeScript，负责窗口、菜单、工具栏、停靠布局、编辑器、快捷键和所有用户交互。
 - 后端使用无 UI 依赖的 .NET 10 进程，负责程序集模型、反编译、搜索、分析、编辑、保存和调试会话。
 - Electron 主进程启动并监管后端，通过基于标准输入/输出的 JSON-RPC 通信；渲染进程只能通过受限的 preload API 调用主进程。
-- Linux 调试 .NET/CoreCLR 程序时，通过调试适配层连接 `netcoredbg`；Mono/Unity 调试作为后续阶段接入 `Mono.Debugger.Soft`。
+- Linux 调试 .NET/CoreCLR 程序时，后端进程内直接使用 CLR 的 `ICorDebug`（`dnSpy.Backend.Debugging.CorDebug`），在反编译源码上设置 IL 偏移断点，无需 PDB；Mono/Unity 调试作为后续阶段接入 `Mono.Debugger.Soft`。
 - React 界面以当前上游 WPF 版本为布局和交互基准，保留“顶部菜单及工具栏、左侧程序集树、中央文档标签、四向工具窗口、底部状态栏”的结构，并复用现有主题语义和图标资源。
 - 采用增量替换策略：先交付只读查看和反编译，再交付编辑，最后完成 Linux 调试能力。Windows/WPF 版本在迁移期间继续构建和发布。
 
@@ -129,7 +128,7 @@ pnpm package:linux
 |                 |                    +-- Roslyn core   |
 |                 |                                      |
 |                 +-- platform services                  |
-|                 +-- debug adapter abstraction ---------+--> netcoredbg/DAP
+|                 +-- debug engine (in-process) ----------+--> ICorDebug / libdbgshim.so
 +--------------------------------------------------------+
 ```
 
@@ -152,8 +151,7 @@ CrossPlatform/
     dnSpy.Backend.Core/            # 程序集、反编译、编辑等领域模型
     dnSpy.Backend.Application/     # 用例、会话、命令与查询
     dnSpy.Backend.Infrastructure/  # 文件、进程、配置、缓存、符号
-    dnSpy.Backend.Debugging/       # 调试抽象与通用模型
-    dnSpy.Backend.Debugging.Dap/   # netcoredbg DAP Provider
+    dnSpy.Backend.Debugging.CorDebug/ # 进程内 ICorDebug Provider
     dnSpy.Backend.Host/            # JSON-RPC、DI、日志、进程入口
     tests/
   frontend/
@@ -419,19 +417,22 @@ Provider 将底层协议转换为该模型。React 前端只依赖统一模型�
 
 ### 9.2 CoreCLR Provider
 
-Linux 第一实现建议采用 `netcoredbg` 的 Debug Adapter Protocol 模式：
+首版曾按“子进程 `netcoredbg` + Debug Adapter Protocol”实现，随后被替换为**进程内直连 ICorDebug**
+（`dnSpy.Backend.Debugging.CorDebug`）。原因是行断点：netcoredbg 的行断点必须由 PDB 序列点驱动，
+而 dnSpy 显示的是反编译出的合成源码，磁盘上没有对应 PDB，因此只能退化为方法级断点。
+ICorDebug 支持按 `(模块, 元数据 token, IL 偏移)` 设断点，与反编译器给出的 IL 偏移一一对应。
 
-1. 后端启动并监管 `netcoredbg` 子进程。
-2. `dnSpy.Backend.Debugging.Dap` 负责 DAP framing、请求关联、事件顺序和取消。
-3. 将 DAP 的断点、线程、栈帧、scope、变量和 evaluate 映射到统一模型。
-4. dnSpy 后端继续负责模块/源映射、反编译文档定位和无源码断点绑定。
+实现要点：
 
-正式采用前必须完成技术和许可证门禁：
+1. 后端通过 `Microsoft.Diagnostics.DbgShim` 启动或附加目标进程，直接持有 `ICorDebug`；
+   所有 COM 调用与 RPC 命令在单个串行执行器上运行（COM 对象非线程安全）。
+2. 断点身份是 `(模块, 元数据 token, IL 偏移)`；反编译语句的“自身起点”常被运行时拒绝，
+   因此每条语句记录两个偏移：自身起点（停机行由它决定）与覆盖它的顺序点起点（作为退路）。
+3. 单步不逐条 IL 指令执行，而是在源级顺序点上挂临时 IL 断点，避免停在状态机的 `MoveNext` 管道里。
+4. 局部变量名来自反编译器的 `ILVariable`，按槽位与 `EnumerateLocalVariables()` 匹配，无需 PDB。
 
-- 固定已验证的 netcoredbg 版本和 SHA-256，不在运行时下载未知版本。
-- 确认再分发许可证、第三方声明及 x64/arm64 二进制来源。
-- 验证目标 .NET 运行时版本范围、Portable PDB、优化代码、单文件应用和 ReadyToRun 行为。
-- 若不能合法或稳定地随包分发，改为启动时发现系统安装，并提供明确的安装说明；不能静默联网安装。
+`libdbgshim.so` 由 `Microsoft.Diagnostics.DbgShim.linux-x64`（MIT）提供，随 `dotnet publish` 落到
+后端目录并一起打包，运行时不联网下载。范围上首版**不含**异常断点和表达式求值，界面对应降级。
 
 ### 9.3 Mono/Unity Provider
 
@@ -479,8 +480,7 @@ resources/
   app.asar
   backend/
     linux-x64/dnSpy.Backend.Host
-  debugger/
-    linux-x64/netcoredbg            # 仅在通过再分发审查后包含
+    linux-x64/libdbgshim.so         # 调试引擎的启动库，随后端发布
   licenses/
 ```
 
@@ -546,7 +546,7 @@ resources/
 - 输出程序集/类型级平台依赖清单。
 - 验证在纯 `net10.0` 项目中用 dnlib 和 ILSpy 打开并反编译样例程序集。
 - 验证 Electron 主进程启动 .NET 后端、握手、取消和退出监管。
-- 验证 `netcoredbg` DAP 的启动、断点、单步、局部变量及许可证条件。
+- 验证本机可直连 ICorDebug：启动/附加、顺序点 IL 偏移断点、单步、局部变量，以及 `libdbgshim.so` 的再分发条件。
 - 用 React 实现默认 dock 布局 PoC，验证高 DPI 和持久化。
 
 退出条件：三个 PoC 均通过；调试器和 dock 选型形成 ADR；发现的 Windows-only 依赖已有处置分类。
@@ -622,7 +622,7 @@ Linux Preview 至少满足：
 - Preview 的阻断级和数据损坏级问题清零。
 - 支持矩阵内所有发行版完成安装和核心工作流冒烟测试。
 - 性能预算达标或已有审阅通过的 ADR 说明调整原因。
-- netcoredbg 等可分发组件的许可证和第三方声明完成审查。
+- `ICorDebugSharp`、`Microsoft.Diagnostics.DbgShim` 等可分发组件的许可证和第三方声明完成审查。
 - 发布包、校验和、SBOM、许可证、已知限制和故障排查文档齐全。
 
 ## 15. 主要风险与缓解措施
@@ -631,7 +631,7 @@ Linux Preview 至少满足：
 | --- | --- | --- |
 | 业务逻辑和 WPF 契约耦合比预期更深 | 后端提取延期 | 阶段 0 做类型级依赖审计；按用例提取；禁止跨平台项目引用 UI 契约 |
 | Electron UI 与上游交互偏差 | 用户迁移成本高 | WPF 源码作为事实来源；命令清单、布局快照、视觉与 E2E 双重回归 |
-| netcoredbg 能力或再分发条件不满足 | Linux 调试延期 | 阶段 0 提前门禁；调试 Provider 可替换；必要时采用外部安装发现模式 |
+| ICorDebug 直连能力或 `libdbgshim.so` 再分发条件不满足 | Linux 调试延期 | 阶段 0 提前门禁；调试 Provider 可替换；找不到 shim 时后端以 `debug.coreclr.*=false` 降级启动，其余功能不受影响 |
 | 大程序集导致 IPC、树和编辑器卡顿 | 产品不可用 | 延迟树、分页、批量事件、取消、虚拟列表和性能门禁 |
 | 编辑失败损坏用户文件 | 严重数据风险 | 默认另存、事务版本、临时文件校验、原子替换和故障注入测试 |
 | Electron 增加攻击面 | 本地文件和代码执行风险 | sandbox、context isolation、严格 preload 白名单、CSP、fuses 和依赖审计 |
@@ -648,7 +648,7 @@ Linux Preview 至少满足：
 3. `ADR-003`：确认 JSON-RPC framing、schema 生成和版本规则。
 4. `SPIKE-001`：提取最小无 UI 反编译链路到 `net10.0`。
 5. `SPIKE-002`：Electron 启动/监管后端及安全 preload。
-6. `SPIKE-003`：netcoredbg DAP、许可证和无源码断点验证。
+6. `SPIKE-003`：进程内 ICorDebug、许可证和无源码（顺序点 IL 偏移）断点验证。
 7. `CORE-001`：工作区、模块 ID、树延迟加载和资源释放。
 8. `CORE-002`：反编译文本及 span/navigation DTO。
 9. `UI-001`：上游一致的 AppShell、默认 dock 布局和持久化。

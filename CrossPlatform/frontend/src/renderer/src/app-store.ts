@@ -2,9 +2,10 @@ import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
   BackendStatus,
-  BreakpointLocation,
+  CodeStatement,
   DecompilerLanguage,
   DecompileResponse,
+  DebugBreakpoint,
   DebugEvent,
   DebugModule,
   DebugStackFrame,
@@ -27,6 +28,39 @@ export interface DocumentState extends DecompileResponse {
 export interface FunctionBreakpoint {
   name: string
   enabled: boolean
+}
+
+/**
+ * A line breakpoint as the client tracks it. `identity` is the IL identity the click resolved to —
+ * available before the first backend round trip because the decompiled document already carries the
+ * IL range of every statement — and is what makes a second click on the snapped line a toggle
+ * rather than a second breakpoint.
+ */
+export interface LineBreakpoint {
+  id: string
+  nodeId: string
+  identity: string
+  requestedLine: number
+  line: number
+  endLine: number
+  state: 'bound' | 'pending' | 'unbound'
+  message?: string
+  enabled: boolean
+  description?: string
+  modulePath?: string
+  metadataToken?: number
+  ilOffset?: number
+}
+
+/**
+ * Where the debugger is stopped, in decompiled-source terms. The node is the document the location has to be shown
+ * in — a frame in a module the workspace does not hold has no node, and then there is nothing to navigate to.
+ */
+export interface StoppedLocation {
+  nodeId?: string
+  line: number
+  column?: number
+  name: string
 }
 
 interface AppState {
@@ -59,10 +93,15 @@ interface AppState {
   selectedDebugThreadId?: number
   selectedDebugFrameId?: number
   stoppedReason?: string
+  /** The statement the selected frame is stopped at, once it has been resolved to a document line. */
+  stoppedLocation?: StoppedLocation
   watches: string[]
   watchValues: DebugVariable[]
   functionBreakpoints: FunctionBreakpoint[]
+  lineBreakpoints: LineBreakpoint[]
   exceptionBreakpoints: string[]
+  /** What the engine says it can do; drives which debug UI stays enabled. */
+  debugCapabilities: Record<string, unknown>
   error?: string
   wordWrap: boolean
   highlightCurrentLine: boolean
@@ -94,6 +133,8 @@ interface AppState {
   stopDebug(): Promise<void>
   selectDebugFrame(frameId: number): Promise<void>
   selectDebugThread(threadId: number): Promise<void>
+  /** Opens the document the selected frame stopped in, and marks the line it is on. */
+  revealStoppedLocation(): Promise<void>
   addWatch(expression: string): Promise<void>
   removeWatch(expression: string): void
   addFunctionBreakpoint(name: string): Promise<void>
@@ -102,6 +143,11 @@ interface AppState {
   setFunctionBreakpointEnabled(name: string, enabled: boolean): Promise<void>
   deleteAllFunctionBreakpoints(): Promise<void>
   setAllFunctionBreakpointsEnabled(enabled: boolean): Promise<void>
+  toggleLineBreakpoint(nodeId: string, line: number, column?: number): Promise<void>
+  removeLineBreakpoint(id: string): Promise<void>
+  setLineBreakpointEnabled(id: string, enabled: boolean): Promise<void>
+  deleteAllBreakpoints(): Promise<void>
+  setAllLineBreakpointsEnabled(enabled: boolean): Promise<void>
   setExceptionBreakpoint(filter: string, enabled: boolean): Promise<void>
   appendOutput(message: string): void
   clearError(): void
@@ -143,7 +189,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   watches: [],
   watchValues: [],
   functionBreakpoints: [],
+  lineBreakpoints: [],
   exceptionBreakpoints: [],
+  debugCapabilities: {},
 
   setBackendStatus: (status) => {
     set({ backendStatus: status })
@@ -273,7 +321,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           text: '',
           spans: [],
           diagnostics: [],
-          breakpointLocations: [],
+          codeStatements: [],
           loading: true,
           requestedLanguage: language,
         },
@@ -287,7 +335,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...state.documents,
             [documentId]: {
               ...document,
-              breakpointLocations: document.breakpointLocations ?? [],
+              codeStatements: document.codeStatements ?? [],
               nodeId: node.id,
               loading: false,
               requestedLanguage: language,
@@ -528,11 +576,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!target) return
     set({ debugState: 'starting', error: undefined })
     try {
-      const started = await window.dnSpy.launchDebug(target, [], true)
-      set({ debugSessionId: started.sessionId })
+      // The workspace id travels with the launch: it is how the engine turns a decompiled line into an IL offset.
+      const started = await window.dnSpy.launchDebug(target, [], true, get().workspaceId)
+      set({ debugSessionId: started.sessionId, debugCapabilities: started.capabilities })
       const breakpointNames = enabledFunctionBreakpointNames(get().functionBreakpoints)
       if (breakpointNames.length > 0)
         await window.dnSpy.setFunctionBreakpoints(started.sessionId, breakpointNames)
+      if (get().lineBreakpoints.length > 0)
+        await syncLineBreakpoints(get, set)
       if (get().exceptionBreakpoints.length > 0)
         await window.dnSpy.setExceptionBreakpoints(started.sessionId, get().exceptionBreakpoints)
       get().appendOutput(t('Started debugging {target}.', { target }))
@@ -546,8 +597,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   attachDebug: async (processId) => {
     set({ debugState: 'starting', error: undefined })
     try {
-      const started = await window.dnSpy.attachDebug(processId)
-      set({ debugSessionId: started.sessionId })
+      const started = await window.dnSpy.attachDebug(processId, get().workspaceId)
+      set({ debugSessionId: started.sessionId, debugCapabilities: started.capabilities })
+      if (get().lineBreakpoints.length > 0)
+        await syncLineBreakpoints(get, set)
       get().appendOutput(t('Attached to process {processId}.', { processId }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -569,8 +622,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().appendOutput(t('Debugger stopped: {reason}.', { reason: t(reason) }))
       await refreshDebugState(get, set, threadId)
       set({ debugState: 'stopped' })
+      await get().revealStoppedLocation()
+    } else if (event.event === 'breakpoint') {
+      // The engine binds late — a module loads, or it refuses an offset we thought was good — so a breakpoint's
+      // state can change without the client asking. This is the channel that keeps the gutter honest.
+      const body = event.body?.breakpoint as DebugBreakpoint | undefined
+      if (body?.id)
+        set((state) => ({
+          lineBreakpoints: state.lineBreakpoints.map((breakpoint) => breakpoint.id === body.id ? applyBreakpointResult(breakpoint, body) : breakpoint),
+        }))
     } else if (event.event === 'continued') {
-      set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [] })
+      set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [], stoppedLocation: undefined })
     } else if (event.event === 'output') {
       const output = typeof event.body?.output === 'string' ? event.body.output.trimEnd() : ''
       if (output) get().appendOutput(output)
@@ -583,6 +645,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         debugVariables: [],
         debugModules: [],
         watchValues: [],
+        stoppedLocation: undefined,
       })
       get().appendOutput(event.event === 'exited'
         ? t('Debug target exited with code {code}.', { code: String(event.body?.exitCode ?? '') })
@@ -594,7 +657,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { debugSessionId, selectedDebugThreadId } = get()
     if (!debugSessionId || selectedDebugThreadId === undefined) return
     await window.dnSpy.debugContinue(debugSessionId, selectedDebugThreadId)
-    set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [] })
+    set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [], stoppedLocation: undefined })
   },
 
   pauseDebug: async () => {
@@ -608,19 +671,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!debugSessionId || selectedDebugThreadId === undefined) return
     const command = kind === 'next' ? window.dnSpy.debugNext : kind === 'stepIn' ? window.dnSpy.debugStepIn : window.dnSpy.debugStepOut
     await command(debugSessionId, selectedDebugThreadId)
-    set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [] })
+    set({ debugState: 'running', debugFrames: [], debugVariables: [], watchValues: [], stoppedLocation: undefined })
   },
 
   stopDebug: async () => {
     const sessionId = get().debugSessionId
     if (!sessionId) return
     try { await window.dnSpy.disconnectDebug(sessionId, true) } catch { /* adapter may exit before replying */ }
-    set({ debugState: 'inactive', debugSessionId: undefined, debugThreads: [], debugFrames: [], debugVariables: [], debugModules: [], watchValues: [] })
+    set({ debugState: 'inactive', debugSessionId: undefined, debugThreads: [], debugFrames: [], debugVariables: [], debugModules: [], watchValues: [], stoppedLocation: undefined })
   },
 
   selectDebugFrame: async (frameId) => {
     set({ selectedDebugFrameId: frameId })
     await refreshDebugVariables(get, set, frameId)
+    // Picking a frame is a navigation as much as it is a selection: the editor follows along.
+    await get().revealStoppedLocation()
+  },
+
+  revealStoppedLocation: async () => {
+    const { debugFrames, selectedDebugFrameId } = get()
+    const frame = debugFrames.find((candidate) => candidate.id === selectedDebugFrameId) ?? debugFrames[0]
+    // A frame the decompiler could not place has no line to mark. Clearing the marker is what keeps a
+    // highlight from a finished stop lingering over the next one.
+    if (!frame || frame.line <= 0 || !frame.nodeId) {
+      set({ stoppedLocation: undefined })
+      return
+    }
+    set({ stoppedLocation: { nodeId: frame.nodeId, line: frame.line, column: frame.column, name: frame.name } })
+    // Only decompile when the document is not already showing this source: the engine resolves a
+    // frame against the C# method document, so a doc open in IL is not the one the line belongs to.
+    const node = findNode(get(), frame.nodeId)
+    if (node && get().workspaceId && get().documents[frame.nodeId]?.language !== 'csharp')
+      await get().openDocument(node, 'cSharp')
   },
 
   selectDebugThread: async (threadId) => {
@@ -679,6 +761,63 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!get().functionBreakpoints.some((breakpoint) => breakpoint.enabled !== enabled)) return
     set((state) => ({ functionBreakpoints: state.functionBreakpoints.map((breakpoint) => ({ ...breakpoint, enabled })) }))
     await syncFunctionBreakpoints(get)
+  },
+
+  toggleLineBreakpoint: async (nodeId, line, column) => {
+    const statement = codeStatementAt(get().documents[nodeId]?.codeStatements, line, column)
+    // The document already carries the IL range of every statement, so the identity is known before the backend
+    // confirms it — which is what lets a second click on the snapped line remove the breakpoint it just created.
+    const identity = statement
+      ? statementIdentity(statement.modulePath, statement.metadataToken, statement.ilOffset)
+      : `${nodeId}|${line}`
+    const existing = get().lineBreakpoints.find((breakpoint) => breakpoint.identity === identity)
+    if (existing) {
+      set((state) => ({ lineBreakpoints: state.lineBreakpoints.filter((breakpoint) => breakpoint.id !== existing.id) }))
+    } else {
+      set((state) => ({
+        lineBreakpoints: [...state.lineBreakpoints, {
+          id: `line${++lineBreakpointSequence}`,
+          nodeId,
+          identity,
+          requestedLine: line,
+          line: statement?.startLine ?? line,
+          endLine: statement?.endLine ?? line,
+          state: 'pending',
+          enabled: true,
+          description: statement?.description,
+          modulePath: statement?.modulePath,
+          metadataToken: statement?.metadataToken,
+          ilOffset: statement?.ilOffset,
+        }],
+      }))
+    }
+    await syncLineBreakpoints(get, set)
+  },
+
+  removeLineBreakpoint: async (id) => {
+    if (!get().lineBreakpoints.some((breakpoint) => breakpoint.id === id)) return
+    set((state) => ({ lineBreakpoints: state.lineBreakpoints.filter((breakpoint) => breakpoint.id !== id) }))
+    await syncLineBreakpoints(get, set)
+  },
+
+  setLineBreakpointEnabled: async (id, enabled) => {
+    if (!get().lineBreakpoints.some((breakpoint) => breakpoint.id === id && breakpoint.enabled !== enabled)) return
+    set((state) => ({
+      lineBreakpoints: state.lineBreakpoints.map((breakpoint) => breakpoint.id === id ? { ...breakpoint, enabled } : breakpoint),
+    }))
+    await syncLineBreakpoints(get, set)
+  },
+
+  deleteAllBreakpoints: async () => {
+    if (get().lineBreakpoints.length === 0 && get().functionBreakpoints.length === 0) return
+    set({ lineBreakpoints: [], functionBreakpoints: [] })
+    await Promise.all([syncLineBreakpoints(get, set), syncFunctionBreakpoints(get)])
+  },
+
+  setAllLineBreakpointsEnabled: async (enabled) => {
+    if (!get().lineBreakpoints.some((breakpoint) => breakpoint.enabled !== enabled)) return
+    set((state) => ({ lineBreakpoints: state.lineBreakpoints.map((breakpoint) => ({ ...breakpoint, enabled })) }))
+    await syncLineBreakpoints(get, set)
   },
 
   setExceptionBreakpoint: async (filter, enabled) => {
@@ -776,40 +915,72 @@ export const methodBreakpointName = (description?: string): string | undefined =
   return typeName && methodName ? `${typeName}.${methodName}` : undefined
 }
 
-// A gutter click has to name the method the clicked line belongs to. Bodies nest (a lambda or an async state
-// machine lives inside the method that declares it), so the innermost location wins: the one with the largest
-// start line that still contains the click.
-export const breakpointLocationAt = (
-  locations: BreakpointLocation[] | undefined,
+// A gutter click has to land on a sequence point the engine can bind, so the statement whose line range covers the
+// click wins; a click on a blank line, a brace or a comment falls back to the nearest statement below it, and only
+// then to the nearest one above. Statements nest (a lambda body lives inside the method that declares it), so among
+// candidates the one that starts latest — the innermost — is the one the user aimed at.
+export const codeStatementAt = (
+  statements: CodeStatement[] | undefined,
   line: number,
-): BreakpointLocation | undefined => {
-  let match: BreakpointLocation | undefined
-  for (const location of locations ?? []) {
-    if (line < location.startLine || line > location.endLine)
+  column?: number,
+): CodeStatement | undefined => {
+  const visible = (statements ?? []).filter((statement) => !statement.isHidden)
+  let covering: CodeStatement | undefined
+  for (const statement of visible) {
+    if (line < statement.startLine || line > statement.endLine)
       continue
-    if (!match || location.startLine > match.startLine)
-      match = location
+    // A column only narrows a single-line statement; a multi-line one covers its whole range.
+    if (column !== undefined && statement.startLine === statement.endLine && (column < statement.startColumn - 1 || column > statement.endColumn))
+      continue
+    if (!covering || statement.startLine > covering.startLine)
+      covering = statement
   }
-  return match
+  if (covering)
+    return covering
+  let nearest: CodeStatement | undefined
+  for (const statement of visible) {
+    if (!nearest || isCloserStatement(statement, nearest, line))
+      nearest = statement
+  }
+  return nearest
 }
 
-// Where each breakpoint draws its dot. Markers are derived from the locations of the document on screen rather
-// than stored on the breakpoint: breakpoints created elsewhere (the Breakpoints pane, F9) then show up here too,
-// and switching a document to a language without a line map simply draws nothing. A breakpoint is marked at the
-// first line that maps back to it, so clicking a drawn dot always toggles the method the dot stands for.
-export const breakpointMarkers = (
-  locations: BreakpointLocation[] | undefined,
-  breakpoints: FunctionBreakpoint[],
-): { line: number; name: string; enabled: boolean }[] => {
-  const markers: { line: number; name: string; enabled: boolean }[] = []
+const statementDistance = (statement: CodeStatement, line: number): number => line < statement.startLine
+  ? statement.startLine - line
+  : line > statement.endLine ? line - statement.endLine : 0
+
+// Distance first; a tie goes to the statement below the click, matching what the backend's snapping does.
+const isCloserStatement = (candidate: CodeStatement, current: CodeStatement, line: number): boolean => {
+  const distance = statementDistance(candidate, line)
+  const currentDistance = statementDistance(current, line)
+  return distance === currentDistance ? candidate.startLine > current.startLine : distance < currentDistance
+}
+
+// The IL identity a statement maps to. Two clicks that land on the same sequence point produce the same key, which
+// is what makes the second click a toggle even after the first one was snapped to a different line.
+export const statementIdentity = (modulePath: string, metadataToken: number, ilOffset: number): string =>
+  `${modulePath}|${metadataToken}|${ilOffset}`
+
+// Where each breakpoint draws its dot. Markers are derived from the document on screen rather than stored on the
+// breakpoint, so breakpoints created elsewhere (the Breakpoints pane, F9) show up here too, and a document whose
+// language has no IL map simply draws nothing. A breakpoint is matched by IL identity, falling back to the node it
+// was requested from while the backend has not confirmed the snap yet.
+export const lineBreakpointMarkers = (
+  nodeId: string,
+  statements: CodeStatement[] | undefined,
+  breakpoints: LineBreakpoint[],
+): { line: number; enabled: boolean; state: LineBreakpoint['state']; message?: string; description?: string }[] => {
+  const markers: { line: number; enabled: boolean; state: LineBreakpoint['state']; message?: string; description?: string }[] = []
   for (const breakpoint of breakpoints) {
-    const lines = (locations ?? [])
-      .filter((location) => methodBreakpointName(location.description) === breakpoint.name)
-      .map((location) => location.startLine)
-    // A method's first line is never inside a body that starts later, so breakpointLocationAt() resolves this very
-    // line back to the same method: clicking the dot always turns the breakpoint the dot stands for on or off.
-    if (lines.length > 0)
-      markers.push({ line: Math.min(...lines), name: breakpoint.name, enabled: breakpoint.enabled })
+    const statement = breakpoint.modulePath !== undefined && breakpoint.ilOffset !== undefined
+      ? (statements ?? []).find((candidate) => statementIdentity(candidate.modulePath, candidate.metadataToken, candidate.ilOffset) === breakpoint.identity)
+      : undefined
+    if (statement)
+      markers.push({ line: statement.startLine, enabled: breakpoint.enabled, state: breakpoint.state, message: breakpoint.message, description: breakpoint.description })
+    // Until the engine has named the module, the requested line is the only place the dot can go. Once it has, an
+    // identity this document does not contain means the breakpoint belongs to some other document entirely.
+    else if (breakpoint.modulePath === undefined && breakpoint.nodeId === nodeId)
+      markers.push({ line: breakpoint.requestedLine, enabled: breakpoint.enabled, state: breakpoint.state, message: breakpoint.message, description: breakpoint.description })
   }
   return markers
 }
@@ -835,6 +1006,9 @@ function rememberWorkspace(paths: string[]): string[][] {
 
 type StoreGet = () => AppState
 type StoreSet = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void
+
+// Ids only have to be unique within a session's table, and only stable across re-renders, so a counter is enough.
+let lineBreakpointSequence = 0
 
 const refreshDebugState = async (get: StoreGet, set: StoreSet, preferredThreadId?: number): Promise<void> => {
   const sessionId = get().debugSessionId
@@ -887,6 +1061,50 @@ const syncFunctionBreakpoints = async (get: StoreGet): Promise<void> => {
   const { debugSessionId, functionBreakpoints } = get()
   if (debugSessionId)
     await window.dnSpy.setFunctionBreakpoints(debugSessionId, enabledFunctionBreakpointNames(functionBreakpoints))
+}
+
+// Line breakpoints are sent as the whole set every time, including the disabled ones: the engine can arm and disarm
+// a breakpoint in place, so "disabled" does not have to mean "forgotten", and re-enabling one does not have to be
+// resolved from scratch. The reply is what the editor draws — the snapped line, and whether it bound at all.
+const syncLineBreakpoints = async (get: StoreGet, set: StoreSet): Promise<void> => {
+  const { debugSessionId, lineBreakpoints } = get()
+  if (!debugSessionId) return
+  const requested = lineBreakpoints.map((breakpoint) => ({
+    id: breakpoint.id,
+    nodeId: breakpoint.nodeId,
+    line: breakpoint.requestedLine,
+    enabled: breakpoint.enabled,
+  }))
+  const results = await window.dnSpy.setBreakpoints(debugSessionId, requested)
+  const byId = new Map(results.map((result) => [result.id, result]))
+  set((state) => ({
+    lineBreakpoints: state.lineBreakpoints.map((breakpoint) => {
+      const result = byId.get(breakpoint.id)
+      return result ? applyBreakpointResult(breakpoint, result) : breakpoint
+    }),
+  }))
+}
+
+const applyBreakpointResult = (breakpoint: LineBreakpoint, result: DebugBreakpoint): LineBreakpoint => {
+  const modulePath = result.modulePath || breakpoint.modulePath
+  const ilOffset = result.ilOffset >= 0 ? result.ilOffset : breakpoint.ilOffset
+  return {
+    ...breakpoint,
+    // Once the engine has named the module and offset, matching by IL identity is what keeps a later click on the
+    // snapped line pointing at this same breakpoint.
+    identity: modulePath !== undefined && ilOffset !== undefined
+      ? statementIdentity(modulePath, result.metadataToken, ilOffset)
+      : breakpoint.identity,
+    line: result.line || breakpoint.requestedLine,
+    endLine: result.endLine || result.line || breakpoint.requestedLine,
+    state: result.state,
+    message: result.message,
+    enabled: result.enabled,
+    description: result.description ?? breakpoint.description,
+    modulePath,
+    metadataToken: result.metadataToken || breakpoint.metadataToken,
+    ilOffset,
+  }
 }
 
 const refreshAfterEdit = async (get: StoreGet, set: StoreSet, result: EditCommitResponse): Promise<void> => {

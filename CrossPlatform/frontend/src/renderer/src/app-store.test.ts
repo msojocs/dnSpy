@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { breakpointLocationAt, breakpointMarkers, methodBreakpointName, suggestCodeFilename, useAppStore } from './app-store'
+import type { CodeStatement, DebugBreakpoint } from '../../shared/protocol'
+import { codeStatementAt, lineBreakpointMarkers, methodBreakpointName, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
+import type { LineBreakpoint } from './app-store'
 
 describe('suggestCodeFilename', () => {
   it.each([
@@ -35,57 +37,103 @@ describe('methodBreakpointName', () => {
   })
 })
 
-describe('breakpointLocationAt', () => {
-  const outer = { startLine: 3, endLine: 20, description: 'System.Void Ns.Type::Outer()' }
-  const inner = { startLine: 8, endLine: 10, description: 'System.Void Ns.Type::Inner()' }
+const statement = (startLine: number, endLine: number, extra: Partial<CodeStatement> = {}): CodeStatement => ({
+  startLine,
+  endLine,
+  startColumn: 1,
+  endColumn: 80,
+  ilOffset: startLine,
+  ilEndOffset: endLine,
+  sequencePointIlOffset: startLine,
+  modulePath: '/app/DebugTarget.dll',
+  metadataToken: 0x06000001,
+  sourceMethodToken: 0x06000001,
+  description: 'System.Void Ns.Type::M()',
+  isHidden: false,
+  ...extra,
+})
 
-  it('picks the innermost location that contains the line', () => {
-    expect(breakpointLocationAt([outer, inner], 9)).toBe(inner)
-    expect(breakpointLocationAt([inner, outer], 4)).toBe(outer)
+describe('codeStatementAt', () => {
+  const outer = statement(3, 20)
+  const inner = statement(8, 10, { description: 'System.Void Ns.Type::Inner()' })
+
+  it('picks the innermost statement that contains the line', () => {
+    expect(codeStatementAt([outer, inner], 9)).toBe(inner)
+    expect(codeStatementAt([inner, outer], 4)).toBe(outer)
   })
 
   it('treats the first and last line of a range as inside it', () => {
-    expect(breakpointLocationAt([outer], 3)).toBe(outer)
-    expect(breakpointLocationAt([outer], 20)).toBe(outer)
-    expect(breakpointLocationAt([outer], 21)).toBeUndefined()
+    expect(codeStatementAt([outer], 3)).toBe(outer)
+    expect(codeStatementAt([outer], 20)).toBe(outer)
   })
 
-  it('returns nothing for lines no method owns', () => {
-    expect(breakpointLocationAt([outer], 2)).toBeUndefined()
-    expect(breakpointLocationAt([], 3)).toBeUndefined()
-    expect(breakpointLocationAt(undefined, 3)).toBeUndefined()
+  it('snaps a click between statements to the nearest one below it', () => {
+    const above = statement(2, 2)
+    const below = statement(6, 6)
+    expect(codeStatementAt([above, below], 4)).toBe(below)
+    // A tie goes downwards, matching the backend's snapping.
+    expect(codeStatementAt([statement(3, 3), statement(5, 5)], 4)?.startLine).toBe(5)
+  })
+
+  it('falls back to the nearest statement above when nothing is below', () => {
+    expect(codeStatementAt([statement(2, 2)], 9)?.startLine).toBe(2)
+  })
+
+  it('uses the column to tell single-line statements apart', () => {
+    const left = statement(4, 4, { startColumn: 1, endColumn: 10, ilOffset: 1 })
+    const right = statement(4, 4, { startColumn: 12, endColumn: 30, ilOffset: 2 })
+    expect(codeStatementAt([left, right], 4, 5)).toBe(left)
+    expect(codeStatementAt([left, right], 4, 20)).toBe(right)
+  })
+
+  it('never snaps onto a hidden statement', () => {
+    const hidden = statement(4, 4, { isHidden: true })
+    const visible = statement(9, 9)
+    expect(codeStatementAt([hidden, visible], 4)).toBe(visible)
+  })
+
+  it('returns nothing when there is nothing to snap to', () => {
+    expect(codeStatementAt([], 3)).toBeUndefined()
+    expect(codeStatementAt(undefined, 3)).toBeUndefined()
   })
 })
 
-describe('breakpointMarkers', () => {
-  it('marks the earliest line of the method each breakpoint names', () => {
-    const locations = [
-      { startLine: 7, endLine: 7, description: 'System.Int32 Ns.Type::get_Code()' },
-      { startLine: 12, endLine: 18, description: 'System.Void Ns.Type::.ctor()' },
-    ]
-    expect(breakpointMarkers(locations, [
-      { name: 'Ns.Type.get_Code', enabled: true },
-      { name: 'Ns.Type..ctor', enabled: false },
-    ])).toEqual([
-      { line: 7, name: 'Ns.Type.get_Code', enabled: true },
-      { line: 12, name: 'Ns.Type..ctor', enabled: false },
+describe('lineBreakpointMarkers', () => {
+  const breakpoint = (extra: Partial<LineBreakpoint> = {}): LineBreakpoint => ({
+    id: 'line1',
+    nodeId: 'method-1',
+    identity: statementIdentity('/app/DebugTarget.dll', 0x06000001, 7),
+    requestedLine: 9,
+    line: 9,
+    endLine: 9,
+    state: 'bound',
+    enabled: true,
+    modulePath: '/app/DebugTarget.dll',
+    metadataToken: 0x06000001,
+    ilOffset: 7,
+    ...extra,
+  })
+
+  it('draws a bound breakpoint at the line the engine snapped it to', () => {
+    const statements = [statement(5, 6, { ilOffset: 3 }), statement(7, 8, { ilOffset: 7 })]
+    expect(lineBreakpointMarkers('method-1', statements, [breakpoint()])).toEqual([
+      { line: 7, enabled: true, state: 'bound', message: undefined, description: undefined },
     ])
   })
 
-  it('uses the first run when a method is split over several locations', () => {
-    const locations = [
-      { startLine: 14, endLine: 15, description: 'System.Void Ns.Type::M()' },
-      { startLine: 4, endLine: 6, description: 'System.Void Ns.Type::M()' },
-    ]
-    expect(breakpointMarkers(locations, [{ name: 'Ns.Type.M', enabled: true }])).toEqual([
-      { line: 4, name: 'Ns.Type.M', enabled: true },
+  it('draws a pending breakpoint at the line the user clicked', () => {
+    const markers = lineBreakpointMarkers('method-1', [statement(7, 8, { ilOffset: 7 })], [
+      breakpoint({ state: 'pending', modulePath: undefined, ilOffset: undefined }),
     ])
+    expect(markers.map((marker) => marker.line)).toEqual([9])
   })
 
-  it('draws nothing for breakpoints the document cannot place', () => {
-    const locations = [{ startLine: 4, endLine: 6, description: 'System.Void Ns.Type::M()' }]
-    expect(breakpointMarkers(locations, [{ name: 'Ns.Type.Other', enabled: true }])).toEqual([])
-    expect(breakpointMarkers(undefined, [{ name: 'Ns.Type.M', enabled: true }])).toEqual([])
+  it('draws nothing in a document that is not the breakpoint’s', () => {
+    const statements = [statement(7, 8, { ilOffset: 7 })]
+    // Bound to another module: the IL identity matches nothing here, and there is no requested line to fall back on.
+    expect(lineBreakpointMarkers('method-1', statements, [breakpoint({ identity: 'other|1|2' })])).toEqual([])
+    // Not yet bound, and requested from a different node.
+    expect(lineBreakpointMarkers('method-1', statements, [breakpoint({ nodeId: 'method-2', modulePath: undefined, ilOffset: undefined })])).toEqual([])
   })
 })
 
@@ -160,5 +208,100 @@ describe('function breakpoints', () => {
     await useAppStore.getState().addFunctionBreakpoint('Ns.Type.A')
     expect(useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.A', enabled: true }])
     expect(setFunctionBreakpoints).not.toHaveBeenCalled()
+  })
+})
+
+describe('line breakpoints', () => {
+  const statements = [statement(4, 4, { ilOffset: 5 }), statement(9, 9, { ilOffset: 7 })]
+  const setBreakpoints = vi.fn(async (_sessionId: string, requested: { id: string; line: number; enabled: boolean }[]): Promise<DebugBreakpoint[]> =>
+    requested.map((breakpoint) => ({
+      id: breakpoint.id,
+      verified: true,
+      state: 'bound',
+      line: 9,
+      endLine: 9,
+      column: 1,
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      ilOffset: 7,
+      description: 'System.Void Ns.Type::M()',
+      enabled: breakpoint.enabled,
+    })))
+
+  const document = (codeStatements: CodeStatement[] | undefined): never => ({
+    nodeId: 'method-1',
+    title: 'M',
+    language: 'csharp',
+    text: '',
+    spans: [],
+    diagnostics: [],
+    codeStatements,
+    loading: false,
+    requestedLanguage: 'cSharp',
+  }) as never
+
+  beforeEach(() => {
+    setBreakpoints.mockClear()
+    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, setBreakpoints } })
+    useAppStore.setState({
+      lineBreakpoints: [],
+      functionBreakpoints: [],
+      debugSessionId: 'session',
+      documents: { 'method-1': document(statements) },
+    })
+  })
+
+  it('snaps a click to the nearest statement and records what the engine answered', async () => {
+    // Line 6 is blank; the nearest statement below it is the one on line 9.
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+    const [breakpoint] = useAppStore.getState().lineBreakpoints
+    expect(breakpoint.requestedLine).toBe(6)
+    expect(breakpoint.line).toBe(9)
+    expect(breakpoint.state).toBe('bound')
+    expect(breakpoint.identity).toBe(statementIdentity('/app/DebugTarget.dll', 0x06000001, 7))
+    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{ id: breakpoint.id, nodeId: 'method-1', line: 6, enabled: true }])
+  })
+
+  it('adopts the engine’s answer when the document has no IL map of its own', async () => {
+    // An IL view has no statement table, so the client cannot snap the click itself and starts from the raw line.
+    useAppStore.setState({ documents: { 'method-1': document(undefined) } })
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+    expect(useAppStore.getState().lineBreakpoints[0]).toMatchObject({
+      requestedLine: 6,
+      line: 9,
+      state: 'bound',
+      identity: statementIdentity('/app/DebugTarget.dll', 0x06000001, 7),
+    })
+  })
+
+  it('removes a breakpoint when the same statement is clicked again', async () => {
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+    // The user now clicks the dot where it was drawn, not the line they originally clicked.
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
+    expect(useAppStore.getState().lineBreakpoints).toEqual([])
+  })
+
+  it('sends disabled breakpoints too, so the engine can disarm them in place', async () => {
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
+    const [breakpoint] = useAppStore.getState().lineBreakpoints
+    await useAppStore.getState().setLineBreakpointEnabled(breakpoint.id, false)
+    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{ id: breakpoint.id, nodeId: 'method-1', line: 9, enabled: false }])
+    expect(useAppStore.getState().lineBreakpoints[0].enabled).toBe(false)
+  })
+
+  it('deletes line and function breakpoints together', async () => {
+    useAppStore.setState({ functionBreakpoints: [{ name: 'Ns.Type.A', enabled: true }] })
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
+    await useAppStore.getState().deleteAllBreakpoints()
+    expect(useAppStore.getState().lineBreakpoints).toEqual([])
+    expect(useAppStore.getState().functionBreakpoints).toEqual([])
+    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [])
+  })
+
+  it('keeps breakpoints without sending them when no debug session is active', async () => {
+    useAppStore.setState({ debugSessionId: undefined })
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
+    expect(useAppStore.getState().lineBreakpoints).toHaveLength(1)
+    expect(setBreakpoints).not.toHaveBeenCalled()
   })
 })

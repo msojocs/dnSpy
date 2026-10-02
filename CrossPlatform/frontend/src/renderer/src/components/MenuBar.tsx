@@ -45,6 +45,7 @@ interface MenuBarProps {
   onPauseDebug(): void
   onStepIn(): void
   onStepOver(): void
+  onStepOut(): void
   onStopDebug(): void
   canToggleBreakpoint: boolean
   hasFunctionBreakpoints: boolean
@@ -130,6 +131,7 @@ export const MenuBar = ({
   onPauseDebug,
   onStepIn,
   onStepOver,
+  onStepOut,
   onStopDebug,
   canToggleBreakpoint,
   hasFunctionBreakpoints,
@@ -257,6 +259,7 @@ export const MenuBar = ({
         { label: t('Pause'), disabled: debugState !== 'running', action: onPauseDebug },
         { label: t('Step Into'), shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
         { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
+        { label: t('Step Out'), shortcut: 'Shift+F11', disabled: debugState !== 'stopped', action: onStepOut },
         { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: false, action: onStopDebug },
       ] : []),
       { separator: true },

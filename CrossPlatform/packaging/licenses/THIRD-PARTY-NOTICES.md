@@ -15,6 +15,7 @@ dnSpy is distributed under GPL-3.0-only. The Linux desktop package also includes
 | ICSharpCode CodeConverter | MIT | https://github.com/icsharpcode/CodeConverter |
 | .NET runtime | MIT | https://github.com/dotnet/runtime |
 | Roslyn | MIT | https://github.com/dotnet/roslyn |
-| netcoredbg | MIT | https://github.com/Samsung/netcoredbg |
+| ICorDebugSharp | MIT | https://github.com/msojocs/ICorDebugSharp |
+| Microsoft.Diagnostics.DbgShim (`libdbgshim.so`) | MIT | https://github.com/dotnet/diagnostics |
 
-The package includes Electron's `LICENSE.electron.txt` and `LICENSES.chromium.html` alongside the application. The full netcoredbg MIT license is included as `netcoredbg-LICENSE.txt`.
+The package includes Electron's `LICENSE.electron.txt` and `LICENSES.chromium.html` alongside the application. Debugging runs in-process against the CLR's own `libdbgshim.so` / `libmscordbi.so`, which ship with the .NET runtime and the DbgShim package; no separate debugger executable is bundled.

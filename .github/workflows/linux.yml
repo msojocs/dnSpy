@@ -44,9 +44,6 @@ jobs:
       - name: Restore JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install pinned debugger
-        run: ./scripts/install-netcoredbg.sh
-
       - name: Build and test backend
         run: dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false --logger "console;verbosity=minimal"
 

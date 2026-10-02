@@ -12,20 +12,26 @@ using dnSpy.Backend.Contracts;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
+using ICSharpCode.Decompiler.CSharp.Syntax;
 using ICSharpCode.Decompiler.Disassembler;
 using ICSharpCode.CodeConverter;
 using ICSharpCode.BamlDecompiler;
 using DecompilerAstNode = ICSharpCode.Decompiler.CSharp.Syntax.AstNode;
 using DecompilerILFunction = ICSharpCode.Decompiler.IL.ILFunction;
+// Imported by alias: the namespace itself would make dnlib's Parameter ambiguous with the metadata one.
+using PdbReaderProvider = System.Reflection.Metadata.MetadataReaderProvider;
+using DecompilerILVariable = ICSharpCode.Decompiler.IL.ILVariable;
+using DecompilerVariableKind = ICSharpCode.Decompiler.IL.VariableKind;
 using DecompilerIMember = ICSharpCode.Decompiler.TypeSystem.IMember;
 using DecompilerIType = ICSharpCode.Decompiler.TypeSystem.IType;
 using DecompilerMetadataFile = ICSharpCode.Decompiler.Metadata.MetadataFile;
 
 namespace dnSpy.Backend.Core;
 
-public sealed class WorkspaceManager : IDisposable {
+public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 	const int MaxHexReadLength = 1024 * 1024;
 	readonly ConcurrentDictionary<string, Workspace> workspaces = new(StringComparer.Ordinal);
+	readonly SymbolResolver symbols = new();
 	bool disposed;
 
 	public async Task<OpenWorkspaceResponse> OpenAsync(OpenWorkspaceRequest request, CancellationToken cancellationToken) {
@@ -37,7 +43,7 @@ public sealed class WorkspaceManager : IDisposable {
 		if (paths.Count == 0)
 			throw new RpcException(ErrorCodes.FileNotFound, "No managed assemblies were found in the selected paths.");
 
-		var workspace = new Workspace();
+		var workspace = new Workspace(symbols);
 		try {
 			await workspace.OpenAsync(paths, cancellationToken).ConfigureAwait(false);
 			if (!workspaces.TryAdd(workspace.Id, workspace))
@@ -131,6 +137,38 @@ public sealed class WorkspaceManager : IDisposable {
 	public Task<SaveModuleResponse> SaveModuleAsync(SaveModuleRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.SaveModuleAsync(request, cancellationToken), cancellationToken);
 
+	// ---------------------------------------------------------------- debug symbols
+
+	public Task<ResolveBreakpointsResponse> ResolveBreakpointsAsync(string workspaceId, IReadOnlyList<BreakpointQuery> queries, CancellationToken cancellationToken) =>
+		GetWorkspace(workspaceId).RunAsync(w => w.ResolveBreakpoints(queries, cancellationToken), cancellationToken);
+
+	public Task<ResolvedIlLocation?> ResolveIlLocationAsync(string? workspaceId, string modulePath, int metadataToken, int ilOffset, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.ResolveIlLocation(w, modulePath, metadataToken, ilOffset, cancellationToken), cancellationToken);
+
+	public Task<MethodIlInfoResponse?> GetMethodIlInfoAsync(string workspaceId, string modulePath, int metadataToken, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.GetMethodIlInfo(w, modulePath, metadataToken, cancellationToken), cancellationToken);
+
+	public Task<IReadOnlyList<MethodIlInfoResponse>> FindMethodsAsync(string? workspaceId, string name, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.FindMethods(w, name, cancellationToken), cancellationToken);
+
+	public Task<IReadOnlyList<DebugVariableNameDto>> GetVariableNamesAsync(string? workspaceId, string modulePath, int metadataToken, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.GetVariableNames(w, modulePath, metadataToken, cancellationToken), cancellationToken);
+
+	public Task<SteppingTargetsResponse?> GetSteppingTargetsAsync(string? workspaceId, string modulePath, int metadataToken, int ilOffset, bool stepInto, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.GetSteppingTargets(w, modulePath, metadataToken, ilOffset, stepInto, cancellationToken), cancellationToken);
+
+	public Task<bool> IsWorkspaceModuleAsync(string? workspaceId, string modulePath, CancellationToken cancellationToken) =>
+		WithSymbolsAsync(workspaceId, w => symbols.IsWorkspaceModule(w, modulePath), cancellationToken);
+
+	/// <summary>
+	/// Runs a symbol lookup. Without a workspace the lookup still answers — a debuggee attached
+	/// without one, or a module that lives outside the workspace, is read straight from its file.
+	/// </summary>
+	Task<T> WithSymbolsAsync<T>(string? workspaceId, Func<Workspace?, T> action, CancellationToken cancellationToken) =>
+		workspaceId is not null && workspaces.TryGetValue(workspaceId, out var workspace)
+			? workspace.RunAsync(_ => action(workspace), cancellationToken)
+			: Task.Run(() => action(null), cancellationToken);
+
 	Workspace GetWorkspace(string id) => workspaces.TryGetValue(id, out var workspace)
 		? workspace
 		: throw new RpcException(ErrorCodes.WorkspaceNotFound, "The workspace no longer exists.");
@@ -168,22 +206,551 @@ public sealed class WorkspaceManager : IDisposable {
 		foreach (var workspace in workspaces.Values)
 			workspace.Dispose();
 		workspaces.Clear();
+		symbols.Dispose();
+	}
+
+	/// Answers the debug engine's IL-level questions. A module the workspace has open is read through
+	/// the workspace; anything else — a debuggee attached without a workspace, a frame in a framework
+	/// assembly — is loaded from its own file on demand and released when it falls out of the cache.
+	/// </summary>
+	sealed class SymbolResolver : IDisposable {
+		const int MaxExternalModules = 16;
+		const int MaxCachedMethods = 512;
+
+		readonly object gate = new();
+		readonly Dictionary<string, Workspace.ModuleEntry> externalModules = new(StringComparer.Ordinal);
+		readonly Queue<string> externalOrder = new();
+		readonly Dictionary<string, IReadOnlyList<CodeStatementDto>> methodStatements = new(StringComparer.Ordinal);
+		readonly Dictionary<string, IReadOnlyList<DebugVariableNameDto>> variableNames = new(StringComparer.Ordinal);
+		bool disposed;
+
+		/// <summary>Drops every cached statement table; call after the decompiled text changes.</summary>
+		public void Invalidate() {
+			lock (gate) {
+				methodStatements.Clear();
+				variableNames.Clear();
+			}
+		}
+
+		public Workspace.ModuleEntry? FindModule(Workspace? workspace, string path) {
+			var full = Path.GetFullPath(path);
+			return workspace?.FindModuleEntry(full) ?? FindExternalModule(full);
+		}
+
+		Workspace.ModuleEntry? FindExternalModule(string path) {
+			lock (gate) {
+				ObjectDisposedException.ThrowIf(disposed, this);
+				if (externalModules.TryGetValue(path, out var cached))
+					return cached;
+			}
+			if (!File.Exists(path))
+				return null;
+			ModuleDefMD module;
+			try {
+				module = ModuleDefMD.Load(path);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException) {
+				return null;
+			}
+			lock (gate) {
+				if (externalModules.TryGetValue(path, out var raced))
+					return raced;
+				var entry = new Workspace.ModuleEntry(path, module) { IsExternal = true };
+				while (externalOrder.Count >= MaxExternalModules) {
+					if (externalModules.Remove(externalOrder.Dequeue(), out var evicted))
+						evicted.Module.Dispose();
+				}
+				externalModules.Add(path, entry);
+				externalOrder.Enqueue(path);
+				return entry;
+			}
+		}
+
+		public ResolvedIlLocation? ResolveIlLocation(Workspace? workspace, string modulePath, int metadataToken, int ilOffset, CancellationToken cancellationToken) {
+			var entry = FindModule(workspace, modulePath);
+			if (entry is null || entry.Module.ResolveToken(metadataToken) is not MethodDef method)
+				return null;
+			var source = FindSourceMethod(method);
+			var statements = GetMethodStatements(workspace?.SymbolScope ?? string.Empty, entry, source, cancellationToken);
+			var bodyToken = method.MDToken.Raw;
+			// The sequence points tile the body, so the point that contains an offset is the statement the
+			// runtime stopped in — whether or not the offset is where that statement's own code starts. The
+			// two differ wherever the decompiler's statement begins inside code the points charge to it, and
+			// an engine that reports such an offset (an async body, a field store) would otherwise name the
+			// statement before it.
+			var hit = statements.FirstOrDefault(statement => statement.MetadataToken == bodyToken && ilOffset >= statement.SequencePointIlOffset && ilOffset < statement.IlEndOffset)
+				?? statements.LastOrDefault(statement => statement.MetadataToken == bodyToken && statement.SequencePointIlOffset <= ilOffset);
+			if (hit is null)
+				return null;
+			return new ResolvedIlLocation(
+				workspace?.TryGetMemberNodeId(entry, source),
+				hit.Description,
+				entry.Path,
+				unchecked((int)bodyToken),
+				hit.StartLine,
+				hit.EndLine,
+				hit.StartColumn,
+				hit.EndColumn,
+				hit.IlOffset,
+				hit.IlEndOffset,
+				hit.IsHidden,
+				entry.IsExternal);
+		}
+
+		public MethodIlInfoResponse? GetMethodIlInfo(Workspace? workspace, string modulePath, int metadataToken, CancellationToken cancellationToken) {
+			var entry = FindModule(workspace, modulePath);
+			return entry is not null && entry.Module.ResolveToken(metadataToken) is MethodDef method
+				? CreateMethodInfo(workspace, entry, method, cancellationToken)
+				: null;
+		}
+
+		public IReadOnlyList<DebugVariableNameDto> GetVariableNames(Workspace? workspace, string modulePath, int metadataToken, CancellationToken cancellationToken) {
+			var entry = FindModule(workspace, modulePath);
+			if (entry is null || entry.Module.ResolveToken(metadataToken) is not MethodDef method || !method.HasBody)
+				return Array.Empty<DebugVariableNameDto>();
+			var scope = workspace?.SymbolScope ?? string.Empty;
+			var key = $"{scope}|{entry.Path}|{method.MDToken.Raw:X8}";
+			lock (gate) {
+				ObjectDisposedException.ThrowIf(disposed, this);
+				if (variableNames.TryGetValue(key, out var cached))
+					return cached;
+			}
+			var names = BuildVariableNames(entry, method, cancellationToken);
+			lock (gate) {
+				if (variableNames.Count >= MaxCachedMethods)
+					variableNames.Clear();
+				variableNames[key] = names;
+			}
+			return names;
+		}
+
+		/// <summary>
+		/// The statements a step from an IL location can land on, plus those of the method it calls when
+		/// stepping into. A step is driven by breakpoints on these locations because the runtime, having
+		/// no symbols, steps at IL-instruction granularity: it would stop in the middle of a statement.
+		/// Statements are boundaries by construction.
+		/// </summary>
+		public SteppingTargetsResponse? GetSteppingTargets(Workspace? workspace, string modulePath, int metadataToken, int ilOffset, bool stepInto, CancellationToken cancellationToken) {
+			var entry = FindModule(workspace, modulePath);
+			if (entry is null || entry.Module.ResolveToken(metadataToken) is not MethodDef method)
+				return null;
+			var body = GetMethodStatements(workspace?.SymbolScope ?? string.Empty, entry, FindSourceMethod(method), cancellationToken)
+				.Where(statement => statement.MetadataToken == metadataToken && !statement.IsHidden)
+				.OrderBy(statement => statement.IlOffset)
+				.ToArray();
+			var targets = new List<SteppingTarget>();
+			// A statement the thread is stopped inside of is where the step starts, so the line it is on is
+			// the one the client marks: landing on another statement of it would not move the marker. They
+			// are kept when they are all the body has, since stopping within the line beats running on.
+			// The containment is the tiled one, like a reported stop: the location may be an offset the
+			// statement's own code does not start at — a state machine's field store — and reading the line
+			// off the statement's own start would name the wrong statement there.
+			var current = body.FirstOrDefault(statement => ilOffset >= statement.SequencePointIlOffset && ilOffset < statement.IlEndOffset)
+				?? body.LastOrDefault(statement => statement.SequencePointIlOffset <= ilOffset);
+			var line = current?.StartLine;
+			var stops = body.Where(statement => statement.StartLine != line).ToArray();
+			if (stops.Length == 0)
+				stops = body;
+			// Every statement of the body is armed, not only the ones after the location: a loop runs its
+			// body again, and the order the thread reaches them in is not the order of their IL offsets.
+			// Whichever one the runtime reports first is the one the thread actually got to. Each is armed
+			// at both offsets it has (see ArmStatement): a target the runtime cannot place is a target the
+			// step cannot land on, and a body whose statements are all like that would never complete.
+			foreach (var offset in stops.SelectMany(statement => ArmStatement(method, statement)).Distinct().OrderBy(offset => offset))
+				targets.Add(new SteppingTarget(entry.Path, metadataToken, offset));
+			var bodyTargets = targets.Count;
+			if (stepInto)
+				AddCalleeTargets(targets, workspace, entry, method, ilOffset, cancellationToken);
+			// Nothing of the body can run again before it returns, so the step has to leave the method — a
+			// body maps its statements, the caller's resume point is not among them. A step into a call is
+			// the exception: what it lands on belongs to the callee.
+			var leavesMethod = targets.Count == bodyTargets
+				&& !body.Any(statement => statement.IlOffset > ilOffset)
+				&& !HasBackEdge(method, ilOffset);
+			return new SteppingTargetsResponse(targets, leavesMethod);
+		}
+
+		/// <summary>
+		/// The IL offsets a statement has to be armed at for a step to be able to land on it: where its own
+		/// code starts, and — when the statement begins inside the sequence point covering it — the start of
+		/// that point, because the runtime refuses a breakpoint anywhere else. Arming the second is what
+		/// makes a state machine steppable: the field store in front of a statement is a point of its own,
+		/// so the statement's own start is an offset <c>CreateBreakpoint</c> rejects.
+		/// </summary>
+		static IEnumerable<int> ArmStatement(MethodDef method, CodeStatementDto statement) {
+			yield return statement.IlOffset;
+			if (statement.SequencePointIlOffset < statement.IlOffset && RunsInto(method, statement.SequencePointIlOffset, statement.IlOffset))
+				yield return statement.SequencePointIlOffset;
+		}
+
+		/// <summary>
+		/// True when the IL before a statement runs straight into it. Where it branches instead, that IL
+		/// belongs to the statement before — a loop's condition tail, which the tiling hands to whatever
+		/// follows it — and a breakpoint there would stop the thread inside the other statement, reporting
+		/// a line the user is not on. Such a point start is no substitute for the statement's own.
+		/// </summary>
+		static bool RunsInto(MethodDef method, int start, int end) {
+			if (method.Body is not { } body)
+				return false;
+			foreach (var instruction in body.Instructions) {
+				var offset = (int)instruction.Offset;
+				if (offset >= end)
+					break;
+				if (offset < start)
+					continue;
+				// A branch within the range runs it out of order, and a branch into it is another
+				// statement's control flow reaching inside.
+				if (instruction.OpCode.FlowControl is FlowControl.Branch or FlowControl.Cond_Branch or FlowControl.Return)
+					return false;
+				switch (instruction.Operand) {
+				case Instruction target when target.Offset >= start && target.Offset < end:
+				case IList<Instruction> targets when targets.Any(target => target.Offset >= start && target.Offset < end):
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/// <summary>
+		/// The offset the runtime can be asked for instead of the statement's own, or null when there is
+		/// none to be had. A breakpoint belongs on the statement's own start, which is what a stop is
+		/// reported at; the point in front of it is only a substitute when it runs straight into it.
+		/// </summary>
+		internal int? AcceptedPointOffset(Workspace? workspace, CodeStatementDto statement) {
+			if (statement.SequencePointIlOffset >= statement.IlOffset)
+				return null;
+			if (FindModule(workspace, statement.ModulePath)?.Module.ResolveToken(statement.MetadataToken) is not MethodDef body)
+				return null;
+			return RunsInto(body, statement.SequencePointIlOffset, statement.IlOffset) ? statement.SequencePointIlOffset : null;
+		}
+
+		/// <summary>
+		/// True when the method branches back over <paramref name="ilOffset"/>, which means the location can
+		/// run again: the last statement of a loop has nothing after it, yet the loop is not finished.
+		/// </summary>
+		static bool HasBackEdge(MethodDef method, int ilOffset) {
+			if (method.Body is not { } body)
+				return false;
+			foreach (var instruction in body.Instructions) {
+				if (instruction.Offset < ilOffset)
+					continue;
+				switch (instruction.Operand) {
+				case Instruction target when target.Offset <= ilOffset:
+				case IList<Instruction> targets when targets.Any(target => target.Offset <= ilOffset):
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/// <summary>
+		/// A step into a call lands on the first statement of what the call runs. Calls the workspace
+		/// cannot decompile — the framework, an extern — are not targets, so "step into" degrades to
+		/// "step over" there rather than walking into code with nothing to show.
+		/// </summary>
+		void AddCalleeTargets(List<SteppingTarget> targets, Workspace? workspace, Workspace.ModuleEntry entry, MethodDef method, int ilOffset, CancellationToken cancellationToken) {
+			if (method.Body is not { } body)
+				return;
+			// The stop is on a statement's first instruction, but a call site pushes its arguments first,
+			// so the call is rarely at the location itself: the next call the thread reaches is the one a
+			// step into enters. A call the thread branches past is not a problem — the caller's own
+			// statements are armed too, so the step completes there instead of running on unobserved.
+			MethodDef? callee = null;
+			foreach (var instruction in body.Instructions) {
+				if (instruction.Offset < ilOffset)
+					continue;
+				if (instruction.OpCode.Code is not (Code.Call or Code.Callvirt or Code.Newobj))
+					continue;
+				callee = (instruction.Operand as IMethod)?.ResolveMethodDef();
+				break;
+			}
+			if (callee is null || !callee.HasBody)
+				return;
+			// Stepping into a call is only worth offering where there is decompiled source to land in:
+			// the same module, or another module of this workspace. A framework or native callee has no
+			// document to show, so there "step into" degrades to "step over" instead of walking into
+			// code the client cannot display — and, for the framework, into a module that would have to
+			// be decompiled in full to find out.
+			var calleePath = string.IsNullOrEmpty(callee.Module.Location) ? entry.Path : Path.GetFullPath(callee.Module.Location);
+			var calleeEntry = string.Equals(calleePath, entry.Path, StringComparison.Ordinal)
+				? entry
+				: workspace?.FindModuleEntry(calleePath);
+			if (calleeEntry is null)
+				return;
+			// Like the caller's own statements, the whole callee is armed: the runtime reports the statement
+			// it reaches first, which is the one the call runs.
+			foreach (var offset in GetMethodStatements(workspace?.SymbolScope ?? string.Empty, calleeEntry, FindSourceMethod(callee), cancellationToken)
+				.Where(statement => statement.MetadataToken == callee.MDToken.Raw && !statement.IsHidden)
+				.SelectMany(statement => ArmStatement(callee, statement))
+				.Distinct()
+				.OrderBy(offset => offset))
+				targets.Add(new SteppingTarget(calleeEntry.Path, unchecked((int)callee.MDToken.Raw), offset));
+		}
+
+		/// <summary>True when the module is one of the workspace's own files rather than a dependency.</summary>
+		public bool IsWorkspaceModule(Workspace? workspace, string modulePath) =>
+			!string.IsNullOrEmpty(modulePath) && workspace?.FindModuleEntry(modulePath) is not null;
+
+		public IReadOnlyList<MethodIlInfoResponse> FindMethods(Workspace? workspace, string name, CancellationToken cancellationToken) {
+			const int MaxResults = 64;
+			if (string.IsNullOrWhiteSpace(name))
+				return Array.Empty<MethodIlInfoResponse>();
+			var results = new List<MethodIlInfoResponse>();
+			foreach (var entry in EnumerateModules(workspace)) {
+				foreach (var type in entry.Module.GetTypes()) {
+					cancellationToken.ThrowIfCancellationRequested();
+					foreach (var method in type.Methods) {
+						if (!method.HasBody || !Matches(method, type, name))
+							continue;
+						results.Add(CreateMethodInfo(workspace, entry, method, cancellationToken));
+						if (results.Count >= MaxResults)
+							return results;
+					}
+				}
+			}
+			return results;
+		}
+
+		static bool Matches(MethodDef method, TypeDef type, string name) =>
+			method.Name == name ||
+			method.FullName == name ||
+			$"{type.Name}.{method.Name}" == name ||
+			$"{type.FullName}.{method.Name}" == name;
+
+		IEnumerable<Workspace.ModuleEntry> EnumerateModules(Workspace? workspace) {
+			if (workspace is not null) {
+				foreach (var entry in workspace.OpenModules)
+					yield return entry;
+			}
+			lock (gate) {
+				foreach (var entry in externalModules.Values)
+					yield return entry;
+			}
+		}
+
+		MethodIlInfoResponse CreateMethodInfo(Workspace? workspace, Workspace.ModuleEntry entry, MethodDef method, CancellationToken cancellationToken) {
+			var source = FindSourceMethod(method);
+			var bodyToken = method.MDToken.Raw;
+			var statements = method.HasBody
+				? GetMethodStatements(workspace?.SymbolScope ?? string.Empty, entry, source, cancellationToken)
+				: Array.Empty<CodeStatementDto>();
+			// A method breakpoint goes on the first statement's sequence point rather than on the offset its
+			// own code starts at: the runtime will not accept a breakpoint at the latter wherever the point
+			// covering it begins earlier, which is the rule in a state machine's MoveNext.
+			CodeStatementDto? first = null;
+			foreach (var statement in statements) {
+				if (statement.MetadataToken == bodyToken && !statement.IsHidden && (first is null || statement.IlOffset < first.IlOffset))
+					first = statement;
+			}
+			return new MethodIlInfoResponse(
+				workspace?.TryGetMemberNodeId(entry, source),
+				source.FullName,
+				entry.Path,
+				unchecked((int)source.MDToken.Raw),
+				unchecked((int)bodyToken),
+				first?.SequencePointIlOffset ?? 0,
+				GetCodeSize(method),
+				method.HasBody);
+		}
+
+		static int GetCodeSize(MethodDef method) {
+			if (!method.HasBody || method.Body.Instructions.Count == 0)
+				return 0;
+			var last = method.Body.Instructions[^1];
+			return (int)last.Offset + last.GetSize();
+		}
+
+		/// <summary>
+		/// The statement table of one method body. An async or iterator method compiles into a generated
+		/// <c>MoveNext</c>, which is the token the engine reports, so the IL offsets are the state
+		/// machine's while the lines belong to the method the user wrote; decompiling the source method
+		/// and keeping the statements whose body token is the <c>MoveNext</c> lines both up.
+		/// </summary>
+		IReadOnlyList<CodeStatementDto> GetMethodStatements(string scope, Workspace.ModuleEntry entry, MethodDef method, CancellationToken cancellationToken) {
+			if (!method.HasBody)
+				return Array.Empty<CodeStatementDto>();
+			var key = $"{scope}|{entry.Path}|{method.MDToken.Raw:X8}";
+			lock (gate) {
+				ObjectDisposedException.ThrowIf(disposed, this);
+				if (methodStatements.TryGetValue(key, out var cached))
+					return cached;
+			}
+			var statements = BuildMethodStatements(entry, method, cancellationToken);
+			lock (gate) {
+				if (methodStatements.Count >= MaxCachedMethods)
+					methodStatements.Clear();
+				methodStatements[key] = statements;
+			}
+			return statements;
+		}
+
+		static IReadOnlyList<CodeStatementDto> BuildMethodStatements(Workspace.ModuleEntry entry, MethodDef method, CancellationToken cancellationToken) {
+			var settings = new DecompilerSettings();
+			using var session = Workspace.CreateCSharpDecompilerSession(entry, settings, cancellationToken);
+			var decompiler = session.Decompiler;
+			var syntaxTree = decompiler.Decompile([Workspace.ToEntityHandle(method)]);
+			var output = new Workspace.SpanTextOutput(_ => null);
+			Workspace.RenderWithLocations(syntaxTree, output, settings);
+			// Keyed on the source method rather than the body: an async method's statements live in a
+			// generated MoveNext, and they are what a frame stopped inside that state machine needs.
+			var sourceToken = unchecked((int)method.MDToken.Raw);
+			return Workspace.BuildCodeStatements(syntaxTree, decompiler, entry, cancellationToken)
+				.Where(statement => statement.SourceMethodToken == sourceToken)
+				.ToArray();
+		}
+
+		/// <summary>
+		/// The names the decompiler gives a method body's locals and arguments. A debuggee without a
+		/// PDB carries no symbol names of its own, so the engine maps ICorDebug slots onto these —
+		/// which is how a slot reads as <c>sum</c> instead of <c>local2</c>.
+		/// </summary>
+		static IReadOnlyList<DebugVariableNameDto> BuildVariableNames(Workspace.ModuleEntry entry, MethodDef method, CancellationToken cancellationToken) {
+			try {
+				var settings = new DecompilerSettings();
+				using var session = Workspace.CreateCSharpDecompilerSession(entry, settings, cancellationToken);
+				var syntaxTree = session.Decompiler.Decompile([Workspace.ToEntityHandle(method)]);
+				var token = method.MDToken.Raw;
+				var localNames = ReadLocalNamesFromPdb(entry.Path, method);
+				var names = new List<DebugVariableNameDto>();
+				// The ILFunction keys of a sequence-point map are the bodies this tree printed, which is
+				// exactly the body whose slots the engine is looking at.
+				foreach (var function in session.Decompiler.CreateSequencePoints(syntaxTree).Keys) {
+					cancellationToken.ThrowIfCancellationRequested();
+					if (Workspace.GetSourceMethodToken(function) != token && Workspace.GetBodyMethodToken(function) != token)
+						continue;
+					foreach (var variable in function.Variables)
+						AddVariableName(names, method, variable, localNames);
+				}
+				return names
+					.OrderByDescending(name => name.IsArgument)
+					.ThenBy(name => name.Index)
+					.ToArray();
+			}
+			catch (OperationCanceledException) {
+				throw;
+			}
+			catch (Exception) {
+				// Names are a convenience: without them the engine falls back to slot numbers.
+				return Array.Empty<DebugVariableNameDto>();
+			}
+		}
+
+		/// <summary>
+		/// Local names slot by slot. The metadata records parameter names but says nothing about locals,
+		/// so a release build — which ships no PDB — genuinely has none, and ILSpy invents <c>num</c>-
+		/// style names instead. Reading the portable PDB when one sits next to the module is what turns
+		/// those back into the names the user wrote.
+		/// </summary>
+		static Dictionary<int, string> ReadLocalNamesFromPdb(string modulePath, MethodDef method) {
+			var names = new Dictionary<int, string>();
+			var pdbPath = Path.ChangeExtension(modulePath, ".pdb");
+			if (!File.Exists(pdbPath))
+				return names;
+			try {
+				using var stream = File.OpenRead(pdbPath);
+				using var provider = PdbReaderProvider.FromPortablePdbStream(stream);
+				var pdb = provider.GetMetadataReader();
+				// PDB rows are numbered like the metadata rows they describe, so the method's row
+				// number is the handle the debug metadata is keyed by.
+				var handle = MetadataTokens.MethodDefinitionHandle(method.MDToken.ToInt32() & 0x00FFFFFF);
+				foreach (var scopeHandle in pdb.GetLocalScopes(handle)) {
+					foreach (var variableHandle in pdb.GetLocalScope(scopeHandle).GetLocalVariables()) {
+						var variable = pdb.GetLocalVariable(variableHandle);
+						var name = pdb.GetString(variable.Name);
+						if (!string.IsNullOrEmpty(name))
+							names[variable.Index] = name;
+					}
+				}
+			}
+			catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or BadImageFormatException or ArgumentException) {
+				// An unreadable PDB costs the locals their names and nothing else.
+			}
+			return names;
+		}
+
+		static void AddVariableName(List<DebugVariableNameDto> names, MethodDef method, DecompilerILVariable variable, Dictionary<int, string> localNames) {
+			// Stack slots and exception slots are not variables anyone can name, and a variable without
+			// a slot has nothing the engine could match it against.
+			if (variable.Kind is not (DecompilerVariableKind.Parameter or DecompilerVariableKind.Local) || variable.Index is not { } variableIndex)
+				return;
+			var isArgument = variable.Kind == DecompilerVariableKind.Parameter;
+			// ILSpy indexes the signature's parameters, while the engine counts the receiver as
+			// argument 0 of an instance method — and calls it "this", like the decompiler does.
+			var index = isArgument ? variableIndex + (method.IsStatic ? 0 : 1) : variableIndex;
+			// The PDB is the better authority on locals: ILSpy's names are its own invention once the
+			// method is inlined into a caller, and a slot's real name never changes.
+			var name = isArgument ? null : localNames.GetValueOrDefault(index);
+			if (string.IsNullOrEmpty(name))
+				name = string.IsNullOrEmpty(variable.Name) ? null : variable.Name;
+			name ??= isArgument ? $"arg{index}" : $"local{index}";
+			names.Add(new DebugVariableNameDto(name, variable.Type?.ToString() ?? string.Empty, index, isArgument));
+		}
+
+		/// <summary>
+		/// Maps a generated state machine method back to the method that produced it, so a frame inside
+		/// <c>MoveNext</c> is reported at the line of the <c>await</c> the user actually wrote.
+		/// </summary>
+		static MethodDef FindSourceMethod(MethodDef method) {
+			if (method.Name != "MoveNext" || method.DeclaringType is not { } stateMachine || stateMachine.DeclaringType is not { } owner)
+				return method;
+			if (!IsCompilerGenerated(stateMachine))
+				return method;
+			foreach (var candidate in owner.Methods) {
+				foreach (var attribute in candidate.CustomAttributes) {
+					if (!attribute.TypeFullName.EndsWith("StateMachineAttribute", StringComparison.Ordinal))
+						continue;
+					if (attribute.ConstructorArguments.Count != 1)
+						continue;
+					if (ResolveType(attribute.ConstructorArguments[0].Value) == stateMachine)
+						return candidate;
+				}
+			}
+			return method;
+		}
+
+		static TypeDef? ResolveType(object? value) => value switch {
+			ITypeDefOrRef reference => reference.ResolveTypeDef(),
+			TypeSig signature => signature.ToTypeDefOrRef().ResolveTypeDef(),
+			_ => null,
+		};
+
+		static bool IsCompilerGenerated(TypeDef type) => type.CustomAttributes.Any(
+			attribute => attribute.TypeFullName == "System.Runtime.CompilerServices.CompilerGeneratedAttribute");
+
+		public void Dispose() {
+			lock (gate) {
+				if (disposed)
+					return;
+				disposed = true;
+				foreach (var entry in externalModules.Values)
+					entry.Module.Dispose();
+				externalModules.Clear();
+				externalOrder.Clear();
+				methodStatements.Clear();
+			}
+		}
 	}
 
 	sealed class Workspace : IDisposable {
 		readonly SemaphoreSlim gate = new(1, 1);
+		readonly SymbolResolver symbols;
 		readonly Dictionary<string, ModuleEntry> modules = new(StringComparer.Ordinal);
 		readonly Dictionary<string, NodeEntry> nodes = new(StringComparer.Ordinal);
 		readonly Dictionary<string, string> nodeIdsByKey = new(StringComparer.Ordinal);
 		readonly Dictionary<string, EditTransaction> transactions = new(StringComparer.Ordinal);
 		readonly Stack<EditHistoryEntry> undoHistory = new();
 		readonly Stack<EditHistoryEntry> redoHistory = new();
+		readonly Dictionary<string, IReadOnlyList<CodeStatementDto>> codeStatementsByNode = new(StringComparer.Ordinal);
 		int nextNodeId;
 		int version;
 		string stateId = Guid.NewGuid().ToString("N");
+		string cachedStatementsStateId = string.Empty;
 		bool disposed;
 
-		public Workspace() => Id = Guid.NewGuid().ToString("N");
+		public Workspace(SymbolResolver symbols) {
+			this.symbols = symbols;
+			Id = Guid.NewGuid().ToString("N");
+		}
 
 		public string Id { get; }
 
@@ -373,7 +940,7 @@ public sealed class WorkspaceManager : IDisposable {
 
 				string text;
 				IReadOnlyList<TextSpanDto> spans = Array.Empty<TextSpanDto>();
-				IReadOnlyList<BreakpointLocationDto>? breakpointLocations = null;
+				IReadOnlyList<CodeStatementDto>? codeStatements = null;
 				if (node.Kind == NodeKind.AssemblyReference)
 					text = ((AssemblyRef)node.Value).FullName;
 				else if (node.Kind == NodeKind.Resource)
@@ -387,16 +954,19 @@ public sealed class WorkspaceManager : IDisposable {
 						_ => throw new RpcException(ErrorCodes.UnsupportedDocument, "This tree node cannot be decompiled."),
 					};
 					var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, node.Module));
-					var writer = new MethodRangeTokenWriter(output, settings);
-					syntaxTree.AcceptVisitor(new CSharpOutputVisitor(writer, settings.CSharpFormattingOptions));
+					RenderWithLocations(syntaxTree, output, settings);
 					text = output.ToString();
 					spans = output.Spans;
-					breakpointLocations = BuildBreakpointLocations(writer.Ranges, text, node.Module);
+					codeStatements = BuildCodeStatements(syntaxTree, decompiler, node.Module, cancellationToken);
 				}
 				var diagnostics = decompiler.Errors
 					.Select(e => new DiagnosticDto("warning", e.ToString()))
 					.ToArray();
-				return new DecompileResponse(GetLabel(node), "csharp", text, spans, diagnostics) { BreakpointLocations = breakpointLocations };
+				if (codeStatements is not null) {
+					RefreshStatementCache();
+					codeStatementsByNode[$"{node.Id}:{stateId}"] = codeStatements;
+				}
+				return new DecompileResponse(GetLabel(node), "csharp", text, spans, diagnostics) { CodeStatements = codeStatements };
 			}
 			catch (OperationCanceledException) {
 				throw;
@@ -406,83 +976,88 @@ public sealed class WorkspaceManager : IDisposable {
 			}
 		}
 
-		// The debugger we talk to only supports function breakpoints, so a click in the editor's gutter has to be
-		// turned into "the method that owns this line". MethodRangeTokenWriter records the text range of every AST
-		// node it prints, and the ILFunction annotation on those nodes names the method, so both halves of the map
-		// come out of the same pass that produced the text. Consecutive lines of one method are merged into runs so
-		// the payload is one entry per body instead of one per statement.
-		IReadOnlyList<BreakpointLocationDto> BuildBreakpointLocations(IReadOnlyList<MethodTextRange> ranges, string text, ModuleEntry module) {
+		// A gutter click has to land on an exact IL offset, not on "the method that owns this line": the engine
+		// refuses an offset that is not a sequence point. CreateSequencePoints over the tree that was just printed
+		// gives the IL range of every statement together with the line(s) it was printed on, and the ILFunction
+		// annotation names both the body the IL lives in and the source method the user sees.
+		internal static IReadOnlyList<CodeStatementDto> BuildCodeStatements(SyntaxTree syntaxTree, CSharpDecompiler decompiler, ModuleEntry module, CancellationToken cancellationToken) {
 			try {
-				var lineStarts = GetLineStarts(text);
-				var linesByMethod = new Dictionary<MethodDef, SortedSet<int>>();
-				foreach (var range in ranges) {
-					if (GetSourceMethodToken(range.Function) is not { } token)
+				var statements = new List<CodeStatementDto>();
+				// The points tile the method's IL and so start a statement where the IL before it ends up, which is
+				// not where the statement's own code starts. StatementIlRanges recovers the latter from the tree.
+				var statementStarts = StatementIlRanges.Collect(syntaxTree);
+				foreach (var (function, points) in decompiler.CreateSequencePoints(syntaxTree)) {
+					cancellationToken.ThrowIfCancellationRequested();
+					if (GetBodyMethodToken(function) is not { } bodyToken)
 						continue;
-					if (module.Module.ResolveToken(token) is not MethodDef method)
-						continue;
-					if (!linesByMethod.TryGetValue(method, out var lines))
-						linesByMethod.Add(method, lines = []);
-					var first = GetLineAt(lineStarts, range.Start);
-					var last = GetLineAt(lineStarts, Math.Max(range.Start, range.End - 1));
-					for (var line = first; line <= last; line++)
-						lines.Add(line);
-				}
-				var locations = new List<BreakpointLocationDto>();
-				foreach (var (method, lines) in linesByMethod) {
-					var ordered = lines.ToArray();
-					for (var i = 0; i < ordered.Length; i++) {
-						var start = ordered[i];
-						while (i + 1 < ordered.Length && ordered[i + 1] == ordered[i] + 1)
-							i++;
-						locations.Add(new BreakpointLocationDto(start, ordered[i], method.FullName));
+					var sourceToken = GetSourceMethodToken(function) ?? bodyToken;
+					var description = DescribeMethod(module, sourceToken);
+					statementStarts.TryGetValue(function, out var starts);
+					foreach (var point in points) {
+						if (point.EndOffset <= point.Offset)
+							continue;
+						statements.Add(new CodeStatementDto(
+							point.StartLine,
+							point.EndLine,
+							point.StartColumn,
+							point.EndColumn,
+							StatementIlRanges.StartWithin(starts, point.Offset, point.EndOffset),
+							point.EndOffset,
+							point.Offset,
+							module.Path,
+							unchecked((int)bodyToken),
+							unchecked((int)sourceToken),
+							description,
+							point.IsHidden));
 					}
 				}
-				locations.Sort((left, right) => left.StartLine.CompareTo(right.StartLine));
-				return locations;
+				statements.Sort(static (left, right) => {
+					var result = left.StartLine.CompareTo(right.StartLine);
+					if (result != 0)
+						return result;
+					result = left.StartColumn.CompareTo(right.StartColumn);
+					return result != 0 ? result : left.IlOffset.CompareTo(right.IlOffset);
+				});
+				return statements;
 			}
 			catch (OperationCanceledException) {
 				throw;
 			}
 			catch (Exception) {
-				// Losing the line map only costs the editor its gutter markers, so never fail the decompilation over it.
-				return Array.Empty<BreakpointLocationDto>();
+				// Losing the statement map only costs the editor its gutter markers, so never fail the decompilation over it.
+				return Array.Empty<CodeStatementDto>();
 			}
 		}
 
-		// Offsets of the first character of every line. Both line endings are handled so the numbers match the text
-		// the editor sees, whatever platform produced it.
-		static int[] GetLineStarts(string text) {
-			var starts = new List<int> { 0 };
-			for (var i = 0; i < text.Length; i++) {
-				if (text[i] == '\n')
-					starts.Add(i + 1);
-				else if (text[i] == '\r') {
-					if (i + 1 < text.Length && text[i + 1] == '\n')
-						i++;
-					starts.Add(i + 1);
-				}
-			}
-			return starts.ToArray();
-		}
+		static string DescribeMethod(ModuleEntry module, uint token) =>
+			module.Module.ResolveToken(token) is MethodDef method
+				? method.FullName
+				: $"0x{token:X8}";
 
-		static int GetLineAt(int[] lineStarts, int offset) {
-			var index = Array.BinarySearch(lineStarts, offset);
-			if (index < 0)
-				index = ~index - 1;
-			return Math.Max(1, index + 1);
+		/// <summary>Prints the tree so ILSpy records the line and column of every node.</summary>
+		internal static void RenderWithLocations(SyntaxTree syntaxTree, SpanTextOutput output, DecompilerSettings settings) {
+			var tokenWriter = TokenWriter.WrapInWriterThatSetsLocationsInAST(new LocationTokenWriter(output, settings));
+			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 		}
 
 		// Prefer the source level method over the state machine or lambda implementation so the derived breakpoint
 		// name matches the tree node (and the name the debug adapter is given). GetBodyMethodToken() below is the
 		// opposite choice: it asks where the IL actually lives, which is what the IL/C# interleaving view needs.
-		static uint? GetSourceMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
+		internal static uint? GetSourceMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
 			var method = function.Method ?? function.MoveNextMethod;
 			if (method is null || method.MetadataToken.IsNil)
 				return null;
 			return unchecked((uint)MetadataTokens.GetToken(method.MetadataToken));
 		}
 
-		static CSharpDecompilerSession CreateCSharpDecompilerSession(ModuleEntry module, DecompilerSettings settings, CancellationToken cancellationToken) {
+		internal static uint? GetBodyMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
+			var method = function.MoveNextMethod ?? function.Method;
+			if (method is null || method.MetadataToken.IsNil)
+				return null;
+			return unchecked((uint)MetadataTokens.GetToken(method.MetadataToken));
+		}
+
+		internal static CSharpDecompilerSession CreateCSharpDecompilerSession(ModuleEntry module, DecompilerSettings settings, CancellationToken cancellationToken) {
 			if (!module.IsModified) {
 				var decompiler = new CSharpDecompiler(module.Path, settings) { CancellationToken = cancellationToken };
 				return new CSharpDecompilerSession(decompiler);
@@ -551,7 +1126,7 @@ public sealed class WorkspaceManager : IDisposable {
 			return GetMemberNode(provider, module).Id;
 		}
 
-		static System.Reflection.Metadata.EntityHandle ToEntityHandle(IMDTokenProvider provider) =>
+		internal static System.Reflection.Metadata.EntityHandle ToEntityHandle(IMDTokenProvider provider) =>
 			MetadataTokens.EntityHandle(unchecked((int)provider.MDToken.Raw));
 
 		DecompileResponse DecompileIL(NodeEntry node) => new(
@@ -1205,6 +1780,134 @@ public sealed class WorkspaceManager : IDisposable {
 			_ => value.Value.GetType().FullName ?? "Resource",
 		};
 
+		// The statement map is derived from the decompiled text, so an edit invalidates every entry at once.
+		void RefreshStatementCache() {
+			if (stateId == cachedStatementsStateId)
+				return;
+			codeStatementsByNode.Clear();
+			symbols.Invalidate();
+			cachedStatementsStateId = stateId;
+		}
+
+		// ---------------------------------------------------------------- debug symbols
+
+		internal ResolveBreakpointsResponse ResolveBreakpoints(IReadOnlyList<BreakpointQuery> queries, CancellationToken cancellationToken) {
+			var resolved = new List<ResolvedBreakpoint>(queries.Count);
+			foreach (var query in queries) {
+				cancellationToken.ThrowIfCancellationRequested();
+				resolved.Add(ResolveBreakpoint(query, cancellationToken));
+			}
+			return new ResolveBreakpointsResponse(resolved);
+		}
+
+		ResolvedBreakpoint ResolveBreakpoint(BreakpointQuery query, CancellationToken cancellationToken) {
+			IReadOnlyList<CodeStatementDto> statements;
+			try {
+				statements = GetCodeStatements(query.NodeId, cancellationToken);
+			}
+			catch (RpcException ex) {
+				return Unbound(query, ex.Message);
+			}
+			var statement = FindStatement(statements, query.Line, query.Column);
+			if (statement is null)
+				return Unbound(query, "No sequence point on this line.");
+			return new ResolvedBreakpoint(
+				query.Id,
+				true,
+				null,
+				statement.ModulePath,
+				statement.MetadataToken,
+				statement.SourceMethodToken,
+				statement.IlOffset,
+				// The engine arms the statement's own start first and falls back to this; without one it
+				// reports the breakpoint dead, which beats a breakpoint that stops on another line.
+				symbols.AcceptedPointOffset(this, statement),
+				statement.StartLine,
+				statement.EndLine,
+				statement.StartColumn,
+				statement.EndColumn,
+				statement.Description);
+		}
+
+		static ResolvedBreakpoint Unbound(BreakpointQuery query, string reason) => new(
+			query.Id, false, reason, null, null, null, null, null, query.Line, query.Line, 0, 0, null);
+
+		/// <summary>
+		/// Snaps a requested line to the statement that owns it, or to the closest one below it. A click on a
+		/// blank line, a brace or a comment still has to land on something the engine can bind.
+		/// </summary>
+		internal static CodeStatementDto? FindStatement(IReadOnlyList<CodeStatementDto> statements, int line, int? column) {
+			CodeStatementDto? covering = null;
+			foreach (var statement in statements) {
+				if (statement.IsHidden || line < statement.StartLine || line > statement.EndLine)
+					continue;
+				if (column is int requested && statement.StartLine == statement.EndLine &&
+					(requested < statement.StartColumn - 1 || requested > statement.EndColumn))
+					continue;
+				if (covering is null || statement.StartColumn < covering.StartColumn)
+					covering = statement;
+			}
+			if (covering is not null)
+				return covering;
+
+			CodeStatementDto? nearest = null;
+			foreach (var statement in statements) {
+				if (statement.IsHidden)
+					continue;
+				if (nearest is null || IsCloser(statement, nearest, line))
+					nearest = statement;
+			}
+			return nearest;
+		}
+
+		// Distance first; on a tie the statement after the requested line wins, matching what a user expects
+		// from clicking just above a statement.
+		static bool IsCloser(CodeStatementDto candidate, CodeStatementDto current, int line) {
+			var candidateDistance = Distance(candidate.StartLine, line);
+			var currentDistance = Distance(current.StartLine, line);
+			if (candidateDistance != currentDistance)
+				return candidateDistance < currentDistance;
+			return candidate.StartLine > current.StartLine;
+		}
+
+		static int Distance(int startLine, int line) => startLine >= line ? startLine - line : line - startLine;
+
+		IReadOnlyList<CodeStatementDto> GetCodeStatements(string nodeId, CancellationToken cancellationToken) {
+			RefreshStatementCache();
+			var key = $"{nodeId}:{stateId}";
+			if (codeStatementsByNode.TryGetValue(key, out var cached))
+				return cached;
+			var node = GetNode(nodeId);
+			var statements = DecompileCSharp(node, cancellationToken).CodeStatements ?? Array.Empty<CodeStatementDto>();
+			codeStatementsByNode[key] = statements;
+			return statements;
+		}
+
+		internal ResolvedIlLocation? ResolveIlLocation(string modulePath, int metadataToken, int ilOffset, CancellationToken cancellationToken) =>
+			symbols.ResolveIlLocation(this, modulePath, metadataToken, ilOffset, cancellationToken);
+
+		internal MethodIlInfoResponse? GetMethodIlInfo(string modulePath, int metadataToken, CancellationToken cancellationToken) =>
+			symbols.GetMethodIlInfo(this, modulePath, metadataToken, cancellationToken);
+
+		internal IReadOnlyList<MethodIlInfoResponse> FindMethods(string name, CancellationToken cancellationToken) =>
+			symbols.FindMethods(this, name, cancellationToken);
+
+		/// <summary>The module node id for a member, or null when the module is only loaded, not opened.</summary>
+		internal string? TryGetMemberNodeId(ModuleEntry module, IMDTokenProvider member) =>
+			module.IsExternal ? null : GetMemberNode(member, module).Id;
+
+		internal ModuleEntry? FindModuleEntry(string path) {
+			foreach (var entry in modules.Values) {
+				if (Path.GetFullPath(entry.Path).Equals(Path.GetFullPath(path), StringComparison.Ordinal))
+					return entry;
+			}
+			return null;
+		}
+
+		internal IEnumerable<ModuleEntry> OpenModules => modules.Values;
+
+		internal string SymbolScope => stateId;
+
 		public async Task<T> RunAsync<T>(Func<Workspace, T> action, CancellationToken cancellationToken) {
 			await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 			try {
@@ -1236,13 +1939,14 @@ public sealed class WorkspaceManager : IDisposable {
 			modules.Clear();
 			nodes.Clear();
 			nodeIdsByKey.Clear();
+			codeStatementsByNode.Clear();
 			transactions.Clear();
 			undoHistory.Clear();
 			redoHistory.Clear();
 			gate.Dispose();
 		}
 
-		sealed class CSharpDecompilerSession : IDisposable {
+		internal sealed class CSharpDecompilerSession : IDisposable {
 			readonly ICSharpCode.Decompiler.Metadata.PEFile? snapshotFile;
 			readonly MemoryStream? snapshotStream;
 
@@ -1277,7 +1981,7 @@ public sealed class WorkspaceManager : IDisposable {
 				var source = output.ToString();
 				var methodToken = method.MDToken.Raw;
 				var statements = decompiler.CreateSequencePoints(syntaxTree)
-					.Where(pair => GetBodyMethodToken(pair.Key) == methodToken)
+					.Where(pair => Workspace.GetBodyMethodToken(pair.Key) == methodToken)
 					.SelectMany(pair => pair.Value)
 					.Where(point => !point.IsHidden && point.EndOffset > point.Offset)
 					.Select(point => new ILSourceStatement(point.Offset, point.EndOffset, ExtractSource(source, point.StartLine, point.StartColumn, point.EndLine, point.EndColumn)))
@@ -1293,13 +1997,6 @@ public sealed class WorkspaceManager : IDisposable {
 				return fallback.Length == 0
 					? Array.Empty<ILSourceStatement>()
 					: [new ILSourceStatement(0, int.MaxValue, fallback)];
-			}
-
-			static uint? GetBodyMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
-				var method = function.MoveNextMethod ?? function.Method;
-				if (method is null || method.MetadataToken.IsNil)
-					return null;
-				return unchecked((uint)MetadataTokens.GetToken(method.MetadataToken));
 			}
 
 			static string ExtractSource(string source, int startLine, int startColumn, int endLine, int endColumn) {
@@ -1322,19 +2019,25 @@ public sealed class WorkspaceManager : IDisposable {
 			}
 		}
 
-		sealed class ModuleEntry(string path, ModuleDefMD module) {
+		internal sealed class ModuleEntry(string path, ModuleDefMD module) {
 			public string Id { get; set; } = string.Empty;
 			public string Path { get; } = path;
 			public ModuleDefMD Module { get; } = module;
 			public long FileLength { get; } = new FileInfo(path).Length;
 			public bool IsModified { get; set; }
+
+			/// <summary>
+			/// True for a module the debuggee loaded but the user never opened. It has no tree node, so
+			/// the client can show a frame's file and line but cannot navigate to it.
+			/// </summary>
+			public bool IsExternal { get; init; }
 		}
 
+		/// <summary>
 		sealed record NamespaceValue(string Name, IReadOnlyList<TypeDef> Types);
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
 		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);
-		readonly record struct MethodTextRange(int Start, int End, DecompilerILFunction Function);
 		sealed class NodeEntry(string id, string key, NodeKind kind, object value, ModuleEntry module) {
 			public string Id { get; } = id;
 			public string Key { get; } = key;
@@ -1354,25 +2057,30 @@ public sealed class WorkspaceManager : IDisposable {
 		sealed record EditOperation(string NodeId, ModuleEntry Module, Func<Action> Apply);
 		sealed record EditHistoryEntry(IReadOnlyList<EditOperation> Operations, IReadOnlyList<Action> UndoActions, string BeforeStateId, string AfterStateId);
 
-		sealed class SpanTextOutput(Func<object, string?> resolveTarget) : ITextOutput {
+		internal sealed class SpanTextOutput(Func<object, string?> resolveTarget) : ITextOutput {
 			readonly StringBuilder builder = new();
 			readonly List<TextSpanDto> spans = [];
 			int indentation;
+			int line = 1;
+			int column = 1;
 			bool needsIndentation = true;
 
 			public string IndentationString { get; set; } = "\t";
 			public IReadOnlyList<TextSpanDto> Spans => spans;
 			public int Position => builder.Length;
 
+			/// <summary>Where the next character will land. ILSpy reads this to label the syntax tree.</summary>
+			public TextLocation Location => new(line, column);
+
 			public void Indent() => indentation++;
 			public void Unindent() => indentation = Math.Max(0, indentation - 1);
 			public void Write(char ch) => Write(ch.ToString());
 			public void Write(string text) {
 				EnsureIndentation();
-				builder.Append(text);
+				Append(text);
 			}
 			public void WriteLine() {
-				builder.AppendLine();
+				Append(Environment.NewLine);
 				needsIndentation = true;
 			}
 			public void WriteReference(OpCodeInfo opCode, bool omitSuffix = false) => Write(omitSuffix ? opCode.Name ?? string.Empty : opCode.ToString() ?? string.Empty);
@@ -1388,43 +2096,50 @@ public sealed class WorkspaceManager : IDisposable {
 			void WriteReferenceCore(object reference, string text, bool isDefinition) {
 				EnsureIndentation();
 				var start = builder.Length;
-				builder.Append(text);
+				Append(text);
 				var target = resolveTarget(reference);
 				if (target is not null && text.Length > 0)
 					spans.Add(new TextSpanDto(start, text.Length, isDefinition ? "definition" : "reference", target));
+			}
+
+			// Every append goes through here so the line/column the syntax tree is labelled with stays in step
+			// with the text the editor will show.
+			void Append(string text) {
+				for (var i = 0; i < text.Length; i++) {
+					var ch = text[i];
+					if (ch == '\r') {
+						if (i + 1 < text.Length && text[i + 1] == '\n')
+							i++;
+					}
+					else if (ch != '\n') {
+						column++;
+						continue;
+					}
+					line++;
+					column = 1;
+				}
+				builder.Append(text);
 			}
 
 			void EnsureIndentation() {
 				if (!needsIndentation)
 					return;
 				for (var i = 0; i < indentation; i++)
-					builder.Append(IndentationString);
+					Append(IndentationString);
 				needsIndentation = false;
 			}
 
 			public override string ToString() => builder.ToString();
 		}
 
-		// The C# visitor calls StartNode/EndNode around every AST node it prints. Reading the output position at
-		// those two points is what turns the rendered text into a line map: each node gets the range it occupies,
-		// and the ILFunction annotation it carries names the method those lines belong to.
-		sealed class MethodRangeTokenWriter(SpanTextOutput output, DecompilerSettings settings) : TextTokenWriter(output, settings) {
-			readonly Stack<int> starts = [];
+		// ILSpy only writes line/column information into the syntax tree while a writer that reports its own
+		// position (ILocatable) prints it; CreateSequencePoints has nothing to work with otherwise. The writer
+		// that turns identifiers into the reference spans the editor navigates with — TextTokenWriter — is not
+		// ILocatable, so this one reports the position of the output buffer instead of tracking its own.
+		internal sealed class LocationTokenWriter(SpanTextOutput output, DecompilerSettings settings) : TextTokenWriter(output, settings), ILocatable {
+			public TextLocation Location => output.Location;
 
-			public List<MethodTextRange> Ranges { get; } = [];
-
-			public override void StartNode(DecompilerAstNode node) {
-				starts.Push(output.Position);
-				base.StartNode(node);
-			}
-
-			public override void EndNode(DecompilerAstNode node) {
-				var start = starts.Count == 0 ? 0 : starts.Pop();
-				var end = output.Position;
-				if (end > start && node.Annotation<DecompilerILFunction>() is { } function)
-					Ranges.Add(new MethodTextRange(start, end, function));
-				base.EndNode(node);
-			}
+			public int Length => output.Position;
 		}
 
 		enum NodeKind {

@@ -37,7 +37,7 @@ test('packaged application starts its bundled backend and discovers the debugger
     if (!executable!.endsWith('.AppImage')) {
       const resourcesPath = path.join(path.dirname(executable!), 'resources')
       await access(path.join(resourcesPath, 'backend', 'linux-x64', 'dnSpy.Backend.Host'))
-      await access(path.join(resourcesPath, 'debugger', 'linux-x64', 'netcoredbg'))
+      await access(path.join(resourcesPath, 'backend', 'linux-x64', 'libdbgshim.so'))
     }
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
     const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })

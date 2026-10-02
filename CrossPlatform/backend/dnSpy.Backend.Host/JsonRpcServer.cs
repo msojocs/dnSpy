@@ -6,7 +6,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using dnSpy.Backend.Contracts;
 using dnSpy.Backend.Core;
-using dnSpy.Backend.Debugging.Dap;
+using dnSpy.Backend.Debugging.CorDebug;
 
 namespace dnSpy.Backend.Host;
 
@@ -16,7 +16,7 @@ internal sealed class JsonRpcServer {
 	readonly Stream input;
 	readonly Stream output;
 	readonly WorkspaceManager workspaces;
-	readonly DebugSessionManager? debugSessions;
+	readonly CorDebugSessionManager? debugSessions;
 	readonly HostOptions hostOptions;
 	readonly CancellationTokenSource shutdown;
 	readonly SemaphoreSlim outputGate = new(1, 1);
@@ -24,7 +24,7 @@ internal sealed class JsonRpcServer {
 	readonly JsonSerializerOptions jsonOptions = CreateJsonOptions();
 	volatile bool handshakeComplete;
 
-	public JsonRpcServer(Stream input, Stream output, WorkspaceManager workspaces, DebugSessionManager? debugSessions, HostOptions hostOptions, CancellationTokenSource shutdown) {
+	public JsonRpcServer(Stream input, Stream output, WorkspaceManager workspaces, CorDebugSessionManager? debugSessions, HostOptions hostOptions, CancellationTokenSource shutdown) {
 		this.input = input;
 		this.output = output;
 		this.workspaces = workspaces;
@@ -246,7 +246,7 @@ internal sealed class JsonRpcServer {
 			});
 	}
 
-	DebugSessionManager GetDebugSessions() => debugSessions
+	CorDebugSessionManager GetDebugSessions() => debugSessions
 		?? throw new RpcException(ErrorCodes.InvalidRequest, "The CoreCLR debug adapter is not installed.");
 
 	T DeserializeParams<T>(RpcRequest request) {

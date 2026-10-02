@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    libdbgshim.so is the debug engine's only native asset, and it comes from a NuGet package rather
+    than from the runtime. Today's SDK lets it through, but a future PlatformManifest could classify
+    it as a runtime file and have ResolvePackageFileConflicts drop it — at which point the app would
+    start without a debugger. Copying it explicitly keeps the engine working either way, and the
+    existence check keeps this a no-op on frameworks and RIDs the package does not target.
+  -->
+  <Target Name="CopyDbgShimToOutput" AfterTargets="Build;Publish" Condition="'$(TargetFramework)' == 'net10.0'">
+    <ItemGroup>
+      <DbgShimToCopy Include="$(NuGetPackageRoot)microsoft.diagnostics.dbgshim.linux-x64/10.0.745401/runtimes/linux-x64/native/libdbgshim.so" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DbgShimToCopy)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" Condition="'@(DbgShimToCopy)' != '' And Exists('%(DbgShimToCopy.FullPath)')" />
+    <Copy SourceFiles="@(DbgShimToCopy)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" Condition="'$(PublishDir)' != '' And '@(DbgShimToCopy)' != '' And Exists('%(DbgShimToCopy.FullPath)')" />
+  </Target>
+
+</Project>

@@ -2,7 +2,7 @@
   <Folder Name="/backend/">
     <Project Path="backend/dnSpy.Backend.Contracts/dnSpy.Backend.Contracts.csproj" />
     <Project Path="backend/dnSpy.Backend.Core/dnSpy.Backend.Core.csproj" />
-    <Project Path="backend/dnSpy.Backend.Debugging.Dap/dnSpy.Backend.Debugging.Dap.csproj" />
+    <Project Path="backend/dnSpy.Backend.Debugging.CorDebug/dnSpy.Backend.Debugging.CorDebug.csproj" />
     <Project Path="backend/dnSpy.Backend.Host/dnSpy.Backend.Host.csproj" />
   </Folder>
   <Folder Name="/backend/tests/">

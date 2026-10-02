@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import type { DebugVariable } from '../../../shared/protocol'
-import { useAppStore } from '../app-store'
+import { methodBreakpointName, useAppStore } from '../app-store'
+import type { LineBreakpoint } from '../app-store'
 import { useLanguage } from '../localization'
 
 export const LocalsPane = (): React.JSX.Element => {
@@ -52,6 +53,9 @@ export const WatchPane = (): React.JSX.Element => {
   const values = useAppStore((state) => state.watchValues)
   const addWatch = useAppStore((state) => state.addWatch)
   const removeWatch = useAppStore((state) => state.removeWatch)
+  // The in-process engine cannot evaluate expressions, so the input is offered only when it can.
+  const canEvaluate = useAppStore((state) => state.debugCapabilities.supportsEvaluate !== false)
+  const disabled = debugState !== 'stopped' || !canEvaluate
   const { t } = useLanguage()
   const submit = (): void => {
     if (expression.trim()) {
@@ -62,8 +66,8 @@ export const WatchPane = (): React.JSX.Element => {
   return (
     <div className="debug-tool-pane">
       <div className="debug-input-row">
-        <input aria-label={t('Watch expression')} placeholder={t('Expression')} value={expression} disabled={debugState !== 'stopped'} onChange={(event) => setExpression(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
-        <button className="icon-button" aria-label={t('Add watch')} title={t('Add watch')} disabled={debugState !== 'stopped' || !expression.trim()} onClick={submit}><Plus size={14} /></button>
+        <input aria-label={t('Watch expression')} placeholder={t('Expression')} value={expression} disabled={disabled} title={canEvaluate ? undefined : t('Not supported by this debug engine')} onChange={(event) => setExpression(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
+        <button className="icon-button" aria-label={t('Add watch')} title={t('Add watch')} disabled={disabled || !expression.trim()} onClick={submit}><Plus size={14} /></button>
       </div>
       <div className="debug-table debug-table-watch" role="table" aria-label={t('Watch')}>
         <div className="debug-table-header">{t('Expression')}</div><div className="debug-table-header">{t('Value')}</div><div className="debug-table-header">{t('Type')}</div><div />
@@ -111,8 +115,19 @@ export const ThreadsPane = (): React.JSX.Element => {
   )
 }
 
+// A line breakpoint is identified by the method it lives in plus the line, so two breakpoints in the same method
+// do not read as the same row. The method name is the dotted form the Debug menu also uses, which keeps the pane
+// and the "Toggle Method Breakpoint" entry speaking the same language.
+const lineBreakpointLabel = (breakpoint: LineBreakpoint): string => {
+  const method = methodBreakpointName(breakpoint.description)
+  return method ? `${method}:${breakpoint.line}` : `Line ${breakpoint.line}`
+}
+
 export const BreakpointsPane = (): React.JSX.Element => {
   const [name, setName] = useState('')
+  const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
+  const removeLineBreakpoint = useAppStore((state) => state.removeLineBreakpoint)
+  const setLineBreakpointEnabled = useAppStore((state) => state.setLineBreakpointEnabled)
   const breakpoints = useAppStore((state) => state.functionBreakpoints)
   const addBreakpoint = useAppStore((state) => state.addFunctionBreakpoint)
   const removeBreakpoint = useAppStore((state) => state.removeFunctionBreakpoint)
@@ -128,13 +143,29 @@ export const BreakpointsPane = (): React.JSX.Element => {
   }
   return (
     <div className="debug-tool-pane">
+      <div className="result-list">
+        {lineBreakpoints.map((breakpoint) => {
+          const label = lineBreakpointLabel(breakpoint)
+          return (
+            <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.id}>
+              <input
+                type="checkbox"
+                checked={breakpoint.enabled}
+                aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: label })}
+                onChange={() => void setLineBreakpointEnabled(breakpoint.id, !breakpoint.enabled)}
+              />
+              <span className={`breakpoint-state breakpoint-state-${breakpoint.state}`} title={breakpoint.message ?? t('Bound')} />
+              <span title={breakpoint.message ?? breakpoint.description}>{label}</span>
+              <button className="icon-button" aria-label={t('Remove {name}', { name: label })} onClick={() => void removeLineBreakpoint(breakpoint.id)}><Trash2 size={13} /></button>
+            </div>
+          )
+        })}
+      </div>
       <div className="debug-input-row">
         <input aria-label={t('Function breakpoint')} placeholder="Namespace.Type.Method" value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
         <button className="icon-button" aria-label={t('Add function breakpoint')} title={t('Add function breakpoint')} disabled={!name.trim()} onClick={submit}><Plus size={14} /></button>
       </div>
       <div className="result-list">
-        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> {t('All thrown exceptions')}</label>
-        <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}</label>
         {breakpoints.map((breakpoint) => (
           <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.name}>
             <input
@@ -147,6 +178,14 @@ export const BreakpointsPane = (): React.JSX.Element => {
             <button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint.name })} onClick={() => void removeBreakpoint(breakpoint.name)}><Trash2 size={13} /></button>
           </div>
         ))}
+        {/* The in-process engine has no exception breakpoints; the checkboxes stay visible but inert rather than
+            disappearing, so the pane does not shift between engines. */}
+        <label className="exception-breakpoint-row" title={t('Not supported by this debug engine')}>
+          <input type="checkbox" disabled checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> {t('All thrown exceptions')}
+        </label>
+        <label className="exception-breakpoint-row" title={t('Not supported by this debug engine')}>
+          <input type="checkbox" disabled checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}
+        </label>
       </div>
     </div>
   )

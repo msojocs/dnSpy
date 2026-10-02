@@ -13,7 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
     <ProjectReference Include="..\..\dnSpy.Backend.Core\dnSpy.Backend.Core.csproj" />
-    <ProjectReference Include="..\..\dnSpy.Backend.Debugging.Dap\dnSpy.Backend.Debugging.Dap.csproj" />
+    <ProjectReference Include="..\..\dnSpy.Backend.Debugging.CorDebug\dnSpy.Backend.Debugging.CorDebug.csproj" />
   </ItemGroup>
 
   <ItemGroup>

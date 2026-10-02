@@ -99,8 +99,31 @@ public sealed record DecompileRequest(string WorkspaceId, string NodeId, Decompi
 
 public sealed record TextSpanDto(int Start, int Length, string Kind, string? TargetNodeId = null);
 
-/// <summary>Lines of a decompiled document that belong to one method body, so a gutter click can be mapped to that method.</summary>
-public sealed record BreakpointLocationDto(int StartLine, int EndLine, string Description);
+/// <summary>
+/// One sequence point of the decompiled text: the line(s) it covers and the IL range it maps to.
+/// The IL range is what the in-process debug engine turns into an IL-offset breakpoint, so a
+/// gutter click can select the statement under the cursor instead of only its owning method.
+/// </summary>
+/// <summary>
+/// One statement of a decompiled body, in the IL terms a debug engine speaks. <paramref name="IlOffset"/>
+/// is where the statement's own code starts, which is where a breakpoint on its line belongs;
+/// <paramref name="SequencePointIlOffset"/> is the start of the point that tiles the IL there, which is
+/// the offset the runtime is able to place a breakpoint on. They differ where the decompiler's own
+/// statement begins inside code the sequence points charge to it.
+/// </summary>
+public sealed record CodeStatementDto(
+	int StartLine,
+	int EndLine,
+	int StartColumn,
+	int EndColumn,
+	int IlOffset,
+	int IlEndOffset,
+	int SequencePointIlOffset,
+	string ModulePath,
+	int MetadataToken,
+	int SourceMethodToken,
+	string Description,
+	bool IsHidden);
 
 public sealed record DecompileResponse(
 	string Title,
@@ -108,8 +131,8 @@ public sealed record DecompileResponse(
 	string Text,
 	IReadOnlyList<TextSpanDto> Spans,
 	IReadOnlyList<DiagnosticDto> Diagnostics) {
-	/// <summary>Line to method mapping for languages whose decompiled text we can map (currently C# only).</summary>
-	public IReadOnlyList<BreakpointLocationDto>? BreakpointLocations { get; init; }
+	/// <summary>Per-statement IL mapping for languages whose decompiled text we can map (currently C# only).</summary>
+	public IReadOnlyList<CodeStatementDto>? CodeStatements { get; init; }
 }
 
 public sealed record DiagnosticDto(string Severity, string Message, int? Start = null, int? Length = null);
@@ -210,13 +233,14 @@ public sealed record DebugLaunchRequest(
 	IReadOnlyList<string>? Arguments = null,
 	string? WorkingDirectory = null,
 	bool StopAtEntry = false,
-	IReadOnlyDictionary<string, string>? Environment = null);
+	IReadOnlyDictionary<string, string>? Environment = null,
+	string? WorkspaceId = null);
 
 public sealed record DebugProcessDto(int ProcessId, string Name, string? ExecutablePath);
 
 public sealed record DebugModuleDto(string Id, string Name, string Path, string? Version = null, string? SymbolStatus = null);
 
-public sealed record DebugAttachRequest(int ProcessId);
+public sealed record DebugAttachRequest(int ProcessId, string? WorkspaceId = null);
 
 public sealed record DebugStartResponse(string SessionId, JsonElement Capabilities);
 
@@ -227,6 +251,118 @@ public sealed record DebugAdapterResponse(JsonElement? Body);
 public sealed record DebugDisconnectRequest(string SessionId, bool TerminateDebuggee = false);
 
 public sealed record DebugEventNotification(string SessionId, string Event, JsonElement? Body);
+
+/// <summary>A breakpoint the client asked for, expressed in decompiled-source coordinates.</summary>
+public sealed record BreakpointQuery(string Id, string NodeId, int Line, int? Column = null);
+
+/// <summary>The IL identity of a breakpoint, after snapping the requested line to a sequence point.</summary>
+public sealed record ResolvedBreakpoint(
+	string Id,
+	bool Bound,
+	string? Reason,
+	string? ModulePath,
+	int? MetadataToken,
+	int? SourceMethodToken,
+	int? IlOffset,
+	int? SequencePointIlOffset,
+	int StartLine,
+	int EndLine,
+	int StartColumn,
+	int EndColumn,
+	string? Description);
+
+public sealed record ResolveBreakpointsRequest(string WorkspaceId, IReadOnlyList<BreakpointQuery> Queries);
+
+public sealed record ResolveBreakpointsResponse(IReadOnlyList<ResolvedBreakpoint> Breakpoints);
+
+/// <summary>The decompiled line(s) a stopped IL location maps to, so the client can reveal it.</summary>
+public sealed record ResolvedIlLocation(
+	string? NodeId,
+	string? Description,
+	string ModulePath,
+	int MetadataToken,
+	int StartLine,
+	int EndLine,
+	int StartColumn,
+	int EndColumn,
+	int IlOffset,
+	int IlEndOffset,
+	bool IsHidden,
+	bool IsExternalModule);
+
+/// <summary>The IL identity of a method, used for method-level (function) breakpoints.</summary>
+public sealed record MethodIlInfoResponse(
+	string? NodeId,
+	string Description,
+	string ModulePath,
+	int SourceMethodToken,
+	int BodyMetadataToken,
+	int FirstIlOffset,
+	int CodeSize,
+	bool HasBody);
+
+/// <summary>
+/// One local or argument of a method body, named the way the decompiler prints it. Debuggees without
+/// a PDB carry no names at all, so the engine matches these by slot instead of by symbol.
+/// </summary>
+/// <param name="Index">
+/// The index the engine uses: a local slot for a local, an argument index for an argument — where 0
+/// is the first argument and, in an instance method, <c>this</c>.
+/// </param>
+public sealed record DebugVariableNameDto(string Name, string TypeName, int Index, bool IsArgument);
+
+/// <summary>An IL location a step can land on, spelled the way the engine arms a breakpoint.</summary>
+public sealed record SteppingTarget(string ModulePath, int MetadataToken, int IlOffset);
+
+/// <summary>
+/// Where a step out of a given location can land: the statements of the body it is in, and — for a
+/// step into — the statements of each method the location calls. Stepping is driven by breakpoints on
+/// these locations rather than by stepping one IL instruction at a time, because without symbols the
+/// runtime stops inside statements rather than between them.
+/// </summary>
+/// <param name="Targets">
+/// Every statement a step may land on, whether it is ahead of the location in IL or behind it: the
+/// runtime reports the one the thread reaches first, which is the only order a loop obeys.
+/// </param>
+/// <param name="LeavesMethod">
+/// Set when no statement of the body can run again before the method returns, so the step has to
+/// leave it — the statements a caller resumes at are not the ones a body maps to.
+/// </param>
+public sealed record SteppingTargetsResponse(IReadOnlyList<SteppingTarget> Targets, bool LeavesMethod = false);
+
+/// <summary>
+/// Bridges the debug engine to the decompiler: the engine speaks IL offsets and metadata tokens,
+/// the client speaks tree node IDs and decompiled line numbers.
+/// </summary>
+public interface IDebugSymbolResolver {
+	/// <summary>Snaps requested source lines to the sequence point that owns them.</summary>
+	Task<ResolveBreakpointsResponse> ResolveBreakpointsAsync(string workspaceId, IReadOnlyList<BreakpointQuery> queries, CancellationToken cancellationToken);
+
+	/// <summary>Maps a stopped <c>(module, token, IL offset)</c> back to decompiled coordinates for highlighting.</summary>
+	Task<ResolvedIlLocation?> ResolveIlLocationAsync(string? workspaceId, string modulePath, int metadataToken, int ilOffset, CancellationToken cancellationToken);
+
+	/// <summary>Returns the IL identity of a method when the module is known.</summary>
+	Task<MethodIlInfoResponse?> GetMethodIlInfoAsync(string workspaceId, string modulePath, int metadataToken, CancellationToken cancellationToken);
+
+	/// <summary>Finds methods by decompiled name, for method-level (function) breakpoints.</summary>
+	Task<IReadOnlyList<MethodIlInfoResponse>> FindMethodsAsync(string? workspaceId, string name, CancellationToken cancellationToken);
+
+	/// <summary>The local and argument names of a method body, so a value can be shown by name.</summary>
+	Task<IReadOnlyList<DebugVariableNameDto>> GetVariableNamesAsync(string? workspaceId, string modulePath, int metadataToken, CancellationToken cancellationToken);
+
+	/// <summary>
+	/// The sequence points a step from <paramref name="ilOffset"/> can land on, plus the methods that
+	/// location calls when <paramref name="stepInto"/> is set. Returns <c>null</c> when the location
+	/// cannot be mapped, in which case the engine falls back to asking the runtime to step.
+	/// </summary>
+	Task<SteppingTargetsResponse?> GetSteppingTargetsAsync(string? workspaceId, string modulePath, int metadataToken, int ilOffset, bool stepInto, CancellationToken cancellationToken);
+
+	/// <summary>
+	/// True when a module is one of the workspace's own — code the user opened. Frames elsewhere are
+	/// named from their metadata, and their decompiled line is never looked up.
+	/// </summary>
+	Task<bool> IsWorkspaceModuleAsync(string? workspaceId, string modulePath, CancellationToken cancellationToken);
+}
 
 public sealed class RpcRequest {
 	[JsonPropertyName("jsonrpc")]

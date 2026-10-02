@@ -1,12 +1,16 @@
 using System.Diagnostics;
+using dnSpy.Backend.Contracts;
 using dnSpy.Backend.Core;
-using dnSpy.Backend.Debugging.Dap;
+using dnSpy.Backend.Debugging.CorDebug;
 using dnSpy.Backend.Host;
 
 var options = HostOptions.Parse(args);
 using var shutdown = new CancellationTokenSource();
 using var workspaceManager = new WorkspaceManager();
-await using var debugManager = DebugManagerFactory.TryCreate();
+// The workspace manager resolves decompiled-source breakpoints to IL for the debug engine, so the
+// engine is created after it and handed the interface. A null engine means the host runs without
+// debugging (see DebugManagerFactory).
+await using var debugManager = DebugManagerFactory.TryCreate(workspaceManager);
 using var cancelHandler = new ConsoleCancelHandler(shutdown);
 
 if (options.ParentProcessId is int parentProcessId)
@@ -86,11 +90,16 @@ namespace dnSpy.Backend.Host {
 	}
 
 	internal static class DebugManagerFactory {
-		public static DebugSessionManager? TryCreate() {
+		/// <param name="symbols">
+		/// Resolves decompiled-source breakpoints to IL identities. Supplied by the workspace
+		/// manager once it implements <see cref="IDebugSymbolResolver"/>.
+		/// </param>
+		public static CorDebugSessionManager? TryCreate(IDebugSymbolResolver? symbols = null) {
 			try {
-				return new DebugSessionManager();
+				return new CorDebugSessionManager(symbols);
 			}
 			catch (FileNotFoundException ex) {
+				// libdbgshim.so is missing: the host still runs, but reports debug.coreclr.* as false.
 				HostLog.Error("debugger-unavailable", ex);
 				return null;
 			}

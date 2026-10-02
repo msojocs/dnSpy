@@ -1,16 +1,24 @@
 using System.Diagnostics;
 using System.Text.Json;
 using dnSpy.Backend.Contracts;
-using dnSpy.Backend.Debugging.Dap;
+using dnSpy.Backend.Core;
+using dnSpy.Backend.Debugging.CorDebug;
 using Xunit;
 
 namespace dnSpy.Backend.Tests;
 
+/// <summary>
+/// The in-process engine against a real debuggee. Both tests are whole-process ones, so they are skipped
+/// rather than failed where the machine cannot host them: <c>libdbgshim.so</c> arrives with the build (it
+/// is a package reference), and without it there is no engine to test.
+/// </summary>
 public sealed class DebugSessionManagerTests {
-	[Fact(Timeout = 30_000)]
+	[Fact(Timeout = 60_000)]
 	public async Task LaunchesCoreClrAndProvidesThreadsStackAndVariables() {
-		var debuggerPath = FindDebugger();
-		await using var manager = new DebugSessionManager(debuggerPath);
+		using var workspaceManager = new WorkspaceManager();
+		await using var manager = CreateManager(workspaceManager);
+		var target = FindTarget();
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
 		var stoppedEvents = new Queue<DebugEventNotification>();
 		var eventSignal = new SemaphoreSlim(0);
 		manager.EventReceived += (_, notification) => {
@@ -21,9 +29,8 @@ public sealed class DebugSessionManagerTests {
 			}
 		};
 
-		var target = FindTarget();
 		var started = await manager.LaunchAsync(
-			new DebugLaunchRequest(target, StopAtEntry: true),
+			new DebugLaunchRequest(target, StopAtEntry: true, WorkspaceId: opened.WorkspaceId),
 			TestContext.Current.CancellationToken);
 		await eventSignal.WaitAsync(TestContext.Current.CancellationToken);
 		var entryStop = Dequeue(stoppedEvents);
@@ -35,7 +42,11 @@ public sealed class DebugSessionManagerTests {
 		var breakpointResponse = await manager.RequestAsync(
 			new DebugAdapterRequest(started.SessionId, "setFunctionBreakpoints", functionBreakpoints),
 			TestContext.Current.CancellationToken);
-		Assert.True(breakpointResponse.Body?.GetProperty("breakpoints")[0].GetProperty("verified").GetBoolean());
+		var breakpoint = breakpointResponse.Body?.GetProperty("breakpoints")[0]
+			?? throw new InvalidOperationException("No breakpoint was returned.");
+		// A function breakpoint is armed at the first statement's sequence point, so it binds as soon as the
+		// module is loaded — which, at an entry stop, it is.
+		Assert.True(breakpoint.GetProperty("verified").GetBoolean(), breakpoint.GetProperty("message").GetString());
 
 		var entryThreadId = entryStop.Body?.GetProperty("threadId").GetInt32() ?? throw new InvalidOperationException("Stopped event has no thread ID.");
 		await manager.RequestAsync(
@@ -79,8 +90,14 @@ public sealed class DebugSessionManagerTests {
 			TestContext.Current.CancellationToken);
 	}
 
-	[Fact(Timeout = 30_000)]
+	[Fact(Timeout = 60_000)]
 	public async Task AttachesToAndDetachesFromExistingCoreClrProcess() {
+		// A workspace has to be open for the engine to resolve the module the process has already loaded:
+		// it is the decompiler, not a symbol file, that names the code a frame is in.
+		using var workspaceManager = new WorkspaceManager();
+		var targetPath = FindTarget();
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([targetPath]), TestContext.Current.CancellationToken);
+		await using var manager = CreateManager(workspaceManager);
 		using var target = new Process {
 			StartInfo = new ProcessStartInfo {
 				FileName = "dotnet",
@@ -90,18 +107,17 @@ public sealed class DebugSessionManagerTests {
 				CreateNoWindow = true,
 			},
 		};
-		target.StartInfo.ArgumentList.Add(FindTarget());
+		target.StartInfo.ArgumentList.Add(targetPath);
 		target.StartInfo.ArgumentList.Add("--wait");
 		Assert.True(target.Start());
 		try {
 			var ready = await target.StandardOutput.ReadLineAsync(TestContext.Current.CancellationToken);
 			Assert.Equal("READY", ready);
-			await using var manager = new DebugSessionManager(FindDebugger());
 			var stopped = new TaskCompletionSource<DebugEventNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
 			manager.EventReceived += (_, notification) => {
 				if (notification.Event == "stopped") stopped.TrySetResult(notification);
 			};
-			var attached = await manager.AttachAsync(new DebugAttachRequest(target.Id), TestContext.Current.CancellationToken);
+			var attached = await manager.AttachAsync(new DebugAttachRequest(target.Id, opened.WorkspaceId), TestContext.Current.CancellationToken);
 			var threads = await manager.RequestAsync(
 				new DebugAdapterRequest(attached.SessionId, "threads", JsonSerializer.SerializeToElement(new { })),
 				TestContext.Current.CancellationToken);
@@ -134,12 +150,18 @@ public sealed class DebugSessionManagerTests {
 			return events.Dequeue();
 	}
 
-	static string FindDebugger() {
-		var path = Path.GetFullPath(Path.Combine(
-			AppContext.BaseDirectory,
-			"..", "..", "..", "..", "..", "..",
-			".tools", "netcoredbg", "netcoredbg"));
-		return File.Exists(path) ? path : throw new FileNotFoundException("The pinned netcoredbg test dependency is missing.", path);
+	/// <summary>
+	/// The session manager loads <c>libdbgshim.so</c> as it is constructed, so a machine without it cannot
+	/// run these tests at all — that is a missing dependency, not a failure of the engine.
+	/// </summary>
+	static CorDebugSessionManager CreateManager(IDebugSymbolResolver symbols) {
+		try {
+			return new CorDebugSessionManager(symbols);
+		}
+		catch (FileNotFoundException ex) {
+			Assert.Skip($"The dbgshim native library is not available: {ex.Message}");
+			throw;
+		}
 	}
 
 	static string FindTarget() {

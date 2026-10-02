@@ -479,9 +479,11 @@ select:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Breakpoints in the editor's glyph margin: a filled dot when enabled, a hollow one when disabled. */
+/* Breakpoints in the editor's glyph margin: a filled dot when enabled, a hollow one when disabled, and a grey one
+   when the engine has not bound it (the module is not loaded yet, or the offset is not a sequence point). */
 .breakpoint-glyph::before,
-.breakpoint-glyph-disabled::before {
+.breakpoint-glyph-disabled::before,
+.breakpoint-glyph-unbound::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -498,6 +500,29 @@ select:focus-visible,
 
 .breakpoint-glyph-disabled::before {
   border: 2px solid var(--danger);
+}
+
+.breakpoint-glyph-unbound::before {
+  border: 2px solid var(--text-muted);
+}
+
+/* Where the selected frame is stopped: the whole line tinted, and an arrow in the margin so it can be told
+   apart from the cursor line and from a breakpoint sitting on the same statement. */
+.debug-stopped-line {
+  background: var(--accent-soft);
+}
+
+.debug-stopped-glyph::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 0;
+  height: 0;
+  margin: auto;
+  border-left: 9px solid var(--accent);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
 }
 
 .loading-state,
@@ -1037,6 +1062,24 @@ select:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The dot that tells bound from pending from unbound in the Breakpoints pane. */
+.breakpoint-state {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.breakpoint-state-pending {
+  background: transparent;
+  border: 2px solid var(--danger);
+}
+
+.breakpoint-state-unbound {
+  background: var(--text-muted);
 }
 
 .attach-dialog {

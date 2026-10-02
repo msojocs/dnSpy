@@ -42,8 +42,10 @@ for (const library of Object.values(assets.libraries ?? {})) {
   addComponent('nuget', library.path.slice(0, separator), library.path.slice(separator + 1))
 }
 
-addComponent('generic', 'netcoredbg', '3.2.0-1092', {
-  hashes: [{ alg: 'SHA-256', content: '080eb3b2d2152465f599d3b33d1ee6e747794e11cc0a3773ec689f5e5f2c5afa' }],
+// The debug engine's only native dependency is a single file that arrives with the backend build, so
+// the package it comes from is recorded here with the hash of what is actually shipped.
+addComponent('generic', 'libdbgshim', '10.0.745401', {
+  hashes: [{ alg: 'SHA-256', content: '3da75fd13512e36c6a5434749f1e63d221cb1ddcf70879993b1fd0bf5855bf66' }],
   licenses: [{ license: { id: 'MIT' } }],
 })
 

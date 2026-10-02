@@ -9,7 +9,9 @@ Linux 版使用 Electron/React 前端和独立的 .NET 10 后端，无需 Wine�
 - 反编译 C#、Visual Basic、带语法高亮的 IL、带 C# 源语句的 IL，以及把 BAML 恢复为 XAML。
 - 名称/字符串搜索、引用分析、模块信息和分页十六进制查看。
 - 类型及成员重命名、结构化 IL 方法体编辑、嵌入资源替换和原子另存。
-- 启动或附加 Linux .NET/CoreCLR 进程，使用函数断点、异常断点、继续、暂停、单步、线程、调用栈、局部变量、监视和模块窗口。
+- 启动或附加 Linux .NET/CoreCLR 进程，设置行断点（反编译源码上直接点击边栏，无需 PDB）和方法断点，并使用继续、暂停、单步、线程、调用栈、局部变量和模块窗口。
+
+调试引擎在后端进程内直接使用 CLR 的 `ICorDebug`（`libdbgshim.so` 随安装包分发，运行时不会联网下载）。当前**不支持**异常断点和表达式求值/监视：异常过滤器在界面上不可用，监视窗口的输入框会置灰。已知边界：`async` 方法里的单步不做表达式求值来判定 continuation，因此分支、循环或异常路径上的 `await` 可能多停一次。
 
 Linux 不提供 Windows CorDebug、.NET Framework 运行时调试、Windows 专属反调试绕过或 WPF 设计预览。WPF 程序集仍可查看、反编译和编辑；BAML 可以恢复为 XAML。
 
@@ -83,11 +85,10 @@ dnSpy 不会自动运行 `sudo`，也不会修改全局 ptrace 设置。附加�
 ```bash
 cd CrossPlatform
 pnpm install --frozen-lockfile
-./scripts/install-netcoredbg.sh
 dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false
 pnpm --dir frontend build
 pnpm --dir frontend test:e2e
 pnpm package:linux
 ```
 
-安装包输出到 `CrossPlatform/artifacts/packages/`。`install-netcoredbg.sh` 固定下载 `3.2.0-1092`，并在解压前校验 SHA-256；应用运行时不会联网下载调试器。
+安装包输出到 `CrossPlatform/artifacts/packages/`。调试所需的 `libdbgshim.so` 由 `Microsoft.Diagnostics.DbgShim.linux-x64` NuGet 包提供，随 `dotnet publish` 落到后端目录并被一起打包；应用运行时不会联网下载调试器。
