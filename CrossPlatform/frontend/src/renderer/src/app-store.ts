@@ -7,6 +7,7 @@ import type {
   DecompileResponse,
   DebugBreakpoint,
   DebugEvent,
+  DebugLaunchOptions,
   DebugModule,
   DebugStackFrame,
   DebugThread,
@@ -124,7 +125,9 @@ interface AppState {
   methodBodyChanged(node: TreeNode, result: EditCommitResponse): Promise<void>
   undoEdit(): Promise<void>
   redoEdit(): Promise<void>
-  launchDebug(): Promise<void>
+  launchDebug(options: DebugLaunchOptions): Promise<void>
+  /** Executable the "Debug Program" dialog should prefill: the selected module, else the first one opened. */
+  defaultDebugTarget(): string | undefined
   attachDebug(processId: number): Promise<void>
   handleDebugEvent(event: DebugEvent): Promise<void>
   continueDebug(): Promise<void>
@@ -571,24 +574,46 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  launchDebug: async () => {
-    const target = await window.dnSpy.chooseDebugTarget()
-    if (!target) return
+  defaultDebugTarget: () => {
+    const { modules, selectedNode, parents } = get()
+    // A module node carries its own path; anything else walks up the parents chain to the module it belongs
+    // to, which is the closest the tree gets to upstream's "debug the current document".
+    let nodeId = selectedNode?.id
+    const visited = new Set<string>()
+    while (nodeId && !visited.has(nodeId)) {
+      visited.add(nodeId)
+      const path = modules.find((module) => module.id === nodeId)?.path
+      if (path) return path
+      nodeId = parents[nodeId]
+    }
+    return modules[0]?.path
+  },
+
+  launchDebug: async (options) => {
+    if (!options.program) return
     set({ debugState: 'starting', error: undefined })
+    let sessionId: string | undefined
     try {
       // The workspace id travels with the launch: it is how the engine turns a decompiled line into an IL offset.
-      const started = await window.dnSpy.launchDebug(target, [], true, get().workspaceId)
-      set({ debugSessionId: started.sessionId, debugCapabilities: started.capabilities })
+      const started = await window.dnSpy.launchDebug({ ...options, workspaceId: get().workspaceId })
+      sessionId = started.sessionId
+      set({ debugSessionId: sessionId, debugCapabilities: started.capabilities })
       const breakpointNames = enabledFunctionBreakpointNames(get().functionBreakpoints)
       if (breakpointNames.length > 0)
-        await window.dnSpy.setFunctionBreakpoints(started.sessionId, breakpointNames)
+        await window.dnSpy.setFunctionBreakpoints(sessionId, breakpointNames)
       if (get().lineBreakpoints.length > 0)
         await syncLineBreakpoints(get, set)
       if (get().exceptionBreakpoints.length > 0)
-        await window.dnSpy.setExceptionBreakpoints(started.sessionId, get().exceptionBreakpoints)
-      get().appendOutput(t('Started debugging {target}.', { target }))
+        await window.dnSpy.setExceptionBreakpoints(sessionId, get().exceptionBreakpoints)
+      // A launch that does not break at the entry point is held by the engine until this lands: the
+      // debuggee would otherwise run to completion in the time the launch request alone takes.
+      await window.dnSpy.configurationDone(sessionId)
+      get().appendOutput(t('Started debugging {target}.', { target: options.program }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      // A launch that was never released would sit suspended forever, so a failure here stops the
+      // session rather than leaving the debuggee behind.
+      if (sessionId) await get().stopDebug()
       set({ debugState: 'inactive', error: message })
       get().appendOutput(t('Debug launch failed: {message}', { message }))
     }

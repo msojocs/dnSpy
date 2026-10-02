@@ -45,6 +45,18 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	/// <summary>True when the launch asked for a stop before the first user statement runs.</summary>
 	public bool StopAtEntry { get; private init; }
 
+	/// <summary>
+	/// True while a launch is being held back until the client has armed its breakpoints.
+	///
+	/// A launch that does not stop at the entry point has no stop of its own before user code, and
+	/// the debuggee reaches it in the time the launch request itself takes to come back — a client
+	/// that armed breakpoints afterwards would be arming them at a program that had already run.
+	/// So the target is left suspended where the runtime stopped it and released by
+	/// <c>configurationDone</c>. A launch that does break at the entry point needs none of this: the
+	/// entry breakpoint is already a stop the client can arm behind.
+	/// </summary>
+	bool awaitingConfiguration;
+
 	/// <summary>The debuggee PID, once known.</summary>
 	public int TargetProcessId { get; private set; }
 
@@ -78,6 +90,8 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 			StopAtEntry = request.StopAtEntry,
 			OwnsDebuggee = true,
 		};
+		// Held until the client is done arming breakpoints; see awaitingConfiguration.
+		session.awaitingConfiguration = !request.StopAtEntry;
 		Process? child = null;
 		try {
 			var startInfo = new ProcessStartInfo {
@@ -345,7 +359,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	/// suspended, so anything not deliberately stopped must be resumed immediately.
 	/// </summary>
 	public void AfterEventProcessed() {
-		if (HasExited || IsStopped || process is null)
+		if (HasExited || IsStopped || awaitingConfiguration || process is null)
 			return;
 		try {
 			if (!process.IsRunning)
@@ -395,6 +409,12 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		cancellationToken.ThrowIfCancellationRequested();
 		switch (command) {
 			case "configurationDone":
+				// The client's breakpoints are in place, so the target may run: this is the release for
+				// a launch that was held because it does not break at the entry point.
+				if (awaitingConfiguration) {
+					awaitingConfiguration = false;
+					ResumeProcess();
+				}
 				return EmptyJson();
 			case "continue":
 				return Continue();

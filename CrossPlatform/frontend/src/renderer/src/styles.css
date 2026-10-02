@@ -1088,6 +1088,51 @@ select:focus-visible,
   height: min(80vh, 600px);
 }
 
+.debug-program-dialog {
+  grid-template-rows: 33px auto 43px;
+  width: min(92vw, 560px);
+}
+
+/* Label / control / browse-button rows, mirroring the upstream Debug Program dialog's field grid. */
+.debug-program-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  gap: 7px 8px;
+  align-items: center;
+  padding: 12px;
+}
+
+.debug-program-fields label {
+  white-space: nowrap;
+}
+
+.debug-program-fields input,
+.debug-program-fields select,
+.debug-program-fields textarea {
+  min-width: 0;
+  height: 25px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.debug-program-fields textarea {
+  height: 72px;
+  padding: 4px 6px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.debug-program-wide {
+  grid-column: 2 / 4;
+}
+
+.debug-program-engine {
+  color: var(--text-muted);
+}
+
 .process-list {
   overflow: auto;
 }

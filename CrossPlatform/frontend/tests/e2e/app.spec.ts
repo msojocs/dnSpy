@@ -369,6 +369,15 @@ test.describe('the in-process debug engine', () => {
     await namespaceRow.locator('.tree-expander').click()
   }
 
+  // Upstream's Start button opens the Debug Program dialog rather than a bare file picker, and the executable
+  // is prefilled from the module the workspace already has open — so confirming the dialog is all a test needs.
+  // "Break at" defaults to Don't Break, which is why there is no Continue step below: the launch runs straight
+  // to the breakpoint instead of stopping on the entry point first.
+  const startDebugging = async (): Promise<void> => {
+    await page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Debug a Program' }).click()
+    await page.getByRole('dialog', { name: 'Debug Program' }).getByRole('button', { name: 'OK' }).click()
+  }
+
   test('sets a line breakpoint from the gutter, stops on it and shows the frame locals', async () => {
     await openDebugTarget()
     const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^DebugTarget\.Program$/ })
@@ -404,10 +413,8 @@ test.describe('the in-process debug engine', () => {
     expect(glyphBox.y).toBeLessThan(lineBox.y + lineBox.height)
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
-    await toolbar.getByRole('button', { name: 'Start Debugging' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await toolbar.getByRole('button', { name: 'Continue' }).click()
-    // The launch asks to stop at the entry point, so the continue above is what actually reaches the breakpoint.
+    await startDebugging()
+    // The launch asks not to break at the entry point, so the very first stop is the breakpoint's.
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
     // The debuggee's module only loads when the process starts, so the breakpoint was pending until then.
     await expect(page.locator('.breakpoint-state-bound')).toHaveCount(1)
@@ -422,7 +429,26 @@ test.describe('the in-process debug engine', () => {
     await expect(page.locator('.debug-stopped-glyph')).toHaveCount(1)
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
+  })
+
+  test('breaks at the entry point when the dialog asks for it', async () => {
+    await openDebugTarget()
+
+    await page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Debug a Program' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Debug Program' })
+    // The other half of the dialog's "Break at": upstream's start parameters can stop before Main runs.
+    await dialog.getByLabel('Break at').selectOption('entry-point')
+    await dialog.getByRole('button', { name: 'OK' }).click()
+
+    await expect(page.locator('.status-bar')).toContainText('Stopped: entry')
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    await expect(page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()).toContainText('DebugTarget.Program::Main')
+
+    // The entry stop is an ordinary stop: continuing runs the program to its end.
+    const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
+    await toolbar.getByRole('button', { name: 'Continue' }).click()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 
   test('stops on a function breakpoint for a method of the debuggee', async () => {
@@ -432,13 +458,11 @@ test.describe('the in-process debug engine', () => {
     await page.getByRole('button', { name: 'Add function breakpoint' }).click()
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
-    await toolbar.getByRole('button', { name: 'Start Debugging' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await toolbar.getByRole('button', { name: 'Continue' }).click()
+    await startDebugging()
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 
   test('steps the loop one pass at a time and leaves the method for its caller', async () => {
@@ -464,9 +488,7 @@ test.describe('the in-process debug engine', () => {
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Calculate:')
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
-    await toolbar.getByRole('button', { name: 'Start Debugging' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await toolbar.getByRole('button', { name: 'Continue' }).click()
+    await startDebugging()
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
 
     // The frame stopped on the loop body, with the accumulator still 0 for this pass. The line the frame
@@ -509,7 +531,7 @@ test.describe('the in-process debug engine', () => {
     await expect(frameRow).toContainText('DebugTarget.dll:18')
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 
   // A step into stops before the call runs, so the frame has to be standing on the call statement itself:
@@ -539,9 +561,7 @@ test.describe('the in-process debug engine', () => {
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Main:')
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
-    await toolbar.getByRole('button', { name: 'Start Debugging' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await toolbar.getByRole('button', { name: 'Continue' }).click()
+    await startDebugging()
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
 
     // The stop is on the call itself: the arguments are read but the callee has not run.
@@ -556,7 +576,7 @@ test.describe('the in-process debug engine', () => {
     await expect(frameRow).toContainText('DebugTarget.Program::Calculate')
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 
   test('steps across an await without landing in the state machine', async () => {
@@ -583,9 +603,7 @@ test.describe('the in-process debug engine', () => {
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.AddAsync:7')
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
-    await toolbar.getByRole('button', { name: 'Start Debugging' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Continue' })).toBeEnabled()
-    await toolbar.getByRole('button', { name: 'Continue' }).click()
+    await startDebugging()
     // The breakpoint is on the statement inside the state machine, so the stop is on its line.
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
 
@@ -603,6 +621,6 @@ test.describe('the in-process debug engine', () => {
     await expect(frameRow).toContainText('DebugTarget.dll:8')
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
-    await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 })

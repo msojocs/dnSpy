@@ -48,7 +48,7 @@ export const ToolBar = ({ hasWorkspace, busy, onOpen, onSave, onSearch, canGoBac
       <ToolButton label={t('Search')} disabled={!hasWorkspace} onClick={onSearch}><Search size={16} /></ToolButton>
       <span className="toolbar-spacer" />
       <span className="debug-target"><Bug size={14} /> .NET</span>
-      <ToolButton label={debugState === 'stopped' ? t('Continue') : t('Start Debugging')} disabled={!debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped')} onClick={debugState === 'stopped' ? onContinue : onStart}><Play size={16} /></ToolButton>
+      <ToolButton label={debugState === 'stopped' ? t('Continue') : t('Debug a Program')} disabled={!debugAvailable || (debugState !== 'inactive' && debugState !== 'stopped')} onClick={debugState === 'stopped' ? onContinue : onStart}><Play size={16} /></ToolButton>
       <ToolButton label={t('Pause')} disabled={debugState !== 'running'} onClick={onPause}><Pause size={16} /></ToolButton>
       <ToolButton label={t('Step Over')} disabled={debugState !== 'stopped'} onClick={onStep}><StepForward size={16} /></ToolButton>
       <ToolButton label={t('Stop')} disabled={debugState === 'inactive'} onClick={onStop}><Square size={15} /></ToolButton>

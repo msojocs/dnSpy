@@ -261,6 +261,21 @@ export interface DebugEvent {
   body?: Record<string, unknown>
 }
 
+/**
+ * Start parameters collected by the "Debug Program" dialog. Mirrors the CoreCLR page of the
+ * upstream `DebugProgramDlg` (executable, arguments, working directory, environment, break-at);
+ * the backend's `DebugLaunchRequest` accepts every field.
+ */
+export interface DebugLaunchOptions {
+  program: string
+  arguments?: string[]
+  workingDirectory?: string
+  environment?: Record<string, string>
+  /** `true` arms a breakpoint on the entry point, matching `PredefinedBreakKinds.EntryPoint`. */
+  stopAtEntry?: boolean
+  workspaceId?: string
+}
+
 export type UiLocale = 'en' | 'zh-CN'
 
 export interface DnSpyApi {
@@ -288,11 +303,14 @@ export interface DnSpyApi {
   saveModuleAs(workspaceId: string, moduleId: string, suggestedName: string): Promise<SaveModuleResponse | undefined>
   saveCode(suggestedName: string, text: string): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
+  chooseDebugDirectory(): Promise<string | undefined>
   listDebugProcesses(): Promise<DebugProcess[]>
-  launchDebug(program: string, args: string[], stopAtEntry: boolean, workspaceId?: string): Promise<DebugStartResponse>
+  launchDebug(options: DebugLaunchOptions): Promise<DebugStartResponse>
   attachDebug(processId: number, workspaceId?: string): Promise<DebugStartResponse>
   setBreakpoints(sessionId: string, breakpoints: DebugBreakpointRequest[]): Promise<DebugBreakpoint[]>
   setFunctionBreakpoints(sessionId: string, names: string[]): Promise<Record<string, unknown>>
+  /** Releases a launch the engine held back until the client had armed its breakpoints. */
+  configurationDone(sessionId: string): Promise<void>
   debugContinue(sessionId: string, threadId: number): Promise<Record<string, unknown>>
   debugPause(sessionId: string, threadId: number): Promise<Record<string, unknown>>
   debugNext(sessionId: string, threadId: number): Promise<Record<string, unknown>>

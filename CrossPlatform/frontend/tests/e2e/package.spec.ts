@@ -33,7 +33,7 @@ test('packaged application starts its bundled backend and discovers the debugger
     const page = context.pages()[0] ?? await context.waitForEvent('page')
     applicationProcessId = await page.evaluate(() => window.dnSpy.getProcessId())
     await expect(page.getByText('Ready', { exact: true })).toBeVisible()
-    await expect(page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
+    await expect(page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
     if (!executable!.endsWith('.AppImage')) {
       const resourcesPath = path.join(path.dirname(executable!), 'resources')
       await access(path.join(resourcesPath, 'backend', 'linux-x64', 'dnSpy.Backend.Host'))

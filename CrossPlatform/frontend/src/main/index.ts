@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
 import { DialogPathHistory } from './dialog-path-history'
-import type { BackendStatus, UiLocale } from '../shared/protocol'
+import type { BackendStatus, DebugLaunchOptions, UiLocale } from '../shared/protocol'
 
 let mainWindow: BrowserWindow | undefined
 let backend: BackendClient | undefined
@@ -24,6 +24,7 @@ const nativeMessages = {
     codeFiles: '代码文件',
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
+    selectWorkingDirectory: '选择工作目录',
   },
   en: {
     openAssembly: 'Open Assembly',
@@ -36,6 +37,7 @@ const nativeMessages = {
     codeFiles: 'Code Files',
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
+    selectWorkingDirectory: 'Select Working Directory',
   },
 } as const
 
@@ -300,16 +302,27 @@ const registerIpc = (): void => {
     await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
     return result.filePaths[0]
   })
+  ipcMain.handle('debug:chooseDirectory', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: nativeText().selectWorkingDirectory,
+      defaultPath: dialogPathHistory?.openDirectory,
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0)
+      return undefined
+    return result.filePaths[0]
+  })
   ipcMain.handle('debug:listProcesses', () => requireBackend().invoke('debug/listProcesses', {}))
   // The workspace id is what lets the engine resolve decompiled-source breakpoints to IL offsets,
   // so it travels with launch/attach rather than being inferred later from the session.
-  ipcMain.handle('debug:launch', (_event, program: string, args: string[], stopAtEntry: boolean, workspaceId?: string) => requireBackend().invoke('debug/launch', { program, arguments: args, stopAtEntry, workspaceId }))
+  ipcMain.handle('debug:launch', (_event, options: DebugLaunchOptions) => requireBackend().invoke('debug/launch', options))
   ipcMain.handle('debug:attach', (_event, processId: number, workspaceId?: string) => requireBackend().invoke('debug/attach', { processId, workspaceId }))
   const debugRequest = (channel: string, command: string): void => {
     ipcMain.handle(channel, (_event, sessionId: string, args: unknown) => requireBackend().invoke('debug/request', { sessionId, command, arguments: args }))
   }
   debugRequest('debug:setBreakpoints', 'setBreakpoints')
   debugRequest('debug:setFunctionBreakpoints', 'setFunctionBreakpoints')
+  debugRequest('debug:configurationDone', 'configurationDone')
   debugRequest('debug:continue', 'continue')
   debugRequest('debug:pause', 'pause')
   debugRequest('debug:next', 'next')

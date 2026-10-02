@@ -11,6 +11,7 @@ import { MethodBodyEditor, RenameDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { AttachDialog } from './components/AttachDialog'
+import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
 import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
@@ -126,6 +127,7 @@ export const App = (): React.JSX.Element => {
   const [renameNode, setRenameNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
+  const [debugProgramDialogOpen, setDebugProgramDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
   const [optionsDialogCategory, setOptionsDialogCategory] = useState<'environment' | 'decompiler' | 'debugger' | undefined>(undefined)
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
@@ -163,7 +165,6 @@ export const App = (): React.JSX.Element => {
   const clearError = useAppStore((state) => state.clearError)
   const debugState = useAppStore((state) => state.debugState)
   const stoppedReason = useAppStore((state) => state.stoppedReason)
-  const launchDebug = useAppStore((state) => state.launchDebug)
   const handleDebugEvent = useAppStore((state) => state.handleDebugEvent)
   const continueDebug = useAppStore((state) => state.continueDebug)
   const pauseDebug = useAppStore((state) => state.pauseDebug)
@@ -344,7 +345,8 @@ export const App = (): React.JSX.Element => {
       } else if (event.key === 'F5' && !editingText) {
         event.preventDefault()
         if (debugState === 'stopped') void continueDebug()
-        else if (debugState === 'inactive') void launchDebug()
+        // Upstream's F5 is ContinueOrDebugProgram: with no session it is the Start button, dialog and all.
+        else if (debugState === 'inactive') setDebugProgramDialogOpen(true)
       } else if (event.key === 'F10' && debugState === 'stopped' && !editingText) {
         event.preventDefault()
         void stepDebug('next')
@@ -361,7 +363,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, deleteAllBreakpoints, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, deleteAllBreakpoints, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -535,7 +537,7 @@ export const App = (): React.JSX.Element => {
         onReplaceResource={() => { if (selectedNode) void replaceResource(selectedNode) }}
         onHex={() => addSpecialTab('hex')}
         onModuleInfo={() => addSpecialTab('module-info')}
-        onStartDebug={() => void launchDebug()}
+        onStartDebug={() => setDebugProgramDialogOpen(true)}
         onAttachDebug={() => setAttachDialogOpen(true)}
         onContinueDebug={() => void continueDebug()}
         onPauseDebug={() => void pauseDebug()}
@@ -585,7 +587,7 @@ export const App = (): React.JSX.Element => {
         hasWorkspace={Boolean(workspaceId)} busy={busy} onOpen={() => void chooseAndOpen()} onSave={() => void saveModuleAs()} onSearch={() => showBorderTab('search')}
         canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.items.length - 1} onBack={goBack} onForward={goForward}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true} debugState={debugState}
-        onStart={() => void launchDebug()} onContinue={() => void continueDebug()} onPause={() => void pauseDebug()}
+        onStart={() => setDebugProgramDialogOpen(true)} onContinue={() => void continueDebug()} onPause={() => void pauseDebug()}
         onStep={() => void stepDebug('next')} onStop={() => void stopDebug()}
       />
       {error && (
@@ -637,6 +639,7 @@ export const App = (): React.JSX.Element => {
       {renameNode && <RenameDialog node={renameNode} onClose={() => setRenameNode(undefined)} />}
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
+      {debugProgramDialogOpen && <DebugProgramDialog onClose={() => setDebugProgramDialogOpen(false)} />}
       {aboutDialogOpen && <AboutDialog onClose={() => setAboutDialogOpen(false)} />}
       {optionsDialogCategory !== undefined && (
         <OptionsDialog initialCategory={optionsDialogCategory} onClose={() => setOptionsDialogCategory(undefined)} />
