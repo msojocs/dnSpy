@@ -3,7 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from './MenuBar'
 
 type DebugState = 'inactive' | 'starting' | 'running' | 'stopped'
-const renderMenu = (debugAvailable = false, onAbout = vi.fn(), debugState: DebugState = 'inactive', onShowOptions = vi.fn()): void => {
+const renderMenu = (
+  debugAvailable = false,
+  onAbout = vi.fn(),
+  debugState: DebugState = 'inactive',
+  onShowOptions = vi.fn(),
+  breakpoints: { canToggle?: boolean; onToggle?: () => void; items?: { name: string; enabled: boolean }[] } = {},
+): void => {
   render(<MenuBar
     hasWorkspace={true}
     canRename={true}
@@ -38,6 +44,14 @@ const renderMenu = (debugAvailable = false, onAbout = vi.fn(), debugState: Debug
     onStepIn={vi.fn()}
     onStepOver={vi.fn()}
     onStopDebug={vi.fn()}
+    canToggleBreakpoint={breakpoints.canToggle ?? false}
+    hasFunctionBreakpoints={(breakpoints.items ?? []).length > 0}
+    canEnableAllBreakpoints={(breakpoints.items ?? []).some((item) => !item.enabled)}
+    canDisableAllBreakpoints={(breakpoints.items ?? []).some((item) => item.enabled)}
+    onToggleBreakpoint={breakpoints.onToggle ?? vi.fn()}
+    onDeleteAllBreakpoints={vi.fn()}
+    onEnableAllBreakpoints={vi.fn()}
+    onDisableAllBreakpoints={vi.fn()}
     visibleToolWindows={new Set(['explorer', 'output', 'search', 'analysis', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
     onShowExplorer={vi.fn()}
     onShowOutput={vi.fn()}
@@ -226,6 +240,14 @@ describe('MenuBar', () => {
       onStepIn={vi.fn()}
       onStepOver={vi.fn()}
       onStopDebug={vi.fn()}
+      canToggleBreakpoint={false}
+      hasFunctionBreakpoints={false}
+      canEnableAllBreakpoints={false}
+      canDisableAllBreakpoints={false}
+      onToggleBreakpoint={vi.fn()}
+      onDeleteAllBreakpoints={vi.fn()}
+      onEnableAllBreakpoints={vi.fn()}
+      onDisableAllBreakpoints={vi.fn()}
       onShowExplorer={vi.fn()}
       onShowOutput={onShowOutput}
       onShowSearch={vi.fn()}
@@ -318,6 +340,14 @@ describe('MenuBar', () => {
       onStepIn={vi.fn()}
       onStepOver={vi.fn()}
       onStopDebug={vi.fn()}
+      canToggleBreakpoint={false}
+      hasFunctionBreakpoints={false}
+      canEnableAllBreakpoints={false}
+      canDisableAllBreakpoints={false}
+      onToggleBreakpoint={vi.fn()}
+      onDeleteAllBreakpoints={vi.fn()}
+      onEnableAllBreakpoints={vi.fn()}
+      onDisableAllBreakpoints={vi.fn()}
       visibleToolWindows={new Set(['explorer', 'output', 'search', 'analysis', 'locals', 'watch', 'callstack', 'breakpoints', 'threads', 'modules'])}
       onShowExplorer={vi.fn()}
       onShowOutput={vi.fn()}
@@ -385,6 +415,39 @@ describe('MenuBar', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
     // Options stays present and reachable during a live debug session, matching upstream.
     expect(screen.getByRole('menuitem', { name: /^Options\.\.\.$/ })).toBeInTheDocument()
+  })
+
+  it('mirrors the upstream Debug breakpoint commands', () => {
+    renderMenu(false, vi.fn(), 'inactive', vi.fn(), { items: [{ name: 'Ns.Type.Method', enabled: true }] })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
+    // Upstream shows Toggle Breakpoint unconditionally (F9) and hides the other three when they have nothing to act on.
+    expect(screen.getByRole('menuitem', { name: /^Toggle Breakpoint/ })).toBeDisabled()
+    expect(screen.getByText('F9')).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: /^Delete All Breakpoints/ })).toBeInTheDocument()
+    expect(screen.getByText('Ctrl+Shift+F9')).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: /^Disable All Breakpoints/ })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Enable All Breakpoints/ })).not.toBeInTheDocument()
+  })
+
+  it('enables Toggle Breakpoint only when a method is current and invokes the handler', () => {
+    const onToggle = vi.fn()
+    renderMenu(false, vi.fn(), 'inactive', vi.fn(), { canToggle: true, onToggle })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
+    const toggle = screen.getByRole('menuitem', { name: /^Toggle Breakpoint/ })
+    expect(toggle).toBeEnabled()
+    fireEvent.click(toggle)
+    expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the breakpoint commands that have nothing to act on', () => {
+    renderMenu()
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Debug' }))
+    expect(screen.queryByRole('menuitem', { name: /^Delete All Breakpoints/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Enable All Breakpoints/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: /^Disable All Breakpoints/ })).not.toBeInTheDocument()
   })
 
   it.each([

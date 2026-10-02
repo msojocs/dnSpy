@@ -310,3 +310,54 @@ test('debugs a real CoreCLR process and renders locals and watch values', async 
   await toolbar.getByRole('button', { name: 'Stop' }).click()
   await expect(toolbar.getByRole('button', { name: 'Start Debugging' })).toBeEnabled()
 })
+
+test('toggles a breakpoint by clicking the editor gutter', async () => {
+  await openAssemblyAndNamespace()
+  const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+  await rpcException.dblclick()
+  await expect.poll(async () => (await page.locator('.monaco-editor .view-lines').innerText()).replaceAll('\u00a0', ' ')).toContain('public int Code { get; }')
+
+  await page.getByRole('tab', { name: 'Breakpoints' }).click()
+  const breakpointRows = page.locator('.breakpoint-row')
+  const glyphs = page.locator('.breakpoint-glyph')
+  const clickGutter = async (): Promise<void> => {
+    // The auto-property on this line is get_Code(); the click lands in the glyph margin left of the line numbers.
+    // Monaco pads with non-breaking spaces, so match on \s rather than on plain spaces.
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /public\s+int\s+Code/ }).first()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
+  }
+
+  await clickGutter()
+  await expect(breakpointRows).toContainText('dnSpy.Backend.Contracts.RpcException.get_Code')
+  await expect(glyphs).toHaveCount(1)
+
+  // Clicking the marker again removes it, the same way the WPF editor toggles an existing breakpoint.
+  await clickGutter()
+  await expect(breakpointRows).toHaveCount(0)
+  await expect(glyphs).toHaveCount(0)
+})
+
+test('toggles a breakpoint for the current method from the Debug menu', async () => {
+  await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+  await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+
+  await page.getByRole('tab', { name: 'Breakpoints' }).click()
+  const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
+  await namespaceRow.locator('.tree-expander').click()
+  const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+  await rpcException.locator('.tree-expander').click()
+  // The tree row keeps focus, so the F9 handler is not suppressed by the editor guard.
+  await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\)$/ }).click()
+
+  const breakpointRows = page.locator('.breakpoint-row')
+  await page.keyboard.press('F9')
+  await expect(breakpointRows).toContainText('dnSpy.Backend.Contracts.RpcException.get_Code')
+
+  // A second press removes it again, like the upstream Toggle Breakpoint command.
+  await page.keyboard.press('F9')
+  await expect(breakpointRows).toHaveCount(0)
+})

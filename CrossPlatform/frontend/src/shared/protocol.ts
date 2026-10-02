@@ -51,12 +51,20 @@ export interface Diagnostic {
   length?: number
 }
 
+/** Lines of a decompiled document that belong to one method body, so a gutter click can be mapped to that method. */
+export interface BreakpointLocation {
+  startLine: number
+  endLine: number
+  description: string
+}
+
 export interface DecompileResponse {
   title: string
   language: string
   text: string
   spans: TextSpan[]
   diagnostics: Diagnostic[]
+  breakpointLocations?: BreakpointLocation[]
 }
 
 export interface SearchResult {

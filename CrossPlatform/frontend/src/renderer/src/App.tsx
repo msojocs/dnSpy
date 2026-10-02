@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { TreeNode } from '../../shared/protocol'
-import { useAppStore } from './app-store'
+import { methodBreakpointName, useAppStore } from './app-store'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
 import { ToolBar } from './components/ToolBar'
@@ -169,7 +169,24 @@ export const App = (): React.JSX.Element => {
   const pauseDebug = useAppStore((state) => state.pauseDebug)
   const stepDebug = useAppStore((state) => state.stepDebug)
   const stopDebug = useAppStore((state) => state.stopDebug)
+  const functionBreakpoints = useAppStore((state) => state.functionBreakpoints)
+  const toggleFunctionBreakpoint = useAppStore((state) => state.toggleFunctionBreakpoint)
+  const deleteAllFunctionBreakpoints = useAppStore((state) => state.deleteAllFunctionBreakpoints)
+  const setAllFunctionBreakpointsEnabled = useAppStore((state) => state.setAllFunctionBreakpointsEnabled)
   const { locale, setLanguage, t } = useLanguage()
+
+  // "Toggle Breakpoint" acts on the current item, the same way Rename/Edit IL Body do.
+  const breakpointTarget = useMemo(
+    () => (selectedNode?.kind === 'method' ? methodBreakpointName(selectedNode.description) : undefined),
+    [selectedNode],
+  )
+  const toggleBreakpointHere = (): void => {
+    if (breakpointTarget) void toggleFunctionBreakpoint(breakpointTarget)
+  }
+  const deleteAllBreakpoints = (): void => {
+    if (window.confirm(t('Do you want to delete all breakpoints?')))
+      void deleteAllFunctionBreakpoints()
+  }
 
   useEffect(() => {
     const unsubscribe = window.dnSpy.onBackendStatus(setBackendStatus)
@@ -305,6 +322,12 @@ export const App = (): React.JSX.Element => {
       } else if (event.key === 'F2' && selectedNode && !editingText && ['type', 'method', 'field', 'property', 'event'].includes(selectedNode.kind)) {
         event.preventDefault()
         setRenameNode(selectedNode)
+      } else if (event.ctrlKey && event.shiftKey && event.key === 'F9') {
+        event.preventDefault()
+        deleteAllBreakpoints()
+      } else if (event.key === 'F9' && !event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && !editingText) {
+        event.preventDefault()
+        toggleBreakpointHere()
       } else if (event.shiftKey && event.key === 'F5' && debugState !== 'inactive' && !editingText) {
         event.preventDefault()
         void stopDebug()
@@ -325,7 +348,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, undoEdit, workspaceId])
+  }, [canRedo, canUndo, chooseAndOpen, continueDebug, debugState, deleteAllBreakpoints, launchDebug, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -506,6 +529,14 @@ export const App = (): React.JSX.Element => {
         onStepIn={() => void stepDebug('stepIn')}
         onStepOver={() => void stepDebug('next')}
         onStopDebug={() => void stopDebug()}
+        canToggleBreakpoint={Boolean(breakpointTarget)}
+        hasFunctionBreakpoints={functionBreakpoints.length > 0}
+        canEnableAllBreakpoints={functionBreakpoints.some((breakpoint) => !breakpoint.enabled)}
+        canDisableAllBreakpoints={functionBreakpoints.some((breakpoint) => breakpoint.enabled)}
+        onToggleBreakpoint={toggleBreakpointHere}
+        onDeleteAllBreakpoints={deleteAllBreakpoints}
+        onEnableAllBreakpoints={() => void setAllFunctionBreakpointsEnabled(true)}
+        onDisableAllBreakpoints={() => void setAllFunctionBreakpointsEnabled(false)}
         onShowExplorer={() => showBorderTab('explorer')}
         onShowOutput={() => showBorderTab('output')}
         onShowSearch={() => showBorderTab('search')}

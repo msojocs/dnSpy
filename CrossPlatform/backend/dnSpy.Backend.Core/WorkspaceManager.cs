@@ -15,6 +15,8 @@ using ICSharpCode.Decompiler.CSharp.OutputVisitor;
 using ICSharpCode.Decompiler.Disassembler;
 using ICSharpCode.CodeConverter;
 using ICSharpCode.BamlDecompiler;
+using DecompilerAstNode = ICSharpCode.Decompiler.CSharp.Syntax.AstNode;
+using DecompilerILFunction = ICSharpCode.Decompiler.IL.ILFunction;
 using DecompilerIMember = ICSharpCode.Decompiler.TypeSystem.IMember;
 using DecompilerIType = ICSharpCode.Decompiler.TypeSystem.IType;
 using DecompilerMetadataFile = ICSharpCode.Decompiler.Metadata.MetadataFile;
@@ -371,6 +373,7 @@ public sealed class WorkspaceManager : IDisposable {
 
 				string text;
 				IReadOnlyList<TextSpanDto> spans = Array.Empty<TextSpanDto>();
+				IReadOnlyList<BreakpointLocationDto>? breakpointLocations = null;
 				if (node.Kind == NodeKind.AssemblyReference)
 					text = ((AssemblyRef)node.Value).FullName;
 				else if (node.Kind == NodeKind.Resource)
@@ -384,14 +387,16 @@ public sealed class WorkspaceManager : IDisposable {
 						_ => throw new RpcException(ErrorCodes.UnsupportedDocument, "This tree node cannot be decompiled."),
 					};
 					var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, node.Module));
-					syntaxTree.AcceptVisitor(new CSharpOutputVisitor(new TextTokenWriter(output, settings), settings.CSharpFormattingOptions));
+					var writer = new MethodRangeTokenWriter(output, settings);
+					syntaxTree.AcceptVisitor(new CSharpOutputVisitor(writer, settings.CSharpFormattingOptions));
 					text = output.ToString();
 					spans = output.Spans;
+					breakpointLocations = BuildBreakpointLocations(writer.Ranges, text, node.Module);
 				}
 				var diagnostics = decompiler.Errors
 					.Select(e => new DiagnosticDto("warning", e.ToString()))
 					.ToArray();
-				return new DecompileResponse(GetLabel(node), "csharp", text, spans, diagnostics);
+				return new DecompileResponse(GetLabel(node), "csharp", text, spans, diagnostics) { BreakpointLocations = breakpointLocations };
 			}
 			catch (OperationCanceledException) {
 				throw;
@@ -399,6 +404,82 @@ public sealed class WorkspaceManager : IDisposable {
 			catch (Exception ex) {
 				throw new RpcException(ErrorCodes.UnsupportedDocument, "The selected item could not be decompiled.", null, ex);
 			}
+		}
+
+		// The debugger we talk to only supports function breakpoints, so a click in the editor's gutter has to be
+		// turned into "the method that owns this line". MethodRangeTokenWriter records the text range of every AST
+		// node it prints, and the ILFunction annotation on those nodes names the method, so both halves of the map
+		// come out of the same pass that produced the text. Consecutive lines of one method are merged into runs so
+		// the payload is one entry per body instead of one per statement.
+		IReadOnlyList<BreakpointLocationDto> BuildBreakpointLocations(IReadOnlyList<MethodTextRange> ranges, string text, ModuleEntry module) {
+			try {
+				var lineStarts = GetLineStarts(text);
+				var linesByMethod = new Dictionary<MethodDef, SortedSet<int>>();
+				foreach (var range in ranges) {
+					if (GetSourceMethodToken(range.Function) is not { } token)
+						continue;
+					if (module.Module.ResolveToken(token) is not MethodDef method)
+						continue;
+					if (!linesByMethod.TryGetValue(method, out var lines))
+						linesByMethod.Add(method, lines = []);
+					var first = GetLineAt(lineStarts, range.Start);
+					var last = GetLineAt(lineStarts, Math.Max(range.Start, range.End - 1));
+					for (var line = first; line <= last; line++)
+						lines.Add(line);
+				}
+				var locations = new List<BreakpointLocationDto>();
+				foreach (var (method, lines) in linesByMethod) {
+					var ordered = lines.ToArray();
+					for (var i = 0; i < ordered.Length; i++) {
+						var start = ordered[i];
+						while (i + 1 < ordered.Length && ordered[i + 1] == ordered[i] + 1)
+							i++;
+						locations.Add(new BreakpointLocationDto(start, ordered[i], method.FullName));
+					}
+				}
+				locations.Sort((left, right) => left.StartLine.CompareTo(right.StartLine));
+				return locations;
+			}
+			catch (OperationCanceledException) {
+				throw;
+			}
+			catch (Exception) {
+				// Losing the line map only costs the editor its gutter markers, so never fail the decompilation over it.
+				return Array.Empty<BreakpointLocationDto>();
+			}
+		}
+
+		// Offsets of the first character of every line. Both line endings are handled so the numbers match the text
+		// the editor sees, whatever platform produced it.
+		static int[] GetLineStarts(string text) {
+			var starts = new List<int> { 0 };
+			for (var i = 0; i < text.Length; i++) {
+				if (text[i] == '\n')
+					starts.Add(i + 1);
+				else if (text[i] == '\r') {
+					if (i + 1 < text.Length && text[i + 1] == '\n')
+						i++;
+					starts.Add(i + 1);
+				}
+			}
+			return starts.ToArray();
+		}
+
+		static int GetLineAt(int[] lineStarts, int offset) {
+			var index = Array.BinarySearch(lineStarts, offset);
+			if (index < 0)
+				index = ~index - 1;
+			return Math.Max(1, index + 1);
+		}
+
+		// Prefer the source level method over the state machine or lambda implementation so the derived breakpoint
+		// name matches the tree node (and the name the debug adapter is given). GetBodyMethodToken() below is the
+		// opposite choice: it asks where the IL actually lives, which is what the IL/C# interleaving view needs.
+		static uint? GetSourceMethodToken(ICSharpCode.Decompiler.IL.ILFunction function) {
+			var method = function.Method ?? function.MoveNextMethod;
+			if (method is null || method.MetadataToken.IsNil)
+				return null;
+			return unchecked((uint)MetadataTokens.GetToken(method.MetadataToken));
 		}
 
 		static CSharpDecompilerSession CreateCSharpDecompilerSession(ModuleEntry module, DecompilerSettings settings, CancellationToken cancellationToken) {
@@ -1253,6 +1334,7 @@ public sealed class WorkspaceManager : IDisposable {
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
 		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);
+		readonly record struct MethodTextRange(int Start, int End, DecompilerILFunction Function);
 		sealed class NodeEntry(string id, string key, NodeKind kind, object value, ModuleEntry module) {
 			public string Id { get; } = id;
 			public string Key { get; } = key;
@@ -1280,6 +1362,7 @@ public sealed class WorkspaceManager : IDisposable {
 
 			public string IndentationString { get; set; } = "\t";
 			public IReadOnlyList<TextSpanDto> Spans => spans;
+			public int Position => builder.Length;
 
 			public void Indent() => indentation++;
 			public void Unindent() => indentation = Math.Max(0, indentation - 1);
@@ -1320,6 +1403,28 @@ public sealed class WorkspaceManager : IDisposable {
 			}
 
 			public override string ToString() => builder.ToString();
+		}
+
+		// The C# visitor calls StartNode/EndNode around every AST node it prints. Reading the output position at
+		// those two points is what turns the rendered text into a line map: each node gets the range it occupies,
+		// and the ILFunction annotation it carries names the method those lines belong to.
+		sealed class MethodRangeTokenWriter(SpanTextOutput output, DecompilerSettings settings) : TextTokenWriter(output, settings) {
+			readonly Stack<int> starts = [];
+
+			public List<MethodTextRange> Ranges { get; } = [];
+
+			public override void StartNode(DecompilerAstNode node) {
+				starts.Push(output.Position);
+				base.StartNode(node);
+			}
+
+			public override void EndNode(DecompilerAstNode node) {
+				var start = starts.Count == 0 ? 0 : starts.Pop();
+				var end = output.Position;
+				if (end > start && node.Annotation<DecompilerILFunction>() is { } function)
+					Ranges.Add(new MethodTextRange(start, end, function));
+				base.EndNode(node);
+			}
 		}
 
 		enum NodeKind {

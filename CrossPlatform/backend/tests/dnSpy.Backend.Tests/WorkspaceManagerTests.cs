@@ -72,6 +72,47 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	[Fact]
+	public async Task MapsDecompiledLinesToTheirMethods() {
+		var opened = await OpenContractsAssemblyAsync();
+		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		var module = Assert.Single(roots.Nodes);
+		var moduleChildren = await manager.GetChildrenAsync(
+			new NodeRequest(opened.WorkspaceId, module.Id),
+			TestContext.Current.CancellationToken);
+		var contractNamespace = Assert.Single(moduleChildren.Nodes, n => n.Label == "dnSpy.Backend.Contracts");
+		var namespaceChildren = await manager.GetChildrenAsync(
+			new NodeRequest(opened.WorkspaceId, contractNamespace.Id),
+			TestContext.Current.CancellationToken);
+		var rpcException = Assert.Single(namespaceChildren.Nodes, n => n.Label == "dnSpy.Backend.Contracts.RpcException");
+
+		var csharp = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, rpcException.Id, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+
+		var locations = Assert.IsAssignableFrom<IReadOnlyList<BreakpointLocationDto>>(csharp.BreakpointLocations);
+		Assert.NotEmpty(locations);
+		var lineCount = csharp.Text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n').Length;
+		foreach (var location in locations) {
+			Assert.True(location.StartLine <= location.EndLine, $"Line range {location.StartLine}-{location.EndLine} is inverted.");
+			Assert.InRange(location.EndLine, 1, lineCount);
+		}
+		var getCode = Assert.Single(locations, location => location.Description.Contains("::get_Code(", StringComparison.Ordinal));
+		Assert.Equal("System.Int32 dnSpy.Backend.Contracts.RpcException::get_Code()", getCode.Description);
+		// An auto-property accessor is one line, while the constructor's body is a multi-line run.
+		Assert.Equal(getCode.StartLine, getCode.EndLine);
+		var constructor = Assert.Single(locations, location => location.Description.Contains("::.ctor(", StringComparison.Ordinal));
+		Assert.True(constructor.EndLine > constructor.StartLine, $"Expected the constructor to span lines, got {constructor.StartLine}-{constructor.EndLine}.");
+
+		var rpcMembers = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
+		var getCodeNode = Assert.Single(rpcMembers.Nodes, member => member.Label == "get_Code()");
+		var getCodeDocument = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCodeNode.Id, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+		var getCodeLocation = Assert.Single(Assert.IsAssignableFrom<IReadOnlyList<BreakpointLocationDto>>(getCodeDocument.BreakpointLocations));
+		Assert.Equal(getCode.Description, getCodeLocation.Description);
+	}
+
+	[Fact]
 	public async Task SearchesNamesAndStringLiterals() {
 		var opened = await OpenContractsAssemblyAsync();
 

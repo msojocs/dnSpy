@@ -116,6 +116,7 @@ export const BreakpointsPane = (): React.JSX.Element => {
   const breakpoints = useAppStore((state) => state.functionBreakpoints)
   const addBreakpoint = useAppStore((state) => state.addFunctionBreakpoint)
   const removeBreakpoint = useAppStore((state) => state.removeFunctionBreakpoint)
+  const setBreakpointEnabled = useAppStore((state) => state.setFunctionBreakpointEnabled)
   const exceptionBreakpoints = useAppStore((state) => state.exceptionBreakpoints)
   const setExceptionBreakpoint = useAppStore((state) => state.setExceptionBreakpoint)
   const { t } = useLanguage()
@@ -135,7 +136,16 @@ export const BreakpointsPane = (): React.JSX.Element => {
         <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> {t('All thrown exceptions')}</label>
         <label className="exception-breakpoint-row"><input type="checkbox" checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}</label>
         {breakpoints.map((breakpoint) => (
-          <div className="breakpoint-row" key={breakpoint}><span>{breakpoint}</span><button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint })} onClick={() => void removeBreakpoint(breakpoint)}><Trash2 size={13} /></button></div>
+          <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.name}>
+            <input
+              type="checkbox"
+              checked={breakpoint.enabled}
+              aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: breakpoint.name })}
+              onChange={() => void setBreakpointEnabled(breakpoint.name, !breakpoint.enabled)}
+            />
+            <span>{breakpoint.name}</span>
+            <button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint.name })} onClick={() => void removeBreakpoint(breakpoint.name)}><Trash2 size={13} /></button>
+          </div>
         ))}
       </div>
     </div>

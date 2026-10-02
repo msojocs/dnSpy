@@ -3,20 +3,42 @@ import '../monaco'
 import { useEffect, useRef } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
-import type { DecompilerLanguage } from '../../../shared/protocol'
-import { useAppStore } from '../app-store'
+import type { BreakpointLocation, DecompilerLanguage } from '../../../shared/protocol'
+import { breakpointLocationAt, breakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
+import type { FunctionBreakpoint } from '../app-store'
 import { useLanguage } from '../localization'
+
+// One decoration per breakpoint that has a line in this document. A disabled breakpoint keeps its dot but draws it
+// hollow, the way the WPF editor does.
+const breakpointDecorations = (locations: BreakpointLocation[] | undefined, breakpoints: FunctionBreakpoint[], translate: (message: string) => string): MonacoEditor.IModelDeltaDecoration[] =>
+  breakpointMarkers(locations, breakpoints).map((marker) => ({
+    range: { startLineNumber: marker.line, startColumn: 1, endLineNumber: marker.line, endColumn: 1 },
+    options: {
+      glyphMarginClassName: marker.enabled ? 'breakpoint-glyph' : 'breakpoint-glyph-disabled',
+      hoverMessage: { value: `${marker.name} (${marker.enabled ? translate('Enabled') : translate('Disabled')})` },
+    },
+  }))
 
 export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
   const wordWrap = useAppStore((state) => state.wordWrap)
   const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const document = useAppStore((state) => state.documents[documentId])
   const changeLanguage = useAppStore((state) => state.changeDocumentLanguage)
+  const functionBreakpoints = useAppStore((state) => state.functionBreakpoints)
+  const toggleFunctionBreakpoint = useAppStore((state) => state.toggleFunctionBreakpoint)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
+  const breakpointDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
+  // onMount registers the mouse handler once, so it reads the current values through refs instead of the closure.
   const spansRef = useRef(document?.spans ?? [])
+  const locationsRef = useRef(document?.breakpointLocations)
+  const breakpointsRef = useRef(functionBreakpoints)
+  const toggleBreakpointRef = useRef(toggleFunctionBreakpoint)
   const { locale, t } = useLanguage()
   spansRef.current = document?.spans ?? []
+  locationsRef.current = document?.breakpointLocations
+  breakpointsRef.current = functionBreakpoints
+  toggleBreakpointRef.current = toggleFunctionBreakpoint
 
   useEffect(() => {
     const editor = editorRef.current
@@ -39,6 +61,10 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
       }
     }))
   }, [document?.spans, document?.text, locale])
+
+  useEffect(() => {
+    breakpointDecorationsRef.current?.set(breakpointDecorations(document?.breakpointLocations, functionBreakpoints, t))
+  }, [functionBreakpoints, document?.breakpointLocations, document?.text, locale])
 
   if (!document)
     return <div className="pane-empty">{t('Document closed')}</div>
@@ -94,6 +120,8 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
               updateLanguageId()
               editor.onDidChangeModel(updateLanguageId)
               decorationsRef.current = editor.createDecorationsCollection()
+              breakpointDecorationsRef.current = editor.createDecorationsCollection()
+              breakpointDecorationsRef.current.set(breakpointDecorations(locationsRef.current, breakpointsRef.current, t))
               const model = editor.getModel()
               if (!model) return
               decorationsRef.current.set(spansRef.current.filter((span) => span.targetNodeId).map((span) => {
@@ -116,6 +144,14 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
               }
               editor.addCommand(monaco.KeyCode.F12, navigateAtCursor)
               editor.onMouseDown((event) => {
+                // A click in the margin next to the line numbers toggles the breakpoint of the method on that line.
+                // Lines that belong to no method (signatures, braces, blank lines) have nothing to toggle.
+                if (event.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
+                  const name = methodBreakpointName(breakpointLocationAt(locationsRef.current, event.target.position?.lineNumber ?? 0)?.description)
+                  if (name)
+                    void toggleBreakpointRef.current(name)
+                  return
+                }
                 if (event.event.ctrlKey && event.target.position) {
                   editor.setPosition(event.target.position)
                   navigateAtCursor()
@@ -125,6 +161,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             options={{
               readOnly: true,
               automaticLayout: true,
+              glyphMargin: true,
               wordWrap: wordWrap ? 'on' : 'off',
               renderLineHighlight: highlightCurrentLine ? 'all' : 'none',
               fontFamily: "'Cascadia Mono', 'JetBrains Mono', monospace",

@@ -46,6 +46,14 @@ interface MenuBarProps {
   onStepIn(): void
   onStepOver(): void
   onStopDebug(): void
+  canToggleBreakpoint: boolean
+  hasFunctionBreakpoints: boolean
+  canEnableAllBreakpoints: boolean
+  canDisableAllBreakpoints: boolean
+  onToggleBreakpoint(): void
+  onDeleteAllBreakpoints(): void
+  onEnableAllBreakpoints(): void
+  onDisableAllBreakpoints(): void
   onShowExplorer(): void
   onShowOutput(): void
   onShowSearch(): void
@@ -123,6 +131,14 @@ export const MenuBar = ({
   onStepIn,
   onStepOver,
   onStopDebug,
+  canToggleBreakpoint,
+  hasFunctionBreakpoints,
+  canEnableAllBreakpoints,
+  canDisableAllBreakpoints,
+  onToggleBreakpoint,
+  onDeleteAllBreakpoints,
+  onEnableAllBreakpoints,
+  onDisableAllBreakpoints,
   visibleToolWindows,
   onShowExplorer,
   onShowOutput,
@@ -242,6 +258,17 @@ export const MenuBar = ({
         { label: t('Step Into'), shortcut: 'F11', disabled: debugState !== 'stopped', action: onStepIn },
         { label: t('Step Over'), shortcut: 'F10', disabled: debugState !== 'stopped', action: onStepOver },
         { label: t('Stop Debugging'), shortcut: 'Shift+F5', disabled: false, action: onStopDebug },
+      ] : []),
+      { separator: true },
+      { label: t('Toggle Breakpoint'), shortcut: 'F9', disabled: !canToggleBreakpoint, action: onToggleBreakpoint },
+      ...(hasFunctionBreakpoints ? [
+        { label: t('Delete All Breakpoints'), shortcut: 'Ctrl+Shift+F9', action: onDeleteAllBreakpoints },
+      ] : []),
+      ...(canEnableAllBreakpoints ? [
+        { label: t('Enable All Breakpoints'), action: onEnableAllBreakpoints },
+      ] : []),
+      ...(canDisableAllBreakpoints ? [
+        { label: t('Disable All Breakpoints'), action: onDisableAllBreakpoints },
       ] : []),
       { separator: true },
       { label: t('Options...'), action: () => onShowOptions('debugger') },

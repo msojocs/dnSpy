@@ -99,12 +99,18 @@ public sealed record DecompileRequest(string WorkspaceId, string NodeId, Decompi
 
 public sealed record TextSpanDto(int Start, int Length, string Kind, string? TargetNodeId = null);
 
+/// <summary>Lines of a decompiled document that belong to one method body, so a gutter click can be mapped to that method.</summary>
+public sealed record BreakpointLocationDto(int StartLine, int EndLine, string Description);
+
 public sealed record DecompileResponse(
 	string Title,
 	string Language,
 	string Text,
 	IReadOnlyList<TextSpanDto> Spans,
-	IReadOnlyList<DiagnosticDto> Diagnostics);
+	IReadOnlyList<DiagnosticDto> Diagnostics) {
+	/// <summary>Line to method mapping for languages whose decompiled text we can map (currently C# only).</summary>
+	public IReadOnlyList<BreakpointLocationDto>? BreakpointLocations { get; init; }
+}
 
 public sealed record DiagnosticDto(string Severity, string Message, int? Start = null, int? Length = null);
 

@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
   BackendStatus,
+  BreakpointLocation,
   DecompilerLanguage,
   DecompileResponse,
   DebugEvent,
@@ -21,6 +22,11 @@ export interface DocumentState extends DecompileResponse {
   nodeId: string
   loading: boolean
   requestedLanguage: DecompilerLanguage
+}
+
+export interface FunctionBreakpoint {
+  name: string
+  enabled: boolean
 }
 
 interface AppState {
@@ -55,7 +61,7 @@ interface AppState {
   stoppedReason?: string
   watches: string[]
   watchValues: DebugVariable[]
-  functionBreakpoints: string[]
+  functionBreakpoints: FunctionBreakpoint[]
   exceptionBreakpoints: string[]
   error?: string
   wordWrap: boolean
@@ -92,6 +98,10 @@ interface AppState {
   removeWatch(expression: string): void
   addFunctionBreakpoint(name: string): Promise<void>
   removeFunctionBreakpoint(name: string): Promise<void>
+  toggleFunctionBreakpoint(name: string): Promise<void>
+  setFunctionBreakpointEnabled(name: string, enabled: boolean): Promise<void>
+  deleteAllFunctionBreakpoints(): Promise<void>
+  setAllFunctionBreakpointsEnabled(enabled: boolean): Promise<void>
   setExceptionBreakpoint(filter: string, enabled: boolean): Promise<void>
   appendOutput(message: string): void
   clearError(): void
@@ -263,6 +273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           text: '',
           spans: [],
           diagnostics: [],
+          breakpointLocations: [],
           loading: true,
           requestedLanguage: language,
         },
@@ -276,6 +287,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ...state.documents,
             [documentId]: {
               ...document,
+              breakpointLocations: document.breakpointLocations ?? [],
               nodeId: node.id,
               loading: false,
               requestedLanguage: language,
@@ -518,8 +530,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const started = await window.dnSpy.launchDebug(target, [], true)
       set({ debugSessionId: started.sessionId })
-      if (get().functionBreakpoints.length > 0)
-        await window.dnSpy.setFunctionBreakpoints(started.sessionId, get().functionBreakpoints)
+      const breakpointNames = enabledFunctionBreakpointNames(get().functionBreakpoints)
+      if (breakpointNames.length > 0)
+        await window.dnSpy.setFunctionBreakpoints(started.sessionId, breakpointNames)
       if (get().exceptionBreakpoints.length > 0)
         await window.dnSpy.setExceptionBreakpoints(started.sessionId, get().exceptionBreakpoints)
       get().appendOutput(t('Started debugging {target}.', { target }))
@@ -629,13 +642,42 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   addFunctionBreakpoint: async (name) => {
     const trimmed = name.trim()
-    if (!trimmed || get().functionBreakpoints.includes(trimmed)) return
-    set((state) => ({ functionBreakpoints: [...state.functionBreakpoints, trimmed] }))
+    if (!trimmed || get().functionBreakpoints.some((breakpoint) => breakpoint.name === trimmed)) return
+    set((state) => ({ functionBreakpoints: [...state.functionBreakpoints, { name: trimmed, enabled: true }] }))
     await syncFunctionBreakpoints(get)
   },
 
   removeFunctionBreakpoint: async (name) => {
-    set((state) => ({ functionBreakpoints: state.functionBreakpoints.filter((breakpoint) => breakpoint !== name) }))
+    set((state) => ({ functionBreakpoints: state.functionBreakpoints.filter((breakpoint) => breakpoint.name !== name) }))
+    await syncFunctionBreakpoints(get)
+  },
+
+  toggleFunctionBreakpoint: async (name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    if (get().functionBreakpoints.some((breakpoint) => breakpoint.name === trimmed))
+      await get().removeFunctionBreakpoint(trimmed)
+    else
+      await get().addFunctionBreakpoint(trimmed)
+  },
+
+  setFunctionBreakpointEnabled: async (name, enabled) => {
+    if (!get().functionBreakpoints.some((breakpoint) => breakpoint.name === name && breakpoint.enabled !== enabled)) return
+    set((state) => ({
+      functionBreakpoints: state.functionBreakpoints.map((breakpoint) => breakpoint.name === name ? { ...breakpoint, enabled } : breakpoint),
+    }))
+    await syncFunctionBreakpoints(get)
+  },
+
+  deleteAllFunctionBreakpoints: async () => {
+    if (get().functionBreakpoints.length === 0) return
+    set({ functionBreakpoints: [] })
+    await syncFunctionBreakpoints(get)
+  },
+
+  setAllFunctionBreakpointsEnabled: async (enabled) => {
+    if (!get().functionBreakpoints.some((breakpoint) => breakpoint.enabled !== enabled)) return
+    set((state) => ({ functionBreakpoints: state.functionBreakpoints.map((breakpoint) => ({ ...breakpoint, enabled })) }))
     await syncFunctionBreakpoints(get)
   },
 
@@ -698,6 +740,78 @@ export const suggestCodeFilename = (title: string, language: string): string => 
     .replace(/[. ]+$/g, '')
     .trim()
   return `${baseName || 'code'}${extension}`
+}
+
+const lastTopLevelSpace = (value: string): number => {
+  let depth = 0
+  let index = -1
+  for (let i = 0; i < value.length; i++) {
+    const char = value[i]
+    if (char === '<' || char === '[')
+      depth++
+    else if (char === '>' || char === ']')
+      depth--
+    else if (char === ' ' && depth === 0)
+      index = i
+  }
+  return index
+}
+
+// Tree node descriptions are dnlib's MethodDef.FullName, e.g. "System.Void Ns.Type::Method(System.Int32)".
+// Debug adapters want "Ns.Type.Method", so drop the return type and the parameter list, and turn the "::"
+// and nested-type "/" separators into ".". A description that is already in dotted form is returned as is.
+// Generic arity ("Ns.Type`1") is kept: stripping it is a dnSpy search-filter concern, not a breakpoint one.
+export const methodBreakpointName = (description?: string): string | undefined => {
+  const trimmed = description?.trim()
+  if (!trimmed)
+    return undefined
+  const parameterStart = trimmed.indexOf('(')
+  const withoutParameters = (parameterStart < 0 ? trimmed : trimmed.slice(0, parameterStart)).trim()
+  const separator = withoutParameters.indexOf('::')
+  if (separator < 0)
+    return withoutParameters || undefined
+  const declaring = withoutParameters.slice(0, separator).trim()
+  const typeName = declaring.slice(lastTopLevelSpace(declaring) + 1).replace(/\//g, '.')
+  const methodName = withoutParameters.slice(separator + 2).trim()
+  return typeName && methodName ? `${typeName}.${methodName}` : undefined
+}
+
+// A gutter click has to name the method the clicked line belongs to. Bodies nest (a lambda or an async state
+// machine lives inside the method that declares it), so the innermost location wins: the one with the largest
+// start line that still contains the click.
+export const breakpointLocationAt = (
+  locations: BreakpointLocation[] | undefined,
+  line: number,
+): BreakpointLocation | undefined => {
+  let match: BreakpointLocation | undefined
+  for (const location of locations ?? []) {
+    if (line < location.startLine || line > location.endLine)
+      continue
+    if (!match || location.startLine > match.startLine)
+      match = location
+  }
+  return match
+}
+
+// Where each breakpoint draws its dot. Markers are derived from the locations of the document on screen rather
+// than stored on the breakpoint: breakpoints created elsewhere (the Breakpoints pane, F9) then show up here too,
+// and switching a document to a language without a line map simply draws nothing. A breakpoint is marked at the
+// first line that maps back to it, so clicking a drawn dot always toggles the method the dot stands for.
+export const breakpointMarkers = (
+  locations: BreakpointLocation[] | undefined,
+  breakpoints: FunctionBreakpoint[],
+): { line: number; name: string; enabled: boolean }[] => {
+  const markers: { line: number; name: string; enabled: boolean }[] = []
+  for (const breakpoint of breakpoints) {
+    const lines = (locations ?? [])
+      .filter((location) => methodBreakpointName(location.description) === breakpoint.name)
+      .map((location) => location.startLine)
+    // A method's first line is never inside a body that starts later, so breakpointLocationAt() resolves this very
+    // line back to the same method: clicking the dot always turns the breakpoint the dot stands for on or off.
+    if (lines.length > 0)
+      markers.push({ line: Math.min(...lines), name: breakpoint.name, enabled: breakpoint.enabled })
+  }
+  return markers
 }
 
 function loadRecentWorkspaces(): string[][] {
@@ -764,10 +878,15 @@ const refreshWatches = async (get: StoreGet, set: StoreSet): Promise<void> => {
   set({ watchValues: values })
 }
 
+// Disabled breakpoints are deliberately left out of what we send: the debug adapter only knows
+// about the breakpoints it was last given, so omitting them is what "disables" them.
+const enabledFunctionBreakpointNames = (breakpoints: FunctionBreakpoint[]): string[] =>
+  breakpoints.filter((breakpoint) => breakpoint.enabled).map((breakpoint) => breakpoint.name)
+
 const syncFunctionBreakpoints = async (get: StoreGet): Promise<void> => {
   const { debugSessionId, functionBreakpoints } = get()
   if (debugSessionId)
-    await window.dnSpy.setFunctionBreakpoints(debugSessionId, functionBreakpoints)
+    await window.dnSpy.setFunctionBreakpoints(debugSessionId, enabledFunctionBreakpointNames(functionBreakpoints))
 }
 
 const refreshAfterEdit = async (get: StoreGet, set: StoreSet, result: EditCommitResponse): Promise<void> => {
