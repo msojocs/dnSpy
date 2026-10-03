@@ -9,6 +9,7 @@ using System.Text;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using dnSpy.Backend.Contracts;
+using dnSpy.Backend.Core.Editing;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.OutputVisitor;
@@ -103,6 +104,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 	public Task<MethodBodyResponse> GetMethodBodyAsync(MethodBodyRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetMethodBody(request.MethodNodeId), cancellationToken);
+
+	public Task<NodeOptionsDto> GetOptionsAsync(GetNodeOptionsRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetOptions(request), cancellationToken);
 
 	public Task QueueRenameAsync(RenameEditRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => {
@@ -756,6 +760,17 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		readonly SemaphoreSlim gate = new(1, 1);
 		readonly SymbolResolver symbols;
 		readonly Dictionary<string, ModuleEntry> modules = new(StringComparer.Ordinal);
+		// The assemblies reached through a reference, loaded on demand. Unlike the debugger's cache these
+		// are never evicted: a tree node for a type in one of them holds the module object, and evicting
+		// it would leave that node pointing at a disposed module. The memory is bounded by what the user
+		// actually expanded, and it goes when the workspace does.
+		readonly Dictionary<string, ModuleEntry> referenceModules = new(StringComparer.Ordinal);
+		// One resolver per module that has references, built on first use; a null entry records a module
+		// whose resolver could not be built, so the attempt is not repeated for every reference node.
+		readonly Dictionary<string, AssemblyReferenceResolver?> referenceResolvers = new(StringComparer.Ordinal);
+		// Where a reference resolved to, keyed by the referencing module and the simple name. A null value
+		// records one that nothing on this machine provides, so the search is not run again for it.
+		readonly Dictionary<string, string?> referencePaths = new(StringComparer.Ordinal);
 		readonly Dictionary<string, NodeEntry> nodes = new(StringComparer.Ordinal);
 		readonly Dictionary<string, string> nodeIdsByKey = new(StringComparer.Ordinal);
 		readonly Dictionary<string, EditTransaction> transactions = new(StringComparer.Ordinal);
@@ -811,6 +826,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				NodeKind.Module => GetModuleChildren(node),
 				NodeKind.Namespace => GetNamespaceChildren(node),
 				NodeKind.ReferencesGroup => GetReferenceChildren(node),
+				NodeKind.AssemblyReference => GetAssemblyReferenceChildren(node),
 				NodeKind.ResourcesGroup => GetResourceChildren(node),
 				NodeKind.Resource => GetEmbeddedResourceChildren(node),
 				NodeKind.Type => GetTypeChildren(node),
@@ -828,19 +844,25 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				result.Add(GetOrAddNode($"{node.Key}:references", NodeKind.ReferencesGroup, module, node.Module));
 			if (module.Resources.Count != 0)
 				result.Add(GetOrAddNode($"{node.Key}:resources", NodeKind.ResourcesGroup, module, node.Module));
-
-			foreach (var group in module.Types
-				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType)
-				.GroupBy(t => t.Namespace.String ?? string.Empty, StringComparer.Ordinal)
-				.OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)) {
-				result.Add(GetOrAddNode(
-					$"{node.Key}:namespace:{group.Key}",
-					NodeKind.Namespace,
-					new NamespaceValue(group.Key, group.ToArray()),
-					node.Module));
-			}
+			result.AddRange(GetNamespaceNodes(node.Key, node.Module));
 			return result;
 		}
+
+		/// <summary>
+		/// The namespaces a module's top-level types are grouped into. The node ids come from the parent's
+		/// key, so the same module reached two ways — its own node and an assembly reference to it — would
+		/// list two sets of namespaces; that is why a reference to a module the workspace already has open
+		/// hands back that module's own children instead of building its own.
+		/// </summary>
+		IEnumerable<NodeEntry> GetNamespaceNodes(string parentKey, ModuleEntry module) => module.Module.Types
+			.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType)
+			.GroupBy(t => t.Namespace.String ?? string.Empty, StringComparer.Ordinal)
+			.OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+			.Select(g => GetOrAddNode(
+				$"{parentKey}:namespace:{g.Key}",
+				NodeKind.Namespace,
+				new NamespaceValue(g.Key, g.ToArray()),
+				module));
 
 		IReadOnlyList<NodeEntry> GetNamespaceChildren(NodeEntry node) {
 			// Derived live from the module rather than from the node's NamespaceValue snapshot: a delete
@@ -859,6 +881,149 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			.OrderBy(r => r.Name.String, StringComparer.OrdinalIgnoreCase)
 			.Select(r => GetOrAddNode(MemberKey(node.Module, "reference", r.MDToken.Raw), NodeKind.AssemblyReference, r, node.Module))
 			.ToArray();
+
+		/// <summary>
+		/// The types of the assembly a reference points at, grouped into namespaces the way a module's own
+		/// are. A reference to a module the workspace already has open hands back that module's own children,
+		/// so the two subtrees are literally one and no node id appears twice; anything else is read from the
+		/// file the reference resolves to, loaded once and kept for as long as the workspace lives.
+		/// </summary>
+		IReadOnlyList<NodeEntry> GetAssemblyReferenceChildren(NodeEntry node) {
+			var reference = (AssemblyRef)node.Value;
+			if (FindOpenModuleByName(reference.Name.String) is { } open)
+				return GetModuleChildren(nodes[open.Id]);
+			return LoadReferenceModule(node.Module, reference) is { } module
+				? [.. GetNamespaceNodes(node.Key, module)]
+				: Array.Empty<NodeEntry>();
+		}
+
+		/// <summary>Whether a reference can be expanded. The file is looked up but never loaded here,
+		/// because this runs for every reference node of every response the tree is asked for; the load
+		/// happens when the node is actually opened.</summary>
+		bool HasAssemblyReferenceChildren(NodeEntry node) {
+			var reference = (AssemblyRef)node.Value;
+			return FindOpenModuleByName(reference.Name.String) is not null
+				|| ReferencePath(node.Module, reference) is not null;
+		}
+
+		/// <summary>An open module whose assembly goes by this simple name. Matching on the name alone is
+		/// what dnSpy does: a reference and the assembly it names can differ in version and still be the
+		/// same assembly to the tree.</summary>
+		ModuleEntry? FindOpenModuleByName(string name) => modules.Values.FirstOrDefault(module =>
+			(module.Module.Assembly?.Name.String ?? module.Module.Name.String) == name);
+
+		/// <summary>
+		/// The module a reference names, loaded from the file it resolves to, or null when nothing on this
+		/// machine provides it. Kept forever rather than cached with an eviction bound: the nodes built for
+		/// its types hold this object, so releasing it would leave them pointing at a disposed module.
+		/// </summary>
+		ModuleEntry? LoadReferenceModule(ModuleEntry owner, AssemblyRef reference) {
+			var name = reference.Name.String;
+			if (name.Length == 0)
+				return null;
+			if (referenceModules.TryGetValue(name, out var cached))
+				return cached;
+			if (ReferencePath(owner, reference) is not { } path)
+				return null;
+			ModuleDefMD module;
+			try {
+				module = ModuleDefMD.Load(path);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException) {
+				// A file the resolver offered but dnlib cannot read is treated as an unresolved reference.
+				referencePaths[ReferenceKey(owner, name)] = null;
+				return null;
+			}
+			var entry = new ModuleEntry(path, module);
+			referenceModules.Add(name, entry);
+			return entry;
+		}
+
+		/// <summary>
+		/// The file a reference resolves to, or null when it resolves to nothing. Searched once per
+		/// referencing module and reference, since the answer cannot change while the workspace is open.
+		/// </summary>
+		string? ReferencePath(ModuleEntry owner, AssemblyRef reference) {
+			var key = ReferenceKey(owner, reference.Name.String);
+			if (referencePaths.TryGetValue(key, out var cached))
+				return cached;
+			var path = ReferenceResolverFor(owner)?.FindFile(reference);
+			referencePaths.Add(key, path);
+			return path;
+		}
+
+		static string ReferenceKey(ModuleEntry owner, string name) => $"{owner.Path}:{name}";
+
+		/// <summary>
+		/// The resolver that searches for this module's references, built from the module's own file because
+		/// the search paths a framework assembly lives on depend on the module's target framework. A module
+		/// the resolver cannot be built for is remembered as such, so the failure is not retried per node.
+		/// </summary>
+		AssemblyReferenceResolver? ReferenceResolverFor(ModuleEntry owner) {
+			if (referenceResolvers.TryGetValue(owner.Path, out var cached))
+				return cached;
+			AssemblyReferenceResolver? resolver;
+			try {
+				resolver = new AssemblyReferenceResolver(owner.Path);
+			}
+			catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException) {
+				resolver = null;
+			}
+			referenceResolvers.Add(owner.Path, resolver);
+			return resolver;
+		}
+
+		/// <summary>
+		/// Finds the file an assembly reference points at, the same way the decompiler finds the assemblies
+		/// it is asked to load: the module's own directory, then the directories its target framework names.
+		/// </summary>
+		/// <remarks>
+		/// The module's file is held open for as long as the resolver is, because detecting the target
+		/// framework and the runtime pack reads it.
+		/// </remarks>
+		sealed class AssemblyReferenceResolver : IDisposable {
+			readonly ICSharpCode.Decompiler.Metadata.PEFile file;
+			readonly ICSharpCode.Decompiler.Metadata.UniversalAssemblyResolver resolver;
+
+			public AssemblyReferenceResolver(string modulePath) {
+				file = new ICSharpCode.Decompiler.Metadata.PEFile(modulePath, PEStreamOptions.PrefetchMetadata);
+				resolver = new ICSharpCode.Decompiler.Metadata.UniversalAssemblyResolver(
+					modulePath,
+					throwOnError: false,
+					targetFramework: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectTargetFrameworkId(file),
+					runtimePack: ICSharpCode.Decompiler.Metadata.DotNetCorePathFinderExtensions.DetectRuntimePack(file));
+			}
+
+			/// <summary>The file the reference resolves to, or null when nothing provides it. An assembly
+			/// the search cannot make sense of is the same as one it cannot find: neither has anything to
+			/// show, and letting it throw would fail the whole tree listing over one bad reference.</summary>
+			public string? FindFile(AssemblyRef reference) {
+				try {
+					return resolver.FindAssemblyFile(new ReferenceName(reference));
+				}
+				catch (Exception) {
+					return null;
+				}
+			}
+
+			public void Dispose() => file.Dispose();
+
+			/// <summary>
+			/// A dnlib reference handed to the decompiler's resolver, which searches by simple name and
+			/// version. The rest of the identity is passed through unchanged so that a resolver that does
+			/// compare it — a framework assembly is matched by name, but a shared one is not — sees what
+			/// dnlib read rather than a rewritten version of it.
+			/// </summary>
+			sealed class ReferenceName(AssemblyRef reference) : ICSharpCode.Decompiler.Metadata.IAssemblyReference {
+				public string Name => reference.Name.String;
+				public string FullName => reference.FullName;
+				public Version? Version => reference.Version;
+				public string? Culture => reference.Culture?.String;
+				public byte[]? PublicKeyToken => reference.PublicKeyOrToken?.Data;
+				public bool IsWindowsRuntime => false;
+				public bool IsRetargetable => (reference.Attributes & AssemblyAttributes.Retargetable) != 0;
+			}
+		}
 
 		IReadOnlyList<NodeEntry> GetResourceChildren(NodeEntry node) => ((ModuleDefMD)node.Value)
 			.Resources
@@ -1333,6 +1498,66 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 			return (peValues, tableValues);
 		}
+
+		/// <summary>
+		/// The values a create- or edit-dialog opens with: what the node being edited already holds, or the
+		/// defaults a new one starts from. Read-only, so it needs no transaction — the dialog is filled in
+		/// before the user has changed anything, and a cancelled dialog must not have queued an operation.
+		/// </summary>
+		public NodeOptionsDto GetOptions(GetNodeOptionsRequest request) {
+			var owner = GetNodeOrNull(request.OwnerNodeId);
+			if (request.IsNew)
+				return NewOptions(request.Kind, owner);
+			if (GetNodeOrNull(request.NodeId) is not { } node || node.Value is not IMDTokenProvider member)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be edited.");
+			return CreateEditContext(node.Module).Options.Existing(member);
+		}
+
+		NodeOptionsDto NewOptions(string kind, NodeEntry? owner) {
+			var module = owner?.Module ?? OpenModules.FirstOrDefault()
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "The workspace has no module to create the item in.");
+			var options = CreateEditContext(module).Options;
+			return kind switch {
+				NodeOptionKinds.Type => options.NewType(NamespaceOf(owner), IsNestedType(owner)),
+				NodeOptionKinds.Method => options.NewMethod(OwnerTypeOf(owner)),
+				NodeOptionKinds.Field => options.NewField(OwnerTypeOf(owner)),
+				NodeOptionKinds.Property => options.NewProperty(OwnerTypeOf(owner)),
+				NodeOptionKinds.Event => options.NewEvent(),
+				_ => throw new RpcException(ErrorCodes.InvalidParams, $"Unknown item kind '{kind}'."),
+			};
+		}
+
+		/// <summary>The type a new member goes into: the node itself when a type is selected, or the type
+		/// the selected member belongs to — a member's parent node is always its type, which is how dnSpy's
+		/// create commands reach it too.</summary>
+		static TypeDef OwnerTypeOf(NodeEntry? owner) => owner?.Value switch {
+			TypeDef type => type,
+			MethodDef method => method.DeclaringType,
+			FieldDef field => field.DeclaringType,
+			PropertyDef property => property.DeclaringType,
+			EventDef @event => @event.DeclaringType,
+			_ => throw new RpcException(ErrorCodes.EditValidationFailed, "Select a type or one of its members."),
+		};
+
+		/// <summary>A type created from a type node is nested; one created from a namespace or a module is
+		/// not, and takes that namespace's name — a nested type has no namespace of its own.</summary>
+		static bool IsNestedType(NodeEntry? owner) => owner?.Value is TypeDef;
+
+		static string NamespaceOf(NodeEntry? owner) => owner?.Value is NamespaceValue value ? value.Name : string.Empty;
+
+		/// <summary>
+		/// The state an edit operation runs against: the module new rows are written into, the other open
+		/// modules a bare type name may be looked up in, and the tree lookup that turns the node id a dialog
+		/// names back into the row it stands for. A reference module is not editable, so it is not offered
+		/// as a place to look a name up in either.
+		/// </summary>
+		internal EditContext CreateEditContext(ModuleEntry module) => new(
+			module.Module,
+			OpenModules.Where(entry => !ReferenceEquals(entry.Module, module.Module)).Select(entry => entry.Module).ToArray(),
+			nodeId => nodes.TryGetValue(nodeId, out var node) ? node.Value : null);
+
+		NodeEntry? GetNodeOrNull(string? nodeId) =>
+			nodeId is { Length: > 0 } && nodes.TryGetValue(nodeId, out var node) ? node : null;
 
 		public BeginEditResponse BeginEdit() {
 			var transaction = new EditTransaction(version);
@@ -1968,7 +2193,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		static string FormatParameterList(MethodDef method) => $"({string.Join(", ", method.Parameters.Where(p => !p.IsHiddenThisParameter).Select(p => p.Type.TypeName))})";
 
-		static TreeNodeDto ToDto(NodeEntry node) => new(
+		TreeNodeDto ToDto(NodeEntry node) => new(
 			node.Id,
 			GetLabel(node),
 			node.Kind.ToString().ToLowerInvariant(),
@@ -1999,8 +2224,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			_ => null,
 		};
 
-		static bool HasChildren(NodeEntry node) => node.Kind switch {
+		bool HasChildren(NodeEntry node) => node.Kind switch {
 			NodeKind.Module or NodeKind.Namespace or NodeKind.ReferencesGroup or NodeKind.ResourcesGroup => true,
+			NodeKind.AssemblyReference => HasAssemblyReferenceChildren(node),
 			NodeKind.Resource => node.Value is EmbeddedResource resource && resource.Name.EndsWith(".resources", StringComparison.OrdinalIgnoreCase),
 			NodeKind.Type => ((TypeDef)node.Value).NestedTypes.Count + ((TypeDef)node.Value).Fields.Count + ((TypeDef)node.Value).Properties.Count + ((TypeDef)node.Value).Events.Count + ((TypeDef)node.Value).Methods.Count != 0,
 			_ => false,
@@ -2213,6 +2439,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			foreach (var module in modules.Values)
 				module.Module.Dispose();
 			modules.Clear();
+			foreach (var module in referenceModules.Values)
+				module.Module.Dispose();
+			referenceModules.Clear();
+			foreach (var resolver in referenceResolvers.Values)
+				resolver?.Dispose();
+			referenceResolvers.Clear();
+			referencePaths.Clear();
 			nodes.Clear();
 			nodeIdsByKey.Clear();
 			codeStatementsByNode.Clear();

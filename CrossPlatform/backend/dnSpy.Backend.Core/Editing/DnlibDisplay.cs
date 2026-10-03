@@ -92,6 +92,26 @@ public static class DnlibDisplay {
 		};
 	}
 
+	/// <summary>
+	/// The literal a constant of this element type starts at. dnSpy gives a field it creates on an enum
+	/// this value, because a <c>Literal</c> field has to carry a constant and there is no other default.
+	/// </summary>
+	public static object? DefaultValue(ElementType elementType) => elementType switch {
+		ElementType.Boolean => false,
+		ElementType.Char => (char)0,
+		ElementType.I1 => (sbyte)0,
+		ElementType.U1 => (byte)0,
+		ElementType.I2 => (short)0,
+		ElementType.U2 => (ushort)0,
+		ElementType.I4 => 0,
+		ElementType.U4 => 0u,
+		ElementType.I8 => 0L,
+		ElementType.U8 => 0UL,
+		ElementType.R4 => 0f,
+		ElementType.R8 => 0d,
+		_ => null,
+	};
+
 	/// <summary>The element type a literal of this runtime type is stored as.</summary>
 	public static ElementType ElementTypeOf(object? value) => value switch {
 		null => ElementType.Class,

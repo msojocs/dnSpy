@@ -185,6 +185,8 @@ internal sealed class JsonRpcServer {
 				return await workspaces.BeginEditAsync(DeserializeParams<BeginEditRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.EditGetMethodBody:
 				return await workspaces.GetMethodBodyAsync(DeserializeParams<MethodBodyRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.EditGetOptions:
+				return await workspaces.GetOptionsAsync(DeserializeParams<GetNodeOptionsRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.EditRename:
 				await workspaces.QueueRenameAsync(DeserializeParams<RenameEditRequest>(request), cancellationToken).ConfigureAwait(false);
 				return new { queued = true };

@@ -36,6 +36,7 @@ public sealed class EditContext {
 		ParamDefs = new ParamDefCodec(this);
 		MethodOverrides = new MethodOverrideCodec(this);
 		Accessors = new AccessorRefCodec(this);
+		Options = new NodeOptionsFactory(this);
 		TypeDefs = new TypeDefEditor(this);
 		MethodDefs = new MethodDefEditor(this);
 		FieldDefs = new FieldDefEditor(this);
@@ -70,6 +71,9 @@ public sealed class EditContext {
 	public ParamDefCodec ParamDefs { get; }
 	public MethodOverrideCodec MethodOverrides { get; }
 	public AccessorRefCodec Accessors { get; }
+
+	/// <summary>The starting values a create- or edit-dialog is handed.</summary>
+	public NodeOptionsFactory Options { get; }
 
 	// The five editors, which read and write a whole definition the way dnSpy's options classes do.
 	public TypeDefEditor TypeDefs { get; }
