@@ -158,6 +158,9 @@ select:focus-visible,
   position: absolute;
   top: calc(100% - 1px);
   left: 0;
+  /* The popup hangs off a menu bar button, which is far too narrow to borrow a width from: left to
+     shrink-to-fit the rows would wrap onto a second line and spill over the row below. */
+  width: max-content;
   min-width: 220px;
   padding: 3px;
   border: 1px solid var(--border-strong);
@@ -182,13 +185,18 @@ select:focus-visible,
 
 .menu-item {
   display: grid;
-  grid-template-columns: 18px minmax(100px, 1fr) auto;
+  /* The label track is never narrower than the label itself, so a long entry cannot shrink the
+     column; the row's slack still goes to it, which is what lines the shortcuts up. */
+  grid-template-columns: 18px minmax(max-content, 1fr) auto;
   align-items: center;
   width: 100%;
   height: 25px;
   padding: 0 7px 0 2px;
   background: transparent;
   text-align: left;
+  /* The row height is fixed, so a wrapped label would spill over the row below it. Keeping every
+     row on one line also lets the popup size itself to its widest entry. */
+  white-space: nowrap;
 }
 
 .menu-item:not(:disabled):hover {
