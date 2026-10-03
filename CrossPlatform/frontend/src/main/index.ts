@@ -22,6 +22,7 @@ const nativeMessages = {
     saveModuleAs: '模块另存为',
     saveCode: '保存代码',
     codeFiles: '代码文件',
+    openBookmarks: '导入书签',
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
     selectWorkingDirectory: '选择工作目录',
@@ -35,6 +36,7 @@ const nativeMessages = {
     saveModuleAs: 'Save Module As',
     saveCode: 'Save Code',
     codeFiles: 'Code Files',
+    openBookmarks: 'Import Bookmarks',
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
     selectWorkingDirectory: 'Select Working Directory',
@@ -195,6 +197,7 @@ const registerIpc = (): void => {
   ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }))
   ipcMain.handle('tree:node', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getNode', { workspaceId, nodeId }))
   ipcMain.handle('document:decompile', (_event, workspaceId: string, nodeId: string, language: string) => requireBackend().invoke('document/decompile', { workspaceId, nodeId, language }))
+  ipcMain.handle('document:findMember', (_event, workspaceId: string, modulePath: string, metadataToken: number) => requireBackend().invoke('document/findMember', { workspaceId, modulePath, metadataToken }))
   ipcMain.handle('search:run', (_event, workspaceId: string, query: string, kinds?: string[]) => requireBackend().invoke('search/run', { workspaceId, query, kinds }))
   ipcMain.handle('analyze:references', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('analyze/references', { workspaceId, nodeId }))
   ipcMain.handle('hex:length', (_event, workspaceId: string, moduleId: string) => requireBackend().invoke('hex/getLength', { workspaceId, moduleId }))
@@ -284,6 +287,27 @@ const registerIpc = (): void => {
       return undefined
     await writeFile(result.filePath, text, 'utf8')
     return result.filePath
+  })
+  ipcMain.handle('dialog:openTextFile', async () => {
+    // A test cannot drive the native picker, so it names the file up front; a file that is not there
+    // answers like a cancelled dialog rather than throwing through the IPC channel.
+    if (!app.isPackaged && process.env.DNSPY_E2E_OPEN_TEXT_FILE) {
+      try {
+        return await readFile(process.env.DNSPY_E2E_OPEN_TEXT_FILE, 'utf8')
+      } catch {
+        return undefined
+      }
+    }
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: nativeText().openBookmarks,
+      defaultPath: dialogPathHistory?.openDirectory,
+      properties: ['openFile'],
+      filters: [{ name: nativeText().allFiles, extensions: ['*'] }],
+    })
+    if (result.canceled || result.filePaths.length === 0)
+      return undefined
+    await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
+    return await readFile(result.filePaths[0], 'utf8')
   })
   ipcMain.handle('debug:chooseTarget', async () => {
     if (!app.isPackaged && process.env.DNSPY_E2E_DEBUG_TARGET)

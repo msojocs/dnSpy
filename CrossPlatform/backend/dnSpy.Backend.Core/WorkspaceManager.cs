@@ -73,6 +73,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 	public Task<DecompileResponse> DecompileAsync(DecompileRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.DecompileAsync(request, cancellationToken), cancellationToken);
 
+	public Task<FindMemberResponse> FindMemberAsync(FindMemberRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.FindMember(request.ModulePath, request.MetadataToken), cancellationToken);
+
 	public Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.Search(request, cancellationToken), cancellationToken);
 
@@ -1895,6 +1898,29 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// <summary>The module node id for a member, or null when the module is only loaded, not opened.</summary>
 		internal string? TryGetMemberNodeId(ModuleEntry module, IMDTokenProvider member) =>
 			module.IsExternal ? null : GetMemberNode(member, module).Id;
+
+		/// <summary>
+		/// Resolves the identity a persisted bookmark was saved with — module path plus metadata token —
+		/// back to a node. The member is materialised on demand, so a bookmark stays navigable after a
+		/// restart even though node ids are only unique within one workspace.
+		/// </summary>
+		internal FindMemberResponse FindMember(string modulePath, int metadataToken) {
+			if (metadataToken == 0 || FindModuleEntry(modulePath) is not ModuleEntry module || module.IsExternal)
+				return new FindMemberResponse(null, null, null);
+			IMDTokenProvider? member;
+			try {
+				member = module.Module.ResolveToken(unchecked((uint)metadataToken));
+			}
+			catch (Exception) {
+				// A token that no longer resolves is a bookmark whose assembly changed underneath it.
+				return new FindMemberResponse(null, null, null);
+			}
+			// Only members the tree can show have a document to navigate to.
+			if (member is not (TypeDef or MethodDef or FieldDef or PropertyDef or EventDef))
+				return new FindMemberResponse(null, null, null);
+			var dto = ToDto(GetMemberNode(member, module));
+			return new FindMemberResponse(dto.Id, dto.Label, dto.Description);
+		}
 
 		internal ModuleEntry? FindModuleEntry(string path) {
 			foreach (var entry in modules.Values) {

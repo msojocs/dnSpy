@@ -58,6 +58,22 @@ interface MenuBarProps {
   onShowExplorer(): void
   onShowOutput(): void
   onShowCSharpInteractive(): void
+  bookmarksCount: number
+  canEnableAllBookmarks: boolean
+  canDisableAllBookmarks: boolean
+  onShowBookmarks(): void
+  onToggleBookmark(): void
+  onEnableBookmark(): void
+  onEnableAllBookmarks(): void
+  onDisableAllBookmarks(): void
+  onPreviousBookmark(): void
+  onNextBookmark(): void
+  onPreviousBookmarkWithSameLabel(): void
+  onNextBookmarkWithSameLabel(): void
+  onPreviousBookmarkInDocument(): void
+  onNextBookmarkInDocument(): void
+  onClearBookmarks(): void
+  onClearBookmarksInDocument(): void
   onShowModuleBreakpoints(): void
   onShowExceptionSettings(): void
   onShowAutos(): void
@@ -144,6 +160,22 @@ export const MenuBar = ({
   onShowExplorer,
   onShowOutput,
   onShowCSharpInteractive,
+  bookmarksCount,
+  canEnableAllBookmarks,
+  canDisableAllBookmarks,
+  onShowBookmarks,
+  onToggleBookmark,
+  onEnableBookmark,
+  onEnableAllBookmarks,
+  onDisableAllBookmarks,
+  onPreviousBookmark,
+  onNextBookmark,
+  onPreviousBookmarkWithSameLabel,
+  onNextBookmarkWithSameLabel,
+  onPreviousBookmarkInDocument,
+  onNextBookmarkInDocument,
+  onClearBookmarks,
+  onClearBookmarksInDocument,
   onShowModuleBreakpoints,
   onShowExceptionSettings,
   onShowAutos,
@@ -170,6 +202,10 @@ export const MenuBar = ({
   const host = useRef<HTMLDivElement>(null)
   const { language, t } = useLanguage()
   const isDebugging = debugState !== 'inactive'
+  // dnSpy's GetEnableAllBookmarksKind: an empty list gets no entry at all, every bookmark on gets
+  // "Disable All", and one bookmark off is enough for "Enable All". Those first two kinds are what
+  // App hands over as the two flags, so "all of them are on" is nothing left to enable.
+  const allBookmarksEnabled = !canEnableAllBookmarks && canDisableAllBookmarks
   const menus: Record<string, MenuItem[]> = {
     [t('File')]: [
       { label: t('Open...'), shortcut: 'Ctrl+O', action: onOpen },
@@ -219,6 +255,32 @@ export const MenuBar = ({
       { label: t('Assembly Explorer'), shortcut: 'Ctrl+Alt+L', checked: visibleToolWindows.has('explorer'), action: onShowExplorer },
       { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
       { label: t('C# Interactive'), shortcut: 'Ctrl+Alt+N', checked: visibleToolWindows.has('csharp-interactive'), action: onShowCSharpInteractive },
+      {
+        // dnSpy's bookmark commands, in the order its View menu group and sort orders give them: the
+        // window, the commands, then the labelled and in-document walks. Enable/Disable All is a single
+        // entry whose header follows the bookmarks around it, which is how dnSpy writes it.
+        label: t('Bookmarks'),
+        submenu: [
+          { label: t('Bookmarks Window'), shortcut: 'Ctrl+K, Ctrl+W', checked: visibleToolWindows.has('bookmarks'), action: onShowBookmarks },
+          { separator: true },
+          { label: t('Toggle Bookmark'), shortcut: 'Ctrl+K, Ctrl+K', action: onToggleBookmark },
+          ...(bookmarksCount > 0 ? [{
+            label: t(allBookmarksEnabled ? 'Disable All Bookmarks' : 'Enable All Bookmarks'),
+            action: allBookmarksEnabled ? onDisableAllBookmarks : onEnableAllBookmarks,
+          }] : []),
+          { label: t('Enable/Disable Bookmark'), shortcut: 'Ctrl+K, Ctrl+E', action: onEnableBookmark },
+          { label: t('Previous Bookmark'), shortcut: 'Ctrl+K, Ctrl+P', disabled: bookmarksCount === 0, action: onPreviousBookmark },
+          { label: t('Next Bookmark'), shortcut: 'Ctrl+K, Ctrl+N', disabled: bookmarksCount === 0, action: onNextBookmark },
+          { label: t('Clear Bookmarks'), shortcut: 'Ctrl+K, Ctrl+L', disabled: bookmarksCount === 0, action: onClearBookmarks },
+          { separator: true },
+          { label: t('Previous Bookmark With Same Label'), disabled: bookmarksCount === 0, action: onPreviousBookmarkWithSameLabel },
+          { label: t('Next Bookmark With Same Label'), disabled: bookmarksCount === 0, action: onNextBookmarkWithSameLabel },
+          { separator: true },
+          { label: t('Previous Bookmark In Document'), disabled: bookmarksCount === 0, action: onPreviousBookmarkInDocument },
+          { label: t('Next Bookmark In Document'), disabled: bookmarksCount === 0, action: onNextBookmarkInDocument },
+          { label: t('Clear All Bookmarks In Document'), disabled: bookmarksCount === 0, action: onClearBookmarksInDocument },
+        ],
+      },
       { separator: true },
       { label: t('Options...'), action: () => onShowOptions('environment') },
     ],

@@ -4,8 +4,9 @@ import { useEffect, useRef } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { CodeStatement, DecompilerLanguage } from '../../../shared/protocol'
-import { codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
-import type { LineBreakpoint } from '../app-store'
+import { bookmarkMarkers, codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
+import { clearBookmarks, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from '../bookmark-commands'
+import type { Bookmark, LineBreakpoint } from '../app-store'
 import { registerDocumentEditor, unregisterDocumentEditor } from '../editor-registry'
 import { useLanguage } from '../localization'
 
@@ -31,23 +32,46 @@ const breakpointDecorations = (
     },
   }))
 
+// A bookmark draws in the lines-decorations strip rather than the glyph margin, which the breakpoints
+// already own: a bookmark and a breakpoint on the same line then sit side by side instead of on top of
+// each other. A disabled bookmark keeps its mark, drawn faint.
+const bookmarkDecorations = (
+  nodeId: string,
+  statements: CodeStatement[] | undefined,
+  bookmarks: Bookmark[],
+  translate: (message: string) => string,
+): MonacoEditor.IModelDeltaDecoration[] =>
+  bookmarkMarkers(nodeId, statements, bookmarks).map((marker) => ({
+    range: { startLineNumber: marker.line, startColumn: 1, endLineNumber: marker.line, endColumn: 1 },
+    options: {
+      linesDecorationsClassName: marker.enabled ? 'bookmark-glyph' : 'bookmark-glyph-disabled',
+      hoverMessage: {
+        value: [marker.message, translate(marker.enabled ? 'Enabled' : 'Disabled')].filter(Boolean).join('\n'),
+      },
+    },
+  }))
+
 export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
   const wordWrap = useAppStore((state) => state.wordWrap)
   const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const document = useAppStore((state) => state.documents[documentId])
   const changeLanguage = useAppStore((state) => state.changeDocumentLanguage)
   const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
+  const bookmarks = useAppStore((state) => state.bookmarks)
+  const bookmarksReveal = useAppStore((state) => state.bookmarksReveal)
   const toggleLineBreakpoint = useAppStore((state) => state.toggleLineBreakpoint)
   const toggleFunctionBreakpoint = useAppStore((state) => state.toggleFunctionBreakpoint)
   const stoppedLocation = useAppStore((state) => state.stoppedLocation)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   const breakpointDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
+  const bookmarkDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   const stoppedDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   // onMount registers the mouse handler once, so it reads the current values through refs instead of the closure.
   const spansRef = useRef(document?.spans ?? [])
   const statementsRef = useRef(document?.codeStatements)
   const breakpointsRef = useRef(lineBreakpoints)
+  const bookmarksRef = useRef(bookmarks)
   const toggleLineBreakpointRef = useRef(toggleLineBreakpoint)
   const toggleFunctionBreakpointRef = useRef(toggleFunctionBreakpoint)
   const { locale, t } = useLanguage()
@@ -56,6 +80,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   spansRef.current = document?.spans ?? []
   statementsRef.current = document?.codeStatements
   breakpointsRef.current = lineBreakpoints
+  bookmarksRef.current = bookmarks
   toggleLineBreakpointRef.current = toggleLineBreakpoint
   toggleFunctionBreakpointRef.current = toggleFunctionBreakpoint
 
@@ -86,6 +111,25 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   useEffect(() => {
     breakpointDecorationsRef.current?.set(breakpointDecorations(documentId, document?.codeStatements, lineBreakpoints, t))
   }, [documentId, lineBreakpoints, document?.codeStatements, document?.text, locale])
+
+  useEffect(() => {
+    bookmarkDecorationsRef.current?.set(bookmarkDecorations(documentId, document?.codeStatements, bookmarks, t))
+  }, [documentId, bookmarks, document?.codeStatements, document?.text, locale])
+
+  // "Go to bookmark" is answered here rather than in the action itself: the line has to be shown in an
+  // editor that is mounted, and only the mounted view knows its own model.
+  useEffect(() => {
+    if (!bookmarksReveal || bookmarksReveal.documentId !== documentId)
+      return
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!editor || !model)
+      return
+    const line = Math.min(Math.max(bookmarksReveal.line, 1), model.getLineCount())
+    editor.setPosition({ lineNumber: line, column: Math.min(bookmarksReveal.column, model.getLineMaxColumn(line)) })
+    editor.revealLineInCenterIfOutsideViewport(line)
+    editor.focus()
+  }, [bookmarksReveal, documentId, document?.text])
 
   // The line the selected frame is stopped at, in the document that frame decompiles to. Stepping moves it one
   // statement at a time, so the view follows it — otherwise the marker would advance off-screen and the step
@@ -153,7 +197,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             theme={editorTheme}
             onMount={(editor, monaco) => {
               editorRef.current = editor
-              registerDocumentEditor(viewId, editor)
+              registerDocumentEditor(viewId, editor, documentId)
               const updateLanguageId = (): void => {
                 const languageId = editor.getModel()?.getLanguageId()
                 if (languageId)
@@ -164,6 +208,8 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
               decorationsRef.current = editor.createDecorationsCollection()
               breakpointDecorationsRef.current = editor.createDecorationsCollection()
               breakpointDecorationsRef.current.set(breakpointDecorations(documentId, statementsRef.current, breakpointsRef.current, tRef.current))
+              bookmarkDecorationsRef.current = editor.createDecorationsCollection()
+              bookmarkDecorationsRef.current.set(bookmarkDecorations(documentId, statementsRef.current, bookmarksRef.current, tRef.current))
               stoppedDecorationsRef.current = editor.createDecorationsCollection()
               const model = editor.getModel()
               if (!model) return
@@ -211,11 +257,37 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
                     void toggleFunctionBreakpointRef.current(name)
                 },
               })
+              // The commands act on the caret of the focused editor, which is this one whenever a chord
+              // arrives here, so they can go through the same path the menu and the window use.
+              const bookmarkCommands: [number, string, () => void][] = [
+                [monaco.KeyCode.KeyK, 'Toggle Bookmark', toggleBookmarkAtCaret],
+                // Visual Studio's chord, kept here because it is the one dnSpy's users have in their fingers.
+                [monaco.KeyCode.KeyP, 'Previous Bookmark', () => stepBookmark(-1)],
+                [monaco.KeyCode.KeyN, 'Next Bookmark', () => stepBookmark(1)],
+                [monaco.KeyCode.KeyL, 'Clear Bookmarks', clearBookmarks],
+                [monaco.KeyCode.KeyE, 'Enable/Disable Bookmark', toggleBookmarkEnabledAtCaret],
+                [monaco.KeyCode.KeyW, 'Bookmarks Window', showBookmarksWindow],
+              ]
+              for (const [key, label, run] of bookmarkCommands) {
+                editor.addAction({
+                  id: `dnspy.bookmark.${label.replace(/\W+/g, '')}`,
+                  label: tRef.current(label),
+                  contextMenuGroupId: 'dnspy-bookmarks',
+                  contextMenuOrder: 1,
+                  run,
+                })
+                editor.addCommand(monaco.KeyMod.chord(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, monaco.KeyMod.CtrlCmd | key), run)
+              }
               editor.onMouseDown((event) => {
                 // A click in the margin next to the line numbers toggles a breakpoint on that line. The click does not
                 // have to land on a statement — the store snaps it to the nearest one the engine can bind.
                 if (event.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
                   void toggleLineBreakpointRef.current(documentId, event.target.position?.lineNumber ?? 0)
+                  return
+                }
+                // The bookmark strip is the one to its right, so the two marks never collide.
+                if (event.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_DECORATIONS) {
+                  useAppStore.getState().toggleBookmark(documentId, event.target.position?.lineNumber ?? 0)
                   return
                 }
                 if (event.event.ctrlKey && event.target.position) {
@@ -228,6 +300,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
               readOnly: true,
               automaticLayout: true,
               glyphMargin: true,
+              lineDecorationsWidth: 14,
               wordWrap: wordWrap ? 'on' : 'off',
               renderLineHighlight: highlightCurrentLine ? 'all' : 'none',
               fontFamily: "'Cascadia Mono', 'JetBrains Mono', monospace",

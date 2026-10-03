@@ -3,6 +3,7 @@ import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type 
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { TreeNode } from '../../shared/protocol'
 import { methodBreakpointName, useAppStore } from './app-store'
+import { clearBookmarks, clearBookmarksInDocument, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from './bookmark-commands'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
 import { ToolBar } from './components/ToolBar'
@@ -11,6 +12,7 @@ import { CSharpInteractive } from './components/CSharpInteractive'
 import { MethodBodyEditor, RenameDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
+import { BookmarksPane } from './components/BookmarksPane'
 import { AttachDialog } from './components/AttachDialog'
 import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
@@ -56,6 +58,7 @@ const createDefaultLayout = (): IJsonModel => ({
         { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: true },
         { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
         { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: true },
+        { type: 'tab', id: 'bookmarks', name: translate('Bookmarks'), component: 'bookmarks', enableClose: true },
         { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: true },
         { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: true },
       ],
@@ -90,6 +93,7 @@ const restorableBorderTabs: Record<string, RestorableBorderTab> = {
   watch: { name: 'Watch', component: 'watch', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   callstack: { name: 'Call Stack', component: 'callstack', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   breakpoints: { name: 'Breakpoints', component: 'breakpoints', borderId: 'border_bottom', location: DockLocation.BOTTOM },
+  bookmarks: { name: 'Bookmarks', component: 'bookmarks', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   threads: { name: 'Threads', component: 'threads', borderId: 'border_bottom', location: DockLocation.BOTTOM },
   modules: { name: 'Modules', component: 'modules', borderId: 'border_bottom', location: DockLocation.BOTTOM },
 }
@@ -114,6 +118,18 @@ const loadLayout = (): Model => {
 }
 
 const getTargetDocumentTabSet = (model: Model) => model.getActiveTabset() ?? model.getFirstTabSet()
+
+// The second key of a Ctrl+K chord, as dnSpy binds it: Ctrl+K Ctrl+K toggles, Ctrl+K Ctrl+P and Ctrl+K
+// Ctrl+N walk the bookmarks, Ctrl+K Ctrl+L clears them, Ctrl+K Ctrl+E enables or disables the one under
+// the caret, and Ctrl+K Ctrl+W opens the window — the same keys Visual Studio uses.
+const bookmarkChords: Record<string, () => void> = {
+  k: toggleBookmarkAtCaret,
+  p: () => stepBookmark(-1),
+  n: () => stepBookmark(1),
+  l: clearBookmarks,
+  e: toggleBookmarkEnabledAtCaret,
+  w: showBookmarksWindow,
+}
 
 const loadTheme = (): ThemeName => {
   const saved = localStorage.getItem('dnspy.theme')
@@ -150,6 +166,8 @@ export const App = (): React.JSX.Element => {
     return tab instanceof TabNode && tab.getComponent() === 'document'
   }, [model, layoutVersion])
   const initialPathsHandled = useRef(false)
+  // When a Ctrl+K chord stops waiting for its second key, as a timestamp so it needs no timer.
+  const bookmarkChord = useRef(0)
   const workspaceId = useAppStore((state) => state.workspaceId)
   const backendStatus = useAppStore((state) => state.backendStatus)
   const busy = useAppStore((state) => state.busy)
@@ -168,6 +186,11 @@ export const App = (): React.JSX.Element => {
   const saveCode = useAppStore((state) => state.saveCode)
   const replaceResource = useAppStore((state) => state.replaceResource)
   const openDocument = useAppStore((state) => state.openDocument)
+  const setOpenNodeById = useAppStore((state) => state.setOpenNodeById)
+  const setOpenToolWindow = useAppStore((state) => state.setOpenToolWindow)
+  const bookmarks = useAppStore((state) => state.bookmarks)
+  const setAllBookmarksEnabled = useAppStore((state) => state.setAllBookmarksEnabled)
+  const clearBookmarksAction = useAppStore((state) => state.clearBookmarks)
   const analyzeNode = useAppStore((state) => state.analyzeNode)
   const setBackendStatus = useAppStore((state) => state.setBackendStatus)
   const clearError = useAppStore((state) => state.clearError)
@@ -260,6 +283,7 @@ export const App = (): React.JSX.Element => {
       watch: t('Watch'),
       callstack: t('Call Stack'),
       breakpoints: t('Breakpoints'),
+      bookmarks: t('Bookmarks'),
       threads: t('Threads'),
       modules: t('Modules'),
       start: t('Start'),
@@ -315,6 +339,24 @@ export const App = (): React.JSX.Element => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null
       const editingText = target?.matches('input, textarea, select, [contenteditable="true"]') ?? false
+      // The bookmark commands are two-key chords: Ctrl+K arms them and the second key runs one. Monaco
+      // binds the same chords while the code editor has focus and stops the event there, so this path
+      // is the one that answers when the focus is in the tree, a tool window or the menu bar.
+      if (!editingText && !event.shiftKey && !event.altKey && event.ctrlKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        bookmarkChord.current = Date.now() + 2000
+        return
+      }
+      if (!editingText && bookmarkChord.current > Date.now() && event.ctrlKey && !event.shiftKey && !event.altKey) {
+        const chord = bookmarkChords[event.key.toLowerCase()]
+        if (chord) {
+          bookmarkChord.current = 0
+          event.preventDefault()
+          chord()
+          return
+        }
+      }
+      bookmarkChord.current = 0
       if (event.ctrlKey && event.key.toLowerCase() === 'o') {
         event.preventDefault()
         void chooseAndOpen()
@@ -467,6 +509,33 @@ export const App = (): React.JSX.Element => {
     }
   }
 
+  // A bookmark restores to a node id that died with its workspace, so it opens by asking for one and
+  // reports back whether that worked; the store falls back to looking the module and token up again.
+  const openBookmarkTarget = async (nodeId: string): Promise<string | undefined> => {
+    if (!workspaceId)
+      return undefined
+    try {
+      const node = await window.dnSpy.getNode(workspaceId, nodeId)
+      await addDocumentTab(node)
+      return nodeId
+    } catch {
+      return undefined
+    }
+  }
+
+  // The store cannot open tabs or tool windows itself, so it calls back into the shell. Handlers are
+  // read through a ref because both close over the current workspace and layout.
+  const shellCallbacksRef = useRef({ openBookmarkTarget, showBorderTab })
+  shellCallbacksRef.current = { openBookmarkTarget, showBorderTab }
+  useEffect(() => {
+    setOpenNodeById((nodeId) => shellCallbacksRef.current.openBookmarkTarget(nodeId))
+    setOpenToolWindow((tabId) => shellCallbacksRef.current.showBorderTab(tabId))
+    return () => {
+      setOpenNodeById(undefined)
+      setOpenToolWindow(undefined)
+    }
+  }, [setOpenNodeById, setOpenToolWindow])
+
   const goBack = (): void => {
     if (navigation.index <= 0) return
     const index = navigation.index - 1
@@ -526,6 +595,7 @@ export const App = (): React.JSX.Element => {
       case 'watch': return <WatchPane />
       case 'callstack': return <CallStackPane />
       case 'breakpoints': return <BreakpointsPane />
+      case 'bookmarks': return <BookmarksPane />
       case 'threads': return <ThreadsPane />
       case 'modules': return <ModulesPane />
       case 'start': return (
@@ -581,6 +651,22 @@ export const App = (): React.JSX.Element => {
         onDeleteAllBreakpoints={deleteAllBreakpoints}
         onEnableAllBreakpoints={() => enableAllBreakpoints(true)}
         onDisableAllBreakpoints={() => enableAllBreakpoints(false)}
+        bookmarksCount={bookmarks.length}
+        canEnableAllBookmarks={bookmarks.some((bookmark) => !bookmark.enabled)}
+        canDisableAllBookmarks={bookmarks.some((bookmark) => bookmark.enabled)}
+        onShowBookmarks={showBookmarksWindow}
+        onToggleBookmark={toggleBookmarkAtCaret}
+        onEnableBookmark={toggleBookmarkEnabledAtCaret}
+        onEnableAllBookmarks={() => setAllBookmarksEnabled(true)}
+        onDisableAllBookmarks={() => setAllBookmarksEnabled(false)}
+        onPreviousBookmark={() => stepBookmark(-1)}
+        onNextBookmark={() => stepBookmark(1)}
+        onPreviousBookmarkWithSameLabel={() => stepBookmark(-1, 'label')}
+        onNextBookmarkWithSameLabel={() => stepBookmark(1, 'label')}
+        onPreviousBookmarkInDocument={() => stepBookmark(-1, 'document')}
+        onNextBookmarkInDocument={() => stepBookmark(1, 'document')}
+        onClearBookmarks={clearBookmarks}
+        onClearBookmarksInDocument={clearBookmarksInDocument}
         onShowExplorer={() => showBorderTab('explorer')}
         onShowOutput={() => showBorderTab('output')}
         onShowCSharpInteractive={() => showBorderTab('csharp-interactive')}

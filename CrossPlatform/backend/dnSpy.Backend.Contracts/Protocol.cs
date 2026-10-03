@@ -17,6 +17,7 @@ public static class RpcMethods {
 	public const string TreeGetChildren = "tree/getChildren";
 	public const string TreeGetNode = "tree/getNode";
 	public const string DocumentDecompile = "document/decompile";
+	public const string DocumentFindMember = "document/findMember";
 	public const string Search = "search/run";
 	public const string AnalyzeReferences = "analyze/references";
 	public const string HexGetLength = "hex/getLength";
@@ -138,6 +139,15 @@ public sealed record DecompileResponse(
 }
 
 public sealed record DiagnosticDto(string Severity, string Message, int? Start = null, int? Length = null);
+
+/// <summary>
+/// Looks a member up by the identity a client can keep across sessions. Node ids are handed out per
+/// workspace and change on every open, so a persisted bookmark has to name its target by module path
+/// and metadata token instead.
+/// </summary>
+public sealed record FindMemberRequest(string WorkspaceId, string ModulePath, int MetadataToken);
+
+public sealed record FindMemberResponse(string? NodeId, string? Label, string? Description);
 
 public sealed record SearchRequest(
 	string WorkspaceId,

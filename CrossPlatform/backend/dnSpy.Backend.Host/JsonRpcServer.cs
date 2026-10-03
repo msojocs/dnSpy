@@ -169,6 +169,8 @@ internal sealed class JsonRpcServer {
 				return await workspaces.GetNodeAsync(DeserializeParams<NodeRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.DocumentDecompile:
 				return await workspaces.DecompileAsync(DeserializeParams<DecompileRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.DocumentFindMember:
+				return await workspaces.FindMemberAsync(DeserializeParams<FindMemberRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.Search:
 				return await workspaces.SearchAsync(DeserializeParams<SearchRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.AnalyzeReferences:

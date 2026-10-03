@@ -1,5 +1,5 @@
 import { test, expect, _electron as electron, type ElectronApplication, type Locator, type Page } from '@playwright/test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -8,6 +8,7 @@ let page: Page
 let userDataDirectory: string
 let savePath: string
 let saveCodePath: string
+let importBookmarksPath: string
 const contractsAssemblyPath = path.resolve(import.meta.dirname, '../../../backend/dnSpy.Backend.Contracts/bin/Debug/net10.0/dnSpy.Backend.Contracts.dll')
 const debugTargetPath = path.resolve(import.meta.dirname, '../../../backend/tests/DebugTarget/bin/Debug/net10.0/DebugTarget.dll')
 
@@ -18,6 +19,7 @@ const launchApp = async (assemblies: string): Promise<void> => {
   userDataDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-'))
   savePath = path.join(userDataDirectory, 'saved-module.dll')
   saveCodePath = path.join(userDataDirectory, 'saved-code.cs')
+  importBookmarksPath = path.join(userDataDirectory, 'bookmarks-to-import.json')
   application = await electron.launch({
     args: ['.', '--no-sandbox', `--user-data-dir=${userDataDirectory}`],
     cwd: path.resolve(import.meta.dirname, '../..'),
@@ -27,6 +29,7 @@ const launchApp = async (assemblies: string): Promise<void> => {
       DNSPY_E2E_DEBUG_TARGET: debugTargetPath,
       DNSPY_E2E_SAVE_PATH: savePath,
       DNSPY_E2E_SAVE_CODE_PATH: saveCodePath,
+      DNSPY_E2E_OPEN_TEXT_FILE: importBookmarksPath,
     },
   })
   page = await application.firstWindow()
@@ -338,6 +341,148 @@ test.describe('the workspace shell', () => {
     await clickGutter()
     await expect(breakpointRows).toHaveCount(0)
     await expect(glyphs).toHaveCount(0)
+  })
+
+  test('bookmarks a statement from the gutter and clears it from the View menu', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.dblclick()
+
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
+    await expect(bodyLine).toBeVisible()
+
+    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    const rows = page.locator('.bookmark-row')
+    const glyphs = page.locator('.bookmark-glyph')
+    await expect(rows).toHaveCount(0)
+
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    // The bookmark strip is the right-hand part of the margin — the breakpoint glyphs are on the left.
+    await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
+
+    await expect(glyphs).toHaveCount(1)
+    await expect(rows).toHaveCount(1)
+    // The row names the method the statement sits in, the IL offset it was saved as, and its module.
+    await expect(rows.first()).toContainText('dnSpy.Backend.Contracts.RpcException::.ctor')
+    await expect(rows.first()).toContainText(/IL_[0-9A-F]{4}/)
+    await expect(rows.first()).toContainText('dnSpy.Backend.Contracts.dll')
+    // Making one selects it, and the go-to continues from there.
+    await expect(rows.first()).toHaveClass(/active/)
+
+    // The same commands the editor offers, reached through the window's View menu. The submenu opens on
+    // hover, the way it does for a pointer; clicking the parent instead would close it again.
+    await page.getByRole('menuitem', { name: 'View' }).click()
+    await page.getByRole('menuitem', { name: 'Bookmarks', exact: true }).hover()
+    await expect(page.getByRole('menuitem', { name: /^Previous Bookmark Ctrl\+K/ })).toBeEnabled()
+    await page.getByRole('menuitem', { name: /^Clear Bookmarks Ctrl/ }).click()
+
+    await expect(rows).toHaveCount(0)
+    await expect(glyphs).toHaveCount(0)
+  })
+
+  test('keeps a bookmark across a reload', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.dblclick()
+
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
+    await expect(bodyLine).toBeVisible()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
+
+    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    const rows = page.locator('.bookmark-row')
+    await expect(rows).toHaveCount(1)
+    const saved = await rows.first().textContent()
+
+    // A bookmark is written down as module plus IL offset, never as the node ids this session handed
+    // out, so the restart reads it back with its name, its location and its module intact.
+    await page.reload()
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+    await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+
+    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await expect(rows).toHaveCount(1)
+    await expect(rows.first()).toHaveText(saved)
+  })
+
+  test('exports the bookmarks to a file and reads them back', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.dblclick()
+
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
+    await expect(bodyLine).toBeVisible()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
+
+    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    const rows = page.locator('.bookmark-row')
+    const status = page.locator('.bookmarks-status')
+    await expect(rows).toHaveCount(1)
+
+    await page.getByRole('button', { name: 'Export Bookmarks' }).click()
+    await expect(status).toContainText('Exported 1 bookmark(s) to')
+    const exported = readFileSync(saveCodePath, 'utf8')
+    // The file is the portable shape: module, token and IL offset, with nothing session-local in it.
+    const entries = JSON.parse(exported).bookmarks as Record<string, unknown>[]
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ modulePath: contractsAssemblyPath, metadataToken: expect.any(Number), ilOffset: expect.any(Number), labels: [], enabled: true })
+
+    await page.getByRole('button', { name: 'Clear Bookmarks' }).click()
+    await expect(rows).toHaveCount(0)
+
+    writeFileSync(importBookmarksPath, exported)
+    await page.getByRole('button', { name: 'Import Bookmarks' }).click()
+
+    await expect(rows).toHaveCount(1)
+    await expect(status).toContainText('Imported 1 bookmark(s).')
+    await expect(rows.first()).toContainText('IL_')
+  })
+
+  test('toggles a bookmark with the Ctrl+K chord while the editor has focus', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.dblclick()
+
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
+    await expect(bodyLine).toBeVisible()
+    // Clicking the code puts the caret on the line the chord will bookmark.
+    await bodyLine.click()
+
+    await page.keyboard.press('Control+k')
+    await page.keyboard.press('Control+k')
+
+    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await expect(page.locator('.bookmark-row')).toHaveCount(1)
+
+    // A second chord on the same statement takes it away again, as the second click in the gutter does.
+    await bodyLine.click()
+    await page.keyboard.press('Control+k')
+    await page.keyboard.press('Control+k')
+    await expect(page.locator('.bookmark-row')).toHaveCount(0)
   })
 
   test('toggles a breakpoint for the current method from the Debug menu', async () => {

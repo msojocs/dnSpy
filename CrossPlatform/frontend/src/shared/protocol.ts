@@ -85,6 +85,18 @@ export interface DecompileResponse {
   codeStatements?: CodeStatement[]
 }
 
+/**
+ * A member looked up by the identity a bookmark keeps across sessions: node ids are handed out per
+ * workspace, so a restored bookmark names its target by module path and metadata token instead.
+ * Every field is null when the module is not open in the current workspace or the token no longer
+ * resolves.
+ */
+export interface FindMemberResponse {
+  nodeId?: string
+  label?: string
+  description?: string
+}
+
 export interface SearchResult {
   nodeId: string
   kind: string
@@ -301,6 +313,8 @@ export interface DnSpyApi {
   getChildren(workspaceId: string, nodeId: string): Promise<TreeNodesResponse>
   getNode(workspaceId: string, nodeId: string): Promise<TreeNode>
   decompile(workspaceId: string, nodeId: string, language: DecompilerLanguage): Promise<DecompileResponse>
+  /** Resolves a persisted bookmark's target by module path and token, since node ids are session-local. */
+  findMember(workspaceId: string, modulePath: string, metadataToken: number): Promise<FindMemberResponse>
   search(workspaceId: string, query: string, kinds?: string[]): Promise<SearchResponse>
   analyzeReferences(workspaceId: string, nodeId: string): Promise<AnalyzeReferencesResponse>
   getHexLength(workspaceId: string, moduleId: string): Promise<HexLengthResponse>
@@ -317,6 +331,8 @@ export interface DnSpyApi {
   redoEdit(workspaceId: string): Promise<EditCommitResponse>
   saveModuleAs(workspaceId: string, moduleId: string, suggestedName: string): Promise<SaveModuleResponse | undefined>
   saveCode(suggestedName: string, text: string): Promise<string | undefined>
+  /** Picks a text file and returns its contents, or undefined when the picker was dismissed. Used to import bookmarks. */
+  readTextFile(): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   chooseDebugDirectory(): Promise<string | undefined>
   listDebugProcesses(): Promise<DebugProcess[]>

@@ -888,6 +888,50 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.DoesNotContain(ret.SequencePointIlOffset, offsets);
 	}
 
+	/// <summary>
+	/// A bookmark is saved as module path plus metadata token, because node ids only live as long as the
+	/// workspace that minted them. Resolving it back is what makes a bookmark survive a restart.
+	/// </summary>
+	[Fact]
+	public async Task FindMember_ResolvesAPersistedBookmarkBackToItsNode() {
+		var (_, opened, node, document) = await OpenMethodDocumentAsync("AddAsync(");
+		var sum = Assert.Single(document.CodeStatements ?? [], statement => statement.StartLine == LineOf(document.Text, "int sum = left + right;"));
+
+		var found = await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, sum.ModulePath, sum.SourceMethodToken),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(node.Id, found.NodeId);
+		Assert.Equal(node.Label, found.Label);
+		Assert.False(string.IsNullOrWhiteSpace(found.Description));
+
+		// The token the IL itself is named by belongs to the generated MoveNext. Resolving that would take
+		// the user somewhere they never wrote, which is why the source token is the one that gets saved.
+		var moveNext = await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, sum.ModulePath, sum.MetadataToken),
+			TestContext.Current.CancellationToken);
+
+		Assert.NotNull(moveNext.NodeId);
+		Assert.NotEqual(node.Id, moveNext.NodeId);
+		Assert.Contains("MoveNext", moveNext.Label!, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task FindMember_AnswersNothingForWhatItCannotResolve() {
+		var opened = await OpenContractsAssemblyAsync();
+		var path = opened.Modules[0].Path;
+
+		async Task<FindMemberResponse> Find(string modulePath, int metadataToken) => await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, modulePath, metadataToken),
+			TestContext.Current.CancellationToken);
+
+		// A module this workspace never opened, a token its assembly does not contain, and no token at all.
+		var missing = Path.Combine(Path.GetDirectoryName(path)!, "Missing.dll");
+		Assert.Null((await Find(missing, 0x06000001)).NodeId);
+		Assert.Null((await Find(path, 0x0600FFFF)).NodeId);
+		Assert.Null((await Find(path, 0)).NodeId);
+	}
+
 	/// <summary>Opens the debuggee and decompiles one of its method nodes, for the state machine tests.</summary>
 	async Task<(string Path, OpenWorkspaceResponse Opened, TreeNodeDto Node, DecompileResponse Document)> OpenMethodDocumentAsync(string memberLabel) {
 		var path = Path.Combine(AppContext.BaseDirectory, "DebugTarget.dll");

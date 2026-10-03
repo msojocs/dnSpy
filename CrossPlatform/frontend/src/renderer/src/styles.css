@@ -506,6 +506,26 @@ select:focus-visible,
   border: 2px solid var(--text-muted);
 }
 
+/* Bookmarks draw in the lines-decorations strip rather than the glyph margin, so a bookmark and a breakpoint
+   on the same line sit side by side instead of on top of each other. A disabled bookmark keeps its mark,
+   drawn faint, the way a disabled breakpoint keeps its hollow dot. */
+.bookmark-glyph::before,
+.bookmark-glyph-disabled::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  width: 8px;
+  height: 10px;
+  margin: auto;
+  background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 70%, 0 100%);
+}
+
+.bookmark-glyph-disabled::before {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 /* Where the selected frame is stopped: the whole line tinted, and an arrow in the margin so it can be told
    apart from the cursor line and from a breakpoint sitting on the same statement. */
 .debug-stopped-line {
@@ -1683,4 +1703,148 @@ fieldset.options-group {
   height: auto;
   padding: 4px 6px;
   resize: vertical;
+}
+
+/* dnSpy's Bookmarks window: a toolbar, a search box, the four-column table and a footer strip that says how
+   much of the list is filtered out. The columns are the ones upstream uses — name, labels, location, module. */
+.bookmarks-pane {
+  display: grid;
+  grid-template-rows: 31px 30px minmax(0, 1fr) 25px;
+  width: 100%;
+  height: 100%;
+  outline: none;
+}
+
+.bookmarks-toolbar,
+.bookmarks-search,
+.bookmarks-footer {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  background: var(--surface-2);
+}
+
+.bookmarks-toolbar,
+.bookmarks-search {
+  border-bottom: 1px solid var(--border);
+}
+
+.bookmarks-footer {
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.bookmarks-toolbar .icon-button {
+  min-width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+.bookmarks-separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border);
+}
+
+.bookmarks-search input {
+  flex: 1;
+  min-width: 80px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.bookmarks-table {
+  display: grid;
+  grid-template-rows: 23px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.bookmarks-header,
+.bookmark-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 24%) minmax(80px, 16%) minmax(150px, 1fr) minmax(80px, 18%);
+  align-items: center;
+}
+
+.bookmarks-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+}
+
+.bookmarks-header > span,
+.bookmark-row > span {
+  overflow: hidden;
+  padding: 0 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmarks-rows {
+  overflow: auto;
+  background: var(--surface);
+}
+
+.bookmark-row {
+  min-height: 25px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  cursor: default;
+}
+
+.bookmark-row.selected {
+  background: var(--selection);
+}
+
+/* The bookmark the last go-to landed on, so "next" reads as "one further along than that one". */
+.bookmark-row.active {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.bookmark-row.bookmark-disabled > span {
+  opacity: 0.55;
+}
+
+.bookmark-name-cell,
+.bookmark-labels-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bookmark-name-cell input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.bookmark-name-cell > span,
+.bookmark-labels-cell > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-edit {
+  width: 100%;
+  min-width: 60px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.bookmarks-status {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

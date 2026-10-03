@@ -53,6 +53,22 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   onShowExplorer: vi.fn(),
   onShowOutput: vi.fn(),
   onShowCSharpInteractive: vi.fn(),
+  bookmarksCount: 0,
+  canEnableAllBookmarks: false,
+  canDisableAllBookmarks: false,
+  onShowBookmarks: vi.fn(),
+  onToggleBookmark: vi.fn(),
+  onEnableBookmark: vi.fn(),
+  onEnableAllBookmarks: vi.fn(),
+  onDisableAllBookmarks: vi.fn(),
+  onPreviousBookmark: vi.fn(),
+  onNextBookmark: vi.fn(),
+  onPreviousBookmarkWithSameLabel: vi.fn(),
+  onNextBookmarkWithSameLabel: vi.fn(),
+  onPreviousBookmarkInDocument: vi.fn(),
+  onNextBookmarkInDocument: vi.fn(),
+  onClearBookmarks: vi.fn(),
+  onClearBookmarksInDocument: vi.fn(),
   onShowModuleBreakpoints: vi.fn(),
   onShowExceptionSettings: vi.fn(),
   onShowAutos: vi.fn(),
@@ -91,6 +107,13 @@ const renderMenuWith = (overrides: Partial<MenuBarProps>): void => {
   render(<MenuBar {...baseProps()} {...overrides} />)
 }
 
+/** Opens the View menu and hovers its Bookmarks entry, leaving the submenu on screen. */
+const openBookmarksMenu = (): void => {
+  if (!screen.queryByRole('menuitem', { name: /^Bookmarks Window/ }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
+  fireEvent.pointerEnter(screen.getByRole('menuitem', { name: /^Bookmarks$/ }))
+}
+
 /** The labels of the open top-level popup, in render order. */
 const openMenu = (name: string): string[] => {
   fireEvent.click(screen.getByRole('menuitem', { name }))
@@ -126,7 +149,8 @@ describe('MenuBar', () => {
   it('mirrors the upstream View menu layout', () => {
     renderMenu()
     // Upstream sorts the View menu by group and then by item order, so the options come first
-    // (Word Wrap … Collapse Tree View Nodes, Theme, Language), then the tool windows, then Options.
+    // (Word Wrap … Collapse Tree View Nodes, Theme, Language), then the tool windows — Bookmarks,
+    // at order 40, is the last of those — and then Options.
     expect(openMenu('View')).toEqual([
       'Word WrapCtrl+E, Ctrl+W',
       'Highlight Current Line',
@@ -138,6 +162,7 @@ describe('MenuBar', () => {
       'Assembly ExplorerCtrl+Alt+L',
       'OutputAlt+2',
       'C# InteractiveCtrl+Alt+N',
+      'Bookmarks',
       'Options...',
     ])
     // Items that exist only in the cross-platform build must not leak back in.
@@ -162,6 +187,71 @@ describe('MenuBar', () => {
     renderMenu()
     fireEvent.click(screen.getByRole('menuitem', { name: 'View' }))
     expect(screen.getByRole('menuitem', { name: /^Code/ })).toBeDisabled()
+  })
+
+  it('lists the bookmark commands with their chords', () => {
+    renderMenuWith({ bookmarksCount: 2, canEnableAllBookmarks: true, canDisableAllBookmarks: true })
+    openBookmarksMenu()
+    const entries = within(screen.getAllByRole('menu')[1]).getAllByRole('menuitem')
+    expect(entries.map((item) => item.textContent)).toEqual([
+      'Bookmarks WindowCtrl+K, Ctrl+W',
+      'Toggle BookmarkCtrl+K, Ctrl+K',
+      'Enable All Bookmarks',
+      'Enable/Disable BookmarkCtrl+K, Ctrl+E',
+      'Previous BookmarkCtrl+K, Ctrl+P',
+      'Next BookmarkCtrl+K, Ctrl+N',
+      'Clear BookmarksCtrl+K, Ctrl+L',
+      'Previous Bookmark With Same Label',
+      'Next Bookmark With Same Label',
+      'Previous Bookmark In Document',
+      'Next Bookmark In Document',
+      'Clear All Bookmarks In Document',
+    ])
+    // The window entry is checked while its tab is open, the way the other tool windows are shown.
+    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: /^Bookmarks Window/ }))
+    expect(entries[0].getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('offers one Enable/Disable All entry, reading the way upstream writes it', () => {
+    // Everything is on, so the one entry offers to turn the lot off…
+    renderMenuWith({ bookmarksCount: 2, canEnableAllBookmarks: false, canDisableAllBookmarks: true })
+    openBookmarksMenu()
+    const menu = () => screen.getAllByRole('menu')[1]
+    const enableDisableAll = (): HTMLElement | undefined => within(menu()).queryAllByRole('menuitem')
+      .find((item) => /^(Enable|Disable) All Bookmarks$/.test(item.textContent ?? ''))
+    expect(enableDisableAll()?.textContent).toBe('Disable All Bookmarks')
+
+    // …and with nothing to enable, upstream leaves the entry out entirely.
+    cleanup()
+    renderMenuWith({ bookmarksCount: 0, canEnableAllBookmarks: false, canDisableAllBookmarks: false })
+    openBookmarksMenu()
+    expect(enableDisableAll()).toBeUndefined()
+  })
+
+  it('disables the bookmark navigation while there are no bookmarks', () => {
+    renderMenuWith({ bookmarksCount: 0 })
+    openBookmarksMenu()
+    const menu = screen.getAllByRole('menu')[1]
+    expect(within(menu).getByRole('menuitem', { name: /^Next BookmarkCtrl/ })).toBeDisabled()
+    expect(within(menu).getByRole('menuitem', { name: /^Clear BookmarksCtrl/ })).toBeDisabled()
+    expect(within(menu).getByRole('menuitem', { name: /^Toggle BookmarkCtrl/ })).toBeEnabled()
+  })
+
+  it('runs the bookmark commands from the View menu', () => {
+    const onToggleBookmark = vi.fn()
+    const onNextBookmark = vi.fn()
+    const onShowBookmarks = vi.fn()
+    renderMenuWith({ bookmarksCount: 1, onToggleBookmark, onNextBookmark, onShowBookmarks })
+    openBookmarksMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Toggle BookmarkCtrl/ }))
+    // Picking an entry closes the whole popup, so it has to be opened again for the next one.
+    openBookmarksMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Next BookmarkCtrl/ }))
+    openBookmarksMenu()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Bookmarks WindowCtrl/ }))
+    expect(onToggleBookmark).toHaveBeenCalledOnce()
+    expect(onNextBookmark).toHaveBeenCalledOnce()
+    expect(onShowBookmarks).toHaveBeenCalledOnce()
   })
 
   it('invokes the Code handler once a document tab is active', () => {
@@ -332,6 +422,22 @@ describe('MenuBar', () => {
       onShowBreakpoints={onShowBreakpoints}
       onShowThreads={onShowThreads}
       onShowModules={onShowModules}
+      bookmarksCount={0}
+      canEnableAllBookmarks={false}
+      canDisableAllBookmarks={false}
+      onShowBookmarks={vi.fn()}
+      onToggleBookmark={vi.fn()}
+      onEnableBookmark={vi.fn()}
+      onEnableAllBookmarks={vi.fn()}
+      onDisableAllBookmarks={vi.fn()}
+      onPreviousBookmark={vi.fn()}
+      onNextBookmark={vi.fn()}
+      onPreviousBookmarkWithSameLabel={vi.fn()}
+      onNextBookmarkWithSameLabel={vi.fn()}
+      onPreviousBookmarkInDocument={vi.fn()}
+      onNextBookmarkInDocument={vi.fn()}
+      onClearBookmarks={vi.fn()}
+      onClearBookmarksInDocument={vi.fn()}
       onTheme={vi.fn()}
       onToggleWordWrap={vi.fn()}
       onToggleHighlightCurrentLine={vi.fn()}
@@ -433,6 +539,22 @@ describe('MenuBar', () => {
       onShowBreakpoints={vi.fn()}
       onShowThreads={vi.fn()}
       onShowModules={vi.fn()}
+      bookmarksCount={0}
+      canEnableAllBookmarks={false}
+      canDisableAllBookmarks={false}
+      onShowBookmarks={vi.fn()}
+      onToggleBookmark={vi.fn()}
+      onEnableBookmark={vi.fn()}
+      onEnableAllBookmarks={vi.fn()}
+      onDisableAllBookmarks={vi.fn()}
+      onPreviousBookmark={vi.fn()}
+      onNextBookmark={vi.fn()}
+      onPreviousBookmarkWithSameLabel={vi.fn()}
+      onNextBookmarkWithSameLabel={vi.fn()}
+      onPreviousBookmarkInDocument={vi.fn()}
+      onNextBookmarkInDocument={vi.fn()}
+      onClearBookmarks={vi.fn()}
+      onClearBookmarksInDocument={vi.fn()}
       onTheme={vi.fn()}
       onToggleWordWrap={vi.fn()}
       onToggleHighlightCurrentLine={vi.fn()}
