@@ -29,7 +29,8 @@ public sealed class PropertyDefEditor {
 			context.Accessors.ToDtoList(property.GetMethods),
 			context.Accessors.ToDtoList(property.SetMethods),
 			context.Accessors.ToDtoList(property.OtherMethods),
-			context.Attributes.ToDtoList(property.CustomAttributes));
+			context.Attributes.ToDtoList(property.CustomAttributes),
+			property.DeclaringType?.GenericParameters.Count ?? 0);
 
 	/// <summary>Adds a property to the module, row id and all, without putting it in any type yet.</summary>
 	public PropertyDef Create(TypeDef owner, PropertyOptionsDto dto) =>

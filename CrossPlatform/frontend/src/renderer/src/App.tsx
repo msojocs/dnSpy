@@ -144,6 +144,11 @@ const DELETE_CONFIRMATIONS: Record<string, string> = {
 // The node kinds the Edit menu offers a Delete command for, and which the Del key therefore removes.
 const DELETABLE_KINDS = ['type', 'method', 'field', 'property', 'event', 'namespace', 'resource']
 
+// The node kinds whose Edit command — and Alt+Enter with it — opens a dialog: every one dnSpy has a
+// settings command for that the port has built the window of.
+const EDITABLE_KINDS = new Set<string>(['method', 'field', 'property', 'event'])
+const isEditableKind = (kind: string): kind is CreatedKind => EDITABLE_KINDS.has(kind)
+
 const loadTheme = (): ThemeName => {
   const saved = localStorage.getItem('dnspy.theme')
   return saved === 'light' || saved === 'dark' || saved === 'hc' || saved === 'blue' ? saved : 'dark'
@@ -393,7 +398,7 @@ export const App = (): React.JSX.Element => {
    * dialog has not been built yet has no shortcut, since there is nothing for it to open. */
   const openEditNode = (): void => {
     const node = selectedNode
-    if (node?.kind === 'method' || node?.kind === 'field')
+    if (node !== undefined && isEditableKind(node.kind))
       setEditNode({ kind: node.kind, nodeId: node.id })
   }
 

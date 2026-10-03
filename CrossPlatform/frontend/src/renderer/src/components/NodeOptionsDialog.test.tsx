@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FieldOptionsDto, MethodOptionsDto, NodeOptionsDto, TypeSigDto } from '../../../shared/protocol'
+import type { EventOptionsDto, FieldOptionsDto, MethodOptionsDto, NodeOptionsDto, PropertyOptionsDto, TypeSigDto } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { NodeOptionsDialog } from './NodeOptionsDialog'
 import { FIELD_ACCESSES, FIELD_ATTRIBUTES } from './widgets/field-options'
@@ -33,6 +33,24 @@ const field: FieldOptionsDto = {
   fieldSig: intType,
   customAttributes: [],
   rva: 0,
+}
+
+const property: PropertyOptionsDto = {
+  attributes: 0,
+  name: 'Count',
+  propertySig: { hasThis: true, propertyType: intType, parameters: [] },
+  getMethods: [],
+  setMethods: [],
+  otherMethods: [],
+  customAttributes: [],
+}
+
+const event: EventOptionsDto = {
+  attributes: 0,
+  name: 'Changed',
+  eventType: { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'EventHandler' } },
+  otherMethods: [],
+  customAttributes: [],
 }
 
 const getNodeOptions = vi.fn()
@@ -159,10 +177,54 @@ describe('NodeOptionsDialog', () => {
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Field')
   })
 
-  it('says so rather than drawing an empty window for a kind it has no dialog for', async () => {
-    getNodeOptions.mockResolvedValue({ kind: 'property' })
+  it('runs the property window off the same three calls the method one does', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'property', property })
+    const { onClose } = renderDialog({ kind: 'property', ownerNodeId: 'type-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Count')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Property')
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'property', { ownerNodeId: 'type-1', isNew: true })
 
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+
+    await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
+    const [owner, options] = createNode.mock.calls[0] as [string, NodeOptionsDto]
+    expect(owner).toBe('type-1')
+    expect(options).toEqual({ kind: 'property', property: { ...property, name: 'Renamed' } })
+
+    cleanup()
+    getNodeOptions.mockResolvedValue({ kind: 'property', property })
     renderDialog({ kind: 'property', nodeId: 'property-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Count')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Property')
+  })
+
+  it('runs the event window off the same three calls the method one does', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'event', event })
+    const { onClose } = renderDialog({ kind: 'event', ownerNodeId: 'type-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Changed')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Event')
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'event', { ownerNodeId: 'type-1', isNew: true })
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+
+    await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
+    const [owner, options] = createNode.mock.calls[0] as [string, NodeOptionsDto]
+    expect(owner).toBe('type-1')
+    expect(options).toEqual({ kind: 'event', event: { ...event, name: 'Renamed' } })
+
+    cleanup()
+    getNodeOptions.mockResolvedValue({ kind: 'event', event })
+    renderDialog({ kind: 'event', nodeId: 'event-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Changed')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Event')
+  })
+
+  it('says so rather than drawing an empty window for a kind it has no dialog for', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'type' })
+
+    renderDialog({ kind: 'type', nodeId: 'type-1' })
 
     expect(await screen.findByText('The item cannot be edited.')).toBeTruthy()
     expect(screen.queryByRole('tab')).toBeNull()

@@ -132,13 +132,14 @@ public sealed class NodeOptionsFactory {
 			[],
 			[],
 			[],
-			[]));
+			[],
+			OwnerGenericParameterCount: owner.GenericParameters.Count));
 	}
 
 	/// <summary>An event of an <c>EventHandler</c> type, which is the type a new one starts with whatever
 	/// its owner is. A new event has no accessors: dnSpy's dialog adds those, and a method that has not
 	/// been marked as an accessor must not be one.</summary>
-	public NodeOptionsDto NewEvent() => NodeOptionsDto.OfEvent(new EventOptionsDto(
+	public NodeOptionsDto NewEvent(TypeDef owner) => NodeOptionsDto.OfEvent(new EventOptionsDto(
 		0,
 		DefaultEventName,
 		context.Signatures.ToDto(context.Module.CorLibTypes.GetTypeRef("System", "EventHandler")),
@@ -146,5 +147,6 @@ public sealed class NodeOptionsFactory {
 		null,
 		null,
 		[],
-		[]));
+		[],
+		OwnerGenericParameterCount: owner.GenericParameters.Count));
 }

@@ -1528,7 +1528,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				NodeOptionKinds.Method => options.NewMethod(OwnerTypeOf(owner)),
 				NodeOptionKinds.Field => options.NewField(OwnerTypeOf(owner)),
 				NodeOptionKinds.Property => options.NewProperty(OwnerTypeOf(owner)),
-				NodeOptionKinds.Event => options.NewEvent(),
+				NodeOptionKinds.Event => options.NewEvent(OwnerTypeOf(owner)),
 				_ => throw new RpcException(ErrorCodes.InvalidParams, $"Unknown item kind '{kind}'."),
 			};
 		}

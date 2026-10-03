@@ -1860,7 +1860,8 @@ fieldset.options-group {
 }
 
 .options-pairs input,
-.options-name input {
+.options-name input,
+.event-method input {
   min-width: 0;
   height: 24px;
   padding: 0 6px;
@@ -1880,6 +1881,31 @@ fieldset.options-group {
 
 .options-flags .options-row {
   min-width: 0;
+}
+
+/* The two-checkbox group boxes — a property's and an event's Flags — are two to a line. */
+.options-flags-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+}
+
+.options-flags-two .options-row {
+  min-width: 0;
+}
+
+/* The event dialog's Methods page: one row per accessor, each a picker button, the clear button beside
+   it, and the read-only box holding the name that was picked. */
+.event-methods {
+  display: grid;
+  gap: 5px;
+}
+
+.event-method {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
 }
 
 /* Two label/box pairs to a line. A pair is a grid of contents so that its label and its box land in the

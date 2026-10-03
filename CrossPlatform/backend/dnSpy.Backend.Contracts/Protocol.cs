@@ -571,7 +571,10 @@ public sealed record PropertyOptionsDto(
 	IReadOnlyList<AccessorRefDto> GetMethods,
 	IReadOnlyList<AccessorRefDto> SetMethods,
 	IReadOnlyList<AccessorRefDto> OtherMethods,
-	IReadOnlyList<CustomAttributeDto> CustomAttributes);
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	// How many generic parameters the declaring type has. Read-only context for the signature editor, and
+	// read off the live type the way the method and field dialogs' copies of it are.
+	int OwnerGenericParameterCount = 0);
 
 public sealed record EventOptionsDto(
 	int Attributes,
@@ -581,7 +584,10 @@ public sealed record EventOptionsDto(
 	AccessorRefDto? InvokeMethod,
 	AccessorRefDto? RemoveMethod,
 	IReadOnlyList<AccessorRefDto> OtherMethods,
-	IReadOnlyList<CustomAttributeDto> CustomAttributes);
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	// How many generic parameters the declaring type has, read off the live type the way the method and
+	// field dialogs' copies of it are: the event type's editor gates its Var button on it.
+	int OwnerGenericParameterCount = 0);
 
 /// <summary>
 /// Every dialog's model, discriminated by <paramref name="Kind"/>. Only the member matching the kind

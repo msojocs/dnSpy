@@ -27,7 +27,8 @@ public sealed class EventDefEditor {
 			context.Accessors.ToDto(@event.InvokeMethod),
 			context.Accessors.ToDto(@event.RemoveMethod),
 			context.Accessors.ToDtoList(@event.OtherMethods),
-			context.Attributes.ToDtoList(@event.CustomAttributes));
+			context.Attributes.ToDtoList(@event.CustomAttributes),
+			@event.DeclaringType?.GenericParameters.Count ?? 0);
 
 	/// <summary>Adds an event to the module, row id and all, without putting it in any type yet.</summary>
 	public EventDef Create(TypeDef owner, EventOptionsDto dto) =>

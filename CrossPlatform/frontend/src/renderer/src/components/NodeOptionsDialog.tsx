@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import type { NodeOptionsDto } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
+import { EventOptionsDialog } from './EventOptionsDialog'
 import { FieldOptionsDialog } from './FieldOptionsDialog'
 import { MethodOptionsDialog } from './MethodOptionsDialog'
+import { PropertyOptionsDialog } from './PropertyOptionsDialog'
 import { OptionsShell } from './OptionsShell'
 import type { CreatedKind } from './edit-menu'
 
@@ -108,6 +110,28 @@ export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, onCl
             isNew={isNew}
             failure={writeFailure}
             onAccept={(field) => { void accept({ kind, field }) }}
+            onCancel={onClose}
+          />
+        )
+      case 'property':
+        return options.property === undefined ? undefined : (
+          <PropertyOptionsDialog
+            workspaceId={workspaceId}
+            value={options.property}
+            isNew={isNew}
+            failure={writeFailure}
+            onAccept={(property) => { void accept({ kind, property }) }}
+            onCancel={onClose}
+          />
+        )
+      case 'event':
+        return options.event === undefined ? undefined : (
+          <EventOptionsDialog
+            workspaceId={workspaceId}
+            value={options.event}
+            isNew={isNew}
+            failure={writeFailure}
+            onAccept={(event) => { void accept({ kind, event }) }}
             onCancel={onClose}
           />
         )

@@ -429,6 +429,46 @@ export interface PropertySigDto {
   display?: string
 }
 
+/** A property's dialog model. `getMethods`/`setMethods`/`otherMethods` are the accessor lists, which
+ * dnSpy's `PropertyDefOptions` holds as three lists of methods. */
+export interface PropertyOptionsDto {
+  attributes: number
+  name: string
+  propertySig?: PropertySigDto
+  constant?: ConstantDto
+  getMethods: AccessorRefDto[]
+  setMethods: AccessorRefDto[]
+  otherMethods: AccessorRefDto[]
+  customAttributes: CustomAttributeDto[]
+  /** The read-only context the dialogs above also carry: how many generic parameters the declaring type
+   * has, which is what the signature editor's Var button is gated on. */
+  ownerGenericParameterCount?: number
+}
+
+export interface EventOptionsDto {
+  attributes: number
+  name: string
+  eventType?: TypeSigDto
+  addMethod?: AccessorRefDto
+  invokeMethod?: AccessorRefDto
+  removeMethod?: AccessorRefDto
+  otherMethods: AccessorRefDto[]
+  customAttributes: CustomAttributeDto[]
+  /** The read-only context the method and field dialogs also carry: how many generic parameters the
+   * declaring type has, which is what the type editor's Var button is gated on. */
+  ownerGenericParameterCount?: number
+}
+
+/** A method something else is made of — a property's or an event's accessor. The node id names the row
+ * the user picked and is what a freshly picked one carries; the token is what the backend puts there
+ * when it read the row out of the model, so a value that came from it can be written straight back. */
+export interface AccessorRefDto {
+  name: string
+  token?: number
+  nodeId?: string
+  display?: string
+}
+
 /** A type's dialog model. Only the generic parameters are read by the signature editor — they say how
  * many arguments an instance of the type takes. The rest travels with it and is declared with the
  * type dialog. */
@@ -445,6 +485,8 @@ export interface NodeOptionsDto {
   type?: TypeOptionsDto
   method?: MethodOptionsDto
   field?: FieldOptionsDto
+  property?: PropertyOptionsDto
+  event?: EventOptionsDto
 }
 
 /** Which node a dialog's model is read for: an existing one, or a new one belonging to `ownerNodeId`. */
