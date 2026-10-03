@@ -115,7 +115,8 @@ public sealed class NodeOptionsFactory {
 			null,
 			null,
 			constant,
-			[]));
+			[],
+			OwnerGenericParameterCount: owner.GenericParameters.Count));
 	}
 
 	public NodeOptionsDto NewProperty(TypeDef owner) {

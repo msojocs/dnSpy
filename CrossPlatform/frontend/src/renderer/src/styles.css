@@ -1844,21 +1844,23 @@ fieldset.options-group {
   overflow: auto;
 }
 
-/* The method dialog's Main page: the name box, the two flag group boxes, and the four combos. dnSpy lays
-   the flags out three to a line and the combos out two label/box pairs per line. */
-.method-options-main {
+/* A dialog page that stacks its blocks: the method dialog's Main page is the name box, the two flag
+   group boxes and the four combos. dnSpy lays the flags out three to a line and a row of label/box
+   pairs two to a line, which is what these two grids are. */
+.options-page {
   display: grid;
   gap: 5px;
 }
 
-.method-options-name {
+.options-name {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 5px;
   align-items: center;
 }
 
-.method-options-name input {
+.options-pairs input,
+.options-name input {
   min-width: 0;
   height: 24px;
   padding: 0 6px;
@@ -1869,29 +1871,31 @@ fieldset.options-group {
   font: inherit;
 }
 
-/* Three to a line, which is the column count dnSpy's two group boxes use. */
-.method-options-flags {
+/* Three to a line, which is the column count dnSpy's flag group boxes use. */
+.options-flags {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
 }
 
-.method-options-flags .options-row {
+.options-flags .options-row {
   min-width: 0;
 }
 
-.method-options-combos {
+/* Two label/box pairs to a line. A pair is a grid of contents so that its label and its box land in the
+   two cells of one pair rather than in a cell of their own. */
+.options-pairs {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 5px 10px;
   align-items: center;
 }
 
-.method-options-combo {
+.options-pair {
   display: contents;
 }
 
-.method-options-combo select {
+.options-pairs select {
   min-width: 0;
   height: 24px;
   padding: 0 4px;

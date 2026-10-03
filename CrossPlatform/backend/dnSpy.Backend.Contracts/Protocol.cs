@@ -558,7 +558,10 @@ public sealed record FieldOptionsDto(
 	ImplMapDto? ImplMap,
 	ConstantDto? Constant,
 	IReadOnlyList<CustomAttributeDto> CustomAttributes,
-	uint Rva = 0);
+	uint Rva = 0,
+	// How many generic parameters the declaring type has. Read-only context for the signature editor, and
+	// read off the live type the way the method dialog's copy of it is.
+	int OwnerGenericParameterCount = 0);
 
 public sealed record PropertyOptionsDto(
 	int Attributes,

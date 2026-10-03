@@ -392,8 +392,9 @@ export const App = (): React.JSX.Element => {
   /** dnSpy's settings command for the selected node — Edit Method... and its Alt+Enter. A node whose
    * dialog has not been built yet has no shortcut, since there is nothing for it to open. */
   const openEditNode = (): void => {
-    if (selectedNode?.kind === 'method')
-      setEditNode({ kind: 'method', nodeId: selectedNode.id })
+    const node = selectedNode
+    if (node?.kind === 'method' || node?.kind === 'field')
+      setEditNode({ kind: node.kind, nodeId: node.id })
   }
 
   /** The five create commands: the new node goes into the type the selection belongs to, which is the

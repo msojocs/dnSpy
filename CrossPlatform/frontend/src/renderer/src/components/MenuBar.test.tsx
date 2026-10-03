@@ -741,28 +741,41 @@ describe('MenuBar', () => {
   it('lists the Edit commands the port has not implemented yet as disabled', () => {
     renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest' })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    // Delete and the method dialog are wired up; the other member dialogs have no backend to call yet.
+    // Delete and the two member dialogs are wired up; the other dialogs have nothing to call yet.
     expect(screen.getByRole('menuitem', { name: /^Delete HelloRequest/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Create Nested Type\.\.\./ })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: /^Create Field\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Property\.\.\./ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeDisabled()
     expect(screen.queryByRole('menuitem', { name: /^Edit Method Body/ })).not.toBeInTheDocument()
   })
 
-  it('runs Create Method and Edit Method, which are the dialogs the port has built', () => {
-    const onCreateMember = vi.fn()
-    renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest', onCreateMember })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /^Create Method\.\.\./ }))
-    // The kind is what the dialog is for; which type it goes into is the selection's business.
-    expect(onCreateMember).toHaveBeenCalledWith('method')
+  it('runs the create and edit commands whose dialogs the port has built', () => {
+    const cases: { kind: string, label: string, create: string }[] = [
+      { kind: 'method', label: 'Create Method...', create: 'method' },
+      { kind: 'field', label: 'Create Field...', create: 'field' },
+    ]
+    for (const entry of cases) {
+      const onCreateMember = vi.fn()
+      renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest', onCreateMember })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+      fireEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${entry.label.replace('.', '\\.')}`) }))
+      // The kind is what the dialog is for; which type it goes into is the selection's business.
+      expect(onCreateMember).toHaveBeenCalledWith(entry.create)
+      cleanup()
+    }
 
-    cleanup()
     const onEditNode = vi.fn()
     renderMenuWith({ selectionKind: 'method', selectionLabel: 'M()', onEditNode })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Edit Method\.\.\./ }))
     expect(onEditNode).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    const onFieldAsWell = vi.fn()
+    renderMenuWith({ selectionKind: 'field', selectionLabel: 'Count', onEditNode: onFieldAsWell })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Edit Field\.\.\./ }))
+    expect(onFieldAsWell).toHaveBeenCalledTimes(1)
   })
 
   it('runs Delete and the stub replacement for a selected method', () => {

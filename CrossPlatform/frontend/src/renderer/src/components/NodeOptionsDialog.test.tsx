@@ -1,15 +1,18 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { MethodOptionsDto, NodeOptionsDto, TypeSigDto } from '../../../shared/protocol'
+import type { FieldOptionsDto, MethodOptionsDto, NodeOptionsDto, TypeSigDto } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { NodeOptionsDialog } from './NodeOptionsDialog'
+import { FIELD_ACCESSES, FIELD_ATTRIBUTES } from './widgets/field-options'
 import { METHOD_ACCESSES, METHOD_ATTRIBUTES, METHOD_IMPL_ATTRIBUTES } from './widgets/method-options'
 
 const voidType: TypeSigDto = { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'Void' } }
+const intType: TypeSigDto = { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'Int32' }, valueType: true }
 
 /** The access bits have no named members of their own, so they are read out of the same table the combo
  * is built from. */
 const access = (label: string): number => METHOD_ACCESSES.find((entry) => entry.label === label)!.value
+const fieldAccess = (label: string): number => FIELD_ACCESSES.find((entry) => entry.label === label)!.value
 
 const method: MethodOptionsDto = {
   implAttributes: METHOD_IMPL_ATTRIBUTES.NoInlining,
@@ -22,6 +25,14 @@ const method: MethodOptionsDto = {
   paramDefs: [],
   genericParameters: [],
   overrides: [],
+}
+
+const field: FieldOptionsDto = {
+  attributes: fieldAccess('Public') | FIELD_ATTRIBUTES.Static,
+  name: 'Count',
+  fieldSig: intType,
+  customAttributes: [],
+  rva: 0,
 }
 
 const getNodeOptions = vi.fn()
@@ -126,10 +137,32 @@ describe('NodeOptionsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
-  it('says so rather than drawing an empty window for a kind it has no dialog for', async () => {
-    getNodeOptions.mockResolvedValue({ kind: 'field' })
+  it('runs the field window off the same three calls the method one does', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'field', field })
+    const { onClose } = renderDialog({ kind: 'field', ownerNodeId: 'type-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Count')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Field')
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'field', { ownerNodeId: 'type-1', isNew: true })
 
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+
+    await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
+    const [owner, options] = createNode.mock.calls[0] as [string, NodeOptionsDto]
+    expect(owner).toBe('type-1')
+    expect(options).toEqual({ kind: 'field', field: { ...field, name: 'Renamed' } })
+
+    cleanup()
+    getNodeOptions.mockResolvedValue({ kind: 'field', field })
     renderDialog({ kind: 'field', nodeId: 'field-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('Count')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Field')
+  })
+
+  it('says so rather than drawing an empty window for a kind it has no dialog for', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'property' })
+
+    renderDialog({ kind: 'property', nodeId: 'property-1' })
 
     expect(await screen.findByText('The item cannot be edited.')).toBeTruthy()
     expect(screen.queryByRole('tab')).toBeNull()

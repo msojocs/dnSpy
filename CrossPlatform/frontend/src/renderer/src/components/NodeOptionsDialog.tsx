@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { NodeOptionsDto } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
+import { FieldOptionsDialog } from './FieldOptionsDialog'
 import { MethodOptionsDialog } from './MethodOptionsDialog'
 import { OptionsShell } from './OptionsShell'
 import type { CreatedKind } from './edit-menu'
@@ -84,17 +85,36 @@ export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, onCl
     return nothing(loadFailure)
   if (options === undefined)
     return nothing(t('Loading...'))
-  if (kind !== 'method' || options.method === undefined)
-    return nothing(t('The item cannot be edited.'))
 
-  return (
-    <MethodOptionsDialog
-      workspaceId={workspaceId}
-      value={options.method}
-      isNew={isNew}
-      failure={writeFailure}
-      onAccept={(method) => { void accept({ kind, method }) }}
-      onCancel={onClose}
-    />
-  )
+  // One window per kind, and a kind whose dialog the port has not built yet has nothing to show.
+  const dialog = (): React.JSX.Element | undefined => {
+    switch (kind) {
+      case 'method':
+        return options.method === undefined ? undefined : (
+          <MethodOptionsDialog
+            workspaceId={workspaceId}
+            value={options.method}
+            isNew={isNew}
+            failure={writeFailure}
+            onAccept={(method) => { void accept({ kind, method }) }}
+            onCancel={onClose}
+          />
+        )
+      case 'field':
+        return options.field === undefined ? undefined : (
+          <FieldOptionsDialog
+            workspaceId={workspaceId}
+            value={options.field}
+            isNew={isNew}
+            failure={writeFailure}
+            onAccept={(field) => { void accept({ kind, field }) }}
+            onCancel={onClose}
+          />
+        )
+      default:
+        return undefined
+    }
+  }
+
+  return dialog() ?? nothing(t('The item cannot be edited.'))
 }

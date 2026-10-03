@@ -120,7 +120,7 @@ export const MethodOptionsDialog = ({ workspaceId, value, isNew, failure, onAcce
   const flagGroup = (legend: string | undefined, flags: { label: string, flag: number }[], word: number, onChange: (word: number) => void): React.JSX.Element => (
     <fieldset className="ca-group">
       {legend && <legend>{t(legend)}</legend>}
-      <div className="method-options-flags">
+      <div className="options-flags">
         {flags.map((entry) => (
           <label className="options-row" key={entry.label}>
             <input
@@ -136,7 +136,7 @@ export const MethodOptionsDialog = ({ workspaceId, value, isNew, failure, onAcce
   )
 
   const combo = (label: string, entries: { label: string, value: number }[], value: number, onChange: (value: number) => void): React.JSX.Element => (
-    <label className="method-options-combo">
+    <label className="options-pair">
       <span className="options-row-label">{t(label)}</span>
       <select aria-label={t(label)} value={value} onChange={(event) => { onChange(Number(event.target.value)) }}>
         {entries.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
@@ -152,8 +152,8 @@ export const MethodOptionsDialog = ({ workspaceId, value, isNew, failure, onAcce
         {
           label: 'Main',
           content: (
-            <div className="method-options-main">
-              <label className="method-options-name">
+            <div className="options-page">
+              <label className="options-name">
                 <span className="options-row-label">{t('Name')}</span>
                 <input aria-label={t('Name')} value={draft.name} onChange={(event) => { edit({ name: event.target.value }) }} />
               </label>
@@ -163,7 +163,7 @@ export const MethodOptionsDialog = ({ workspaceId, value, isNew, failure, onAcce
               {flagGroup(undefined, IMPL_FLAGS, draft.implAttributes, setImplAttributes)}
               {flagGroup('Flags', METHOD_FLAGS, draft.attributes, setAttributes)}
 
-              <div className="method-options-combos">
+              <div className="options-pairs">
                 {combo('CodeType', CODE_TYPES, codeTypeOf(draft.implAttributes), (codeType) => { setImplAttributes(withCodeType(draft.implAttributes, codeType)) })}
                 {combo('ManagedType', MANAGED_TYPES, managedTypeOf(draft.implAttributes), (managedType) => { setImplAttributes(withManagedType(draft.implAttributes, managedType)) })}
                 {combo('Access', METHOD_ACCESSES, methodAccessOf(draft.attributes), (access) => { setAttributes(withMethodAccess(draft.attributes, access)) })}

@@ -31,7 +31,8 @@ public sealed class FieldDefEditor {
 			context.ImplMaps.ToDto(field.ImplMap),
 			context.Constants.ToDto(field.Constant),
 			context.Attributes.ToDtoList(field.CustomAttributes),
-			(uint)field.RVA);
+			(uint)field.RVA,
+			field.DeclaringType?.GenericParameters.Count ?? 0);
 
 	/// <summary>Adds a field to the module, row id and all, without putting it in any type yet.</summary>
 	public FieldDef Create(FieldOptionsDto dto) =>

@@ -417,6 +417,9 @@ export interface FieldOptionsDto {
   constant?: ConstantDto
   customAttributes: CustomAttributeDto[]
   rva?: number
+  /** How many generic parameters the type declaring the field has — the same read-only context the
+   * method dialog carries, and what the type editor's Var button is gated on. */
+  ownerGenericParameterCount?: number
 }
 
 export interface PropertySigDto {
