@@ -629,8 +629,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
       const created = await window.dnSpy.createNode(workspaceId, transactionId, ownerNodeId, options, nested)
       const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
-      // The created node is already in the commit's changed list, so its owner — the node it was added
-      // to — is refreshed by the same pass that refreshes everything else.
+      // The commit reloads the list of whichever node holds a changed one, and it finds that owner in the
+      // parents map — which a node that has just been created is not in, since nothing has listed it yet.
+      // Its owner is the one the caller named, so the link is written down here: the same pass then
+      // refetches the owner's children, and revealNode can walk up from the new node to the module.
+      set((state) => ({ parents: { ...state.parents, [created.nodeId]: ownerNodeId } }))
       await refreshAfterEdit(get, set, committed)
       await get().revealNode(created.nodeId)
       get().appendOutput(t('Created {name}.', { name: created.label }))

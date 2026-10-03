@@ -165,8 +165,10 @@ export const methodOptionsDraft = (dto: MethodOptionsDto): MethodOptionsDraft =>
   rva: dto.rva ?? 0,
   ownerGenericParameterCount: dto.ownerGenericParameterCount ?? 0,
   name: dto.name,
-  methodSig: dto.methodSig,
-  implMap: dto.implMap,
+  // A field the backend had nothing for arrives as a null, and a draft says "nothing" with undefined:
+  // the two mean the same thing here, and only one of them is what the editors are written against.
+  methodSig: dto.methodSig ?? undefined,
+  implMap: dto.implMap ?? undefined,
   paramDefs: dto.paramDefs.map(paramDefDraft),
   genericParameters: dto.genericParameters.map(genericParamDraft),
   overrides: dto.overrides.map(methodOverrideDraft),

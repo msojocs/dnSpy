@@ -75,6 +75,15 @@ describe('method options', () => {
     })
   })
 
+  it('reads the two fields the method has none of as nothing rather than as a null', () => {
+    // A new method has no signature and no P/Invoke row, and both went over the wire as nulls. The
+    // editors are written against "undefined means nothing", so a null would be a value they cannot hold.
+    const wire = (json: string): MethodOptionsDto => JSON.parse(json) as MethodOptionsDto
+    const draft = methodOptionsDraft(wire('{"implAttributes":0,"attributes":0,"semanticsAttributes":0,"name":"MyMethod","methodSig":null,"implMap":null,"customAttributes":[],"declSecurities":[],"paramDefs":[],"genericParameters":[],"overrides":[],"rva":0,"ownerGenericParameterCount":0}'))
+    expect(draft.methodSig).toBeUndefined()
+    expect(draft.implMap).toBeUndefined()
+  })
+
   it('keeps the two words nothing on the Main page edits', () => {
     // The semantics a property's accessor carries and the row id the codec writes are not on any page,
     // so they have to come back out of the dialog exactly as they went in.

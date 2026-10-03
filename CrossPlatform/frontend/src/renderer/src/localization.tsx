@@ -797,6 +797,81 @@ const zhCN: Record<string, string> = {
   'Show IL instruction bytes': '显示 IL 指令字节',
   'Show IL opcode comments': '显示 IL 操作码注释',
   'Show line numbers and filenames if available': '显示行号和文件名 (如果有)',
+
+  // The type/member options windows and the controls they are built from (dnSpy.AsmEditor).
+  //
+  // Every other string on those pages comes from an enum, and EnumVM prints those through
+  // Enum.GetName: Abstract, Sealed, Public, Value0..3, Demand, IL, Managed, SpecialName, V1/V2,
+  // Covariant and the rest are spelled the same in both languages and so are absent here. The XAML
+  // literals are absent for the same reason — 'Semantics' and 'Custom' on the type window's Main
+  // page, and ImplMapControl's 'CharSet' / 'ThrowOn...' / 'CallConv'.
+  'Base Type': '基类型',
+  'Generic Params': '泛型参数',
+  'Interfaces': '接口',
+  'Sec Decls': '安全性说明',
+  // dnSpy gives the two windows a resource each, so its method tab reads 方法签名 (MethodSignatureTab)
+  // where its property tab reads 签名 (Property_Signature); the port passes one English label to both.
+  'Signature': '签名',
+  'Params': '参数',
+  'Overrides': '重写',
+  'Other Methods': '其它方法',
+  'Custom Attribute': '自定义特性',
+  'Method': '方法',
+  'Namespace': '命名空间',
+  'Access': '访问',
+  'Initial Value': '初始值',
+  'Delete': '删除',
+  'Clear': '清除',
+  'Invoke...': '调用...',
+  'Remove...': '移除...',
+  'Set to null': '设置为 null',
+  'Default value for this field': '字段默认值',
+  'Default value for this property': '属性的默认值',
+
+  // MethodSigCreatorControl / PropertySigEditor.
+  'Return Type': '返回类型',
+  'Calling Conv': '调用约定',
+  '# Generics': '# 泛型参数计数',
+  'Method Parameter Types': '方法参数类型',
+  'Method VarArg Parameter Types': '方法参数类型',
+
+  // TypeSigCreatorControl — captions first, then the tooltips that spell each button out.
+  'SZ Array': 'SZ 数组',
+  'Pointer': '指针',
+  'Var': '变量',
+  'MVar': 'M 变量',
+  'FnPtr': '函数指针',
+  'GenericInst': '泛型实例',
+  'CModReqd': 'C 修饰符依赖',
+  'CModOpt': 'C 修饰符可选',
+  'Multidimensional Array': '多维数组',
+  'Rank': '维度',
+  'Sizes': '长度',
+  'Lower Bounds': '下标',
+  'Add a type generic variable': '添加泛型变量',
+  'Add a method generic variable': '添加一个方法的泛型变量',
+  'Add a generic instance type': '添加一个泛型实例类型',
+  'Add a function pointer': '添加函数指针',
+  'Add a required C modifier': '添加依赖的 C 修饰符',
+  'Add an optional C modifier': '添加可选的 C 修饰符',
+  'Convert type to a pointer': '转换类型为指针',
+  'Convert type to a by-reference': '将类型转换为引用',
+  'Convert type to a single-dimension, zero lower-bound array': '将类型转换为一维零下限数组',
+  'Convert type to a multidimensional array': '将类型转换为一个多维数组',
+  'Turn it into a pinned variable': '将其更改为固定变量',
+  'Type/method generic variable number': '类型/方法泛型变量数',
+  'Comma separated list of array sizes (unsigned integers)': '以逗号分隔的数组长度 (无符号整数)',
+  'Comma separated list of array lower bounds (signed integers)': '逗号分隔的数组下标列表 (有符号整数)',
+
+  // Messages the port writes itself: dnSpy has no resource for these, so they are translated here
+  // rather than quoted from a resx.
+  'Type argument {number}': '类型参数 {number}',
+  '{name} is not a generic type': '{name} 不是泛型类型',
+  'The selected method cannot be used as an accessor.': '所选方法不能用作访问器。',
+  'The item cannot be edited.': '该项无法编辑。',
+  'Loading...': '加载中...',
+  'Stopped here': '停在此处',
+  'Enter runs the submission, Shift+Enter adds a line.': 'Enter 运行提交，Shift+Enter 换行。',
 }
 
 function resolveSystemLocale(): UiLocale {

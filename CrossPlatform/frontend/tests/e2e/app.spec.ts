@@ -349,6 +349,130 @@ test.describe('the workspace shell', () => {
     await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
   })
 
+  test('creates a type, saves it and finds it again after reopening the file', async () => {
+    await openAssemblyAndNamespace()
+    await page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).click()
+
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: 'Create Type...' }).click()
+    const create = page.getByRole('dialog', { name: 'Create Type' })
+    // The namespace comes from the node the command was run on; the name is the user's to type.
+    await expect(create.getByLabel('Namespace')).toHaveValue('dnSpy.Backend.Contracts')
+    // Exact: the flags beside the box carry `SpecialName` and `RTSpecialName`, which a loose label
+    // lookup reads as a second and a third box called Name.
+    await create.getByLabel('Name', { exact: true }).fill('E2ECreated')
+    await create.getByRole('button', { name: 'OK' }).click()
+
+    await expect(page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.E2ECreated$/ })).toBeVisible()
+    await expect(page.getByText('Modified', { exact: true })).toBeVisible()
+
+    await page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Save As' }).click()
+    await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
+    expect(existsSync(savePath)).toBe(true)
+
+    // Opening again replaces the workspace with the file that was just written, so what is searched for
+    // below is read off the disk rather than out of the session that made it. The picker is native and
+    // cannot be driven from a test, so the hook the app opens assemblies through is pointed at the copy.
+    await application.evaluate((_electron, saved) => { process.env.DNSPY_E2E_ASSEMBLY = saved }, savePath)
+    await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+    await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+    await page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Search' }).click()
+    await page.getByRole('textbox', { name: 'Search assemblies' }).fill('E2ECreated')
+    await page.getByRole('button', { name: 'Search', exact: true }).last().click()
+    await expect(page.locator('.result-row').filter({ hasText: 'E2ECreated' }).first()).toBeVisible()
+  })
+
+  test('creates a method with a parameter and an attribute, then renames it with Alt+Enter', async () => {
+    await openAssemblyAndNamespace()
+    await page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ }).click()
+
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: 'Create Method...' }).click()
+    const create = page.getByRole('dialog', { name: 'Create Method' })
+    await create.getByLabel('Name', { exact: true }).fill('E2EMethod')
+
+    // A parameter belongs to the signature, so it is added there: the type comes out of the picker and
+    // the list takes the finished signature.
+    await create.getByRole('tab', { name: 'Signature' }).click()
+    const parameterTypes = create.locator('details.methodsig-section').filter({ hasText: 'Method Parameter Types' })
+    await parameterTypes.getByRole('button', { name: 'Type' }).click()
+    const typePicker = page.getByRole('dialog', { name: 'Pick a Type' })
+    // The picker opens the module it is rooted at by itself; the namespace below it is the user's call.
+    await typePicker.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
+    await typePicker.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.WorkspaceRequest$/ }).click()
+    await typePicker.getByRole('button', { name: 'OK' }).click()
+    await parameterTypes.getByRole('button', { name: 'Add', exact: true }).click()
+    await expect(parameterTypes.getByRole('option')).toHaveText('dnSpy.Backend.Contracts.WorkspaceRequest')
+
+    // The attribute goes through dnSpy's own dialog, which picks its constructor with the same picker.
+    await create.getByRole('tab', { name: 'Custom Attrs' }).click()
+    await create.getByRole('button', { name: 'Add...' }).click()
+    const attribute = page.getByRole('dialog', { name: 'Edit Custom Attribute' })
+    await attribute.getByRole('button', { name: 'Pick a Constructor' }).click()
+    const constructorPicker = page.getByRole('dialog', { name: 'Pick a Constructor' })
+    await constructorPicker.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
+    await constructorPicker.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.WorkspaceRequest$/ }).locator('.tree-expander').click()
+    await constructorPicker.locator('.tree-row[data-kind="method"]').filter({ hasText: /^\.ctor\(/ }).first().click()
+    await constructorPicker.getByRole('button', { name: 'OK' }).click()
+    // The button that opens the picker carries 'Constructor' in its own label too, so the box is named
+    // by its role rather than by the label alone.
+    await expect(attribute.getByRole('textbox', { name: 'Constructor' })).toHaveValue(/^dnSpy\.Backend\.Contracts\.WorkspaceRequest\(System\.String\)$/)
+    await attribute.getByRole('button', { name: 'OK' }).click()
+    await expect(create.getByRole('option')).toHaveText(/WorkspaceRequest/)
+    await create.getByRole('button', { name: 'OK' }).click()
+
+    const created = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^E2EMethod\(/ })
+    await expect(created).toBeVisible()
+    await expect(page.getByText('Modified', { exact: true })).toBeVisible()
+
+    // Alt+Enter is the settings command, and the method it was run on is the one the dialog opens.
+    await page.keyboard.press('Alt+Enter')
+    const edit = page.getByRole('dialog', { name: 'Edit Method' })
+    await expect(edit.getByLabel('Name', { exact: true })).toHaveValue('E2EMethod')
+    await edit.getByLabel('Name', { exact: true }).fill('E2EMethodRenamed')
+    await edit.getByRole('button', { name: 'OK' }).click()
+    await expect(page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^E2EMethodRenamed\(/ })).toBeVisible()
+
+    // Both edits are undone again, which is also what lets the app be closed: a workspace that is still
+    // modified asks whether to discard it, and that question is a native window this test cannot answer.
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect(page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^E2EMethod\(/ })).toBeVisible()
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
+  })
+
+  test('closes only the topmost dialog when Escape is pressed', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.locator('.tree-expander').click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\)$/ }).click()
+    await page.keyboard.press('Alt+Enter')
+    const method = page.getByRole('dialog', { name: 'Edit Method' })
+    await expect(method).toBeVisible()
+
+    // Three deep: the method's window, the attribute row's window, and the picker the row opens.
+    await method.getByRole('tab', { name: 'Custom Attrs' }).click()
+    await method.getByRole('button', { name: 'Add...' }).click()
+    const attribute = page.getByRole('dialog', { name: 'Edit Custom Attribute' })
+    await attribute.getByRole('button', { name: 'Pick a Constructor' }).click()
+    const picker = page.getByRole('dialog', { name: 'Pick a Constructor' })
+    await expect(picker).toBeVisible()
+
+    await page.keyboard.press('Escape')
+    await expect(picker).not.toBeVisible()
+    await expect(attribute).toBeVisible()
+    await expect(method).toBeVisible()
+
+    await page.keyboard.press('Escape')
+    await expect(attribute).not.toBeVisible()
+    await expect(method).toBeVisible()
+
+    await page.keyboard.press('Escape')
+    await expect(method).not.toBeVisible()
+  })
+
   test('toggles a line breakpoint by clicking the editor gutter', async () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })

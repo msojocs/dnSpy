@@ -15,8 +15,10 @@ export interface MethodOverrideDraft {
 }
 
 export const methodOverrideDraft = (dto: MethodOverrideDto): MethodOverrideDraft => ({
-  methodBody: dto.methodBody,
-  methodDeclaration: dto.methodDeclaration,
+  // A row the backend has half of arrives with a null where the other half is, and a draft says the
+  // same thing with undefined.
+  methodBody: dto.methodBody ?? undefined,
+  methodDeclaration: dto.methodDeclaration ?? undefined,
 })
 
 /** Only ever called on a row that has been accepted, which is why a missing declaration is an error

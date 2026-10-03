@@ -62,4 +62,15 @@ describe('event options', () => {
     expect(draft.invokeMethod).toBeUndefined()
     expect(draft.removeMethod).toBeUndefined()
   })
+
+  it('reads an accessor the backend has none of as nothing rather than as a null', () => {
+    // An event with no accessors at all comes over the wire with a null in each of the three fields,
+    // where the dialog's rows expect there to be nothing.
+    const wire = (json: string): EventOptionsDto => JSON.parse(json) as EventOptionsDto
+    const draft = eventOptionsDraft(wire('{"attributes":0,"name":"Changed","eventType":null,"addMethod":null,"invokeMethod":null,"removeMethod":null,"otherMethods":[],"customAttributes":[],"ownerGenericParameterCount":0}'))
+    expect(draft.eventType).toBeUndefined()
+    expect(draft.addMethod).toBeUndefined()
+    expect(draft.invokeMethod).toBeUndefined()
+    expect(draft.removeMethod).toBeUndefined()
+  })
 })

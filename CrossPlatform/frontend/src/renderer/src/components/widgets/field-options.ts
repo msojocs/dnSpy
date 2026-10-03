@@ -124,7 +124,7 @@ export const fieldOptionsDraft = (dto: FieldOptionsDto): FieldOptionsDraft => ({
   // A field the backend had nothing for arrives as a null, and a draft says "nothing" with undefined: the
   // two mean the same thing here, and only one of them is what the editors are written against.
   fieldSig: dto.fieldSig ?? undefined,
-  fieldOffset: dto.fieldOffset === undefined ? '' : formatNumberText(dto.fieldOffset),
+  fieldOffset: dto.fieldOffset === undefined || dto.fieldOffset === null ? '' : formatNumberText(dto.fieldOffset),
   marshalType: dto.marshalType ?? undefined,
   // The bit and the bytes are read together: a row whose attributes say HasFieldRVA but that carries no
   // bytes has no initial value to show, and one that carries the bytes has one whether or not the bit is

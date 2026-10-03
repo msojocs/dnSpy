@@ -45,9 +45,11 @@ export const eventOptionsDraft = (dto: EventOptionsDto): EventOptionsDraft => ({
   attributes: dto.attributes,
   name: dto.name,
   eventType: dto.eventType ?? undefined,
-  addMethod: dto.addMethod,
-  invokeMethod: dto.invokeMethod,
-  removeMethod: dto.removeMethod,
+  // The three accessors are what the backend has nothing for until the event declares them; a null off
+  // the wire is the same as an absent one, which is what a draft says nothing with.
+  addMethod: dto.addMethod ?? undefined,
+  invokeMethod: dto.invokeMethod ?? undefined,
+  removeMethod: dto.removeMethod ?? undefined,
   otherMethods: dto.otherMethods ?? [],
   customAttributes: (dto.customAttributes ?? []).map(customAttributeDraft),
 })

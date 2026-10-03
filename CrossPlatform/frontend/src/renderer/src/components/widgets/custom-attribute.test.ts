@@ -85,6 +85,12 @@ describe('customAttributeDto', () => {
   it('refuses a draft that could not be written', () => {
     expect(() => customAttributeDto(newCustomAttribute())).toThrow('A custom attribute needs a constructor.')
   })
+
+  it('reads a constructor the row has none of as nothing rather than as a null', () => {
+    // The dialog opens a row with no constructor at all, and that is how the backend sends one back.
+    const wire = (json: string): CustomAttributeDto => JSON.parse(json) as CustomAttributeDto
+    expect(customAttributeDraft(wire('{"constructor":null,"constructorArguments":[],"namedArguments":[]}')).constructor).toBeUndefined()
+  })
 })
 
 describe('newNamedArgument', () => {

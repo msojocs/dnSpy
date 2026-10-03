@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, LoaderCircle, X } from 'lucide-react'
 import type { TreeNode } from '../../../shared/protocol'
 import { useLanguage } from '../localization'
 import { NodeIcon } from './AssemblyExplorer'
-import { isTopModal, trapTabKey, useModalLayer } from './modal-stack'
+import { trapTabKey, useModalLayer } from './modal-stack'
 
 /**
  * What the picker is allowed to return, which is dnSpy's `VisibleMembersFlags`: the tree it shows is
@@ -73,7 +73,12 @@ const PickerRow = ({ node, parents, mode, children, expanded, loading, selectedI
         role="treeitem"
         aria-expanded={node.hasChildren ? open : undefined}
         aria-selected={selectedId === node.id}
-        aria-disabled={!selectable}
+        // A row is only disabled when there is nothing to be done with it at all. The containers — a
+        // module, a namespace, a type in a mode that is after its members rather than it — cannot be
+        // picked, but they can be opened, and the expander beside them is the control that does it:
+        // calling the whole row disabled takes that control with it for anything that honours the
+        // attribute, this port's own end-to-end tests included.
+        aria-disabled={!selectable && !node.hasChildren}
         title={node.description ?? label}
         onClick={() => onSelect(node, trail)}
         onDoubleClick={() => {
@@ -144,7 +149,7 @@ interface TypePickerDialogProps {
  */
 export const TypePickerDialog = ({ workspaceId, mode, title, rootNodeIds, onPick, onClose }: TypePickerDialogProps): React.JSX.Element => {
   const dialog = useRef<HTMLDivElement>(null)
-  const depth = useModalLayer()
+  const depth = useModalLayer(onClose)
   const { t } = useLanguage()
   const [roots, setRoots] = useState<TreeNode[]>([])
   const [children, setChildren] = useState<Record<string, TreeNode[]>>({})
@@ -152,17 +157,6 @@ export const TypePickerDialog = ({ workspaceId, mode, title, rootNodeIds, onPick
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [trail, setTrail] = useState<TreeNode[]>([])
   const [error, setError] = useState<string>()
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && isTopModal(depth)) {
-        event.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [depth, onClose])
 
   // A picker can be dismissed while a load is in flight — the user closes it or picks something —
   // and the response must not land in a dialog that is on its way out.

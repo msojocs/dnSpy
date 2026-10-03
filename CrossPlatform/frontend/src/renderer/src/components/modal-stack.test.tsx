@@ -1,23 +1,15 @@
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isTopModal, trapTabKey, useModalLayer } from './modal-stack'
+import { trapTabKey, useModalLayer } from './modal-stack'
 
 /**
  * Stands in for an option dialog: claims a layer, and closes on Escape only while it is the innermost
- * one — exactly the guard the real dialogs use, with their `window` listener registered in mount
+ * one — the guard the real dialogs get from the hook, which registers its `window` listener in mount
  * order so the outer one would fire first without it.
  */
 const Layer = ({ name, onClose }: { name: string; onClose(): void }): React.JSX.Element => {
-  const depth = useModalLayer()
-  useEffect(() => {
-    const handler = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && isTopModal(depth))
-        onClose()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [depth, onClose])
+  const depth = useModalLayer(onClose)
   return <div data-testid={`layer-${name}`} data-depth={depth} />
 }
 

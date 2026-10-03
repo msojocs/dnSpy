@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { useLanguage } from '../localization'
-import { isTopModal, trapTabKey, useModalLayer } from './modal-stack'
+import { trapTabKey, useModalLayer } from './modal-stack'
 
 export interface OptionsTab {
   /** The tab's caption, which is the resource string the WPF dialog's `TabItem` carries. */
@@ -43,22 +43,11 @@ interface OptionsShellProps {
  */
 export const OptionsShell = ({ title, tabs, onAccept, onClose, onReset, invalid = false, busy = false, error, initialTab = 0, hideTabStrip = false, className }: OptionsShellProps): React.JSX.Element => {
   const dialog = useRef<HTMLDivElement>(null)
-  const depth = useModalLayer()
+  // Only the innermost dialog answers Escape: a tab list opens pickers and item dialogs over this one,
+  // and Escape belongs to whichever of them is on top.
+  const depth = useModalLayer(onClose)
   const { t } = useLanguage()
   const [tab, setTab] = useState(initialTab)
-
-  useEffect(() => {
-    const handler = (event: KeyboardEvent): void => {
-      // Only the innermost dialog answers Escape: a tab list opens pickers and item dialogs over this
-      // one, and Escape belongs to whichever of them is on top.
-      if (event.key === 'Escape' && isTopModal(depth)) {
-        event.preventDefault()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [depth, onClose])
 
   return (
     <div

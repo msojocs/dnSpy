@@ -48,4 +48,14 @@ describe('methodOverrideDto', () => {
     const dto: MethodOverrideDto = { methodBody: reference('Run'), methodDeclaration: reference('RunBase'), display: 'text' }
     expect(methodOverrideDraft(dto)).toEqual({ methodBody: dto.methodBody, methodDeclaration: dto.methodDeclaration })
   })
+
+  it('reads a half the backend has none of as nothing rather than as a null', () => {
+    // A row being added overrides the method the dialog belongs to, which only the backend knows, so
+    // that half goes over the wire as a null.
+    const wire = (json: string): MethodOverrideDto => JSON.parse(json) as MethodOverrideDto
+    const draft = methodOverrideDraft(wire('{"methodBody":null,"methodDeclaration":null,"display":"(not set)"}'))
+    expect(draft.methodBody).toBeUndefined()
+    expect(draft.methodDeclaration).toBeUndefined()
+    expect(methodOverrideLabel(draft)).toBe('(not set)')
+  })
 })

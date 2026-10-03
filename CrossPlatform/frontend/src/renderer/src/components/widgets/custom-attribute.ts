@@ -15,7 +15,7 @@ export interface CustomAttributeDraft {
 }
 
 export const customAttributeDraft = (dto: CustomAttributeDto): CustomAttributeDraft => ({
-  constructor: dto.constructor,
+  constructor: dto.constructor ?? undefined,
   constructorArguments: dto.constructorArguments,
   namedArguments: dto.namedArguments,
 })
