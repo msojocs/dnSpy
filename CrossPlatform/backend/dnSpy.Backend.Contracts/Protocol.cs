@@ -31,6 +31,9 @@ public static class RpcMethods {
 	public const string EditReplaceMethodBody = "edit/replaceMethodBody";
 	public const string EditReplaceMethodBodyWithStub = "edit/replaceMethodBodyWithStub";
 	public const string EditReplaceResource = "edit/replaceResource";
+	public const string EditGetOptions = "edit/getOptions";
+	public const string EditCreate = "edit/create";
+	public const string EditSetOptions = "edit/setOptions";
 	public const string EditCommit = "edit/commit";
 	public const string EditRollback = "edit/rollback";
 	public const string EditUndo = "edit/undo";
@@ -256,6 +259,350 @@ public sealed record EditTransactionRequest(string WorkspaceId, string Transacti
 public sealed record EditCommitResponse(int Version, string StateId, IReadOnlyList<string> ChangedNodeIds, bool CanUndo, bool CanRedo);
 
 public sealed record SaveModuleRequest(string WorkspaceId, string ModuleId, string DestinationPath, bool Overwrite = false);
+
+// ---------------------------------------------------------------------------------------------
+// AsmEditor option DTOs.
+//
+// These mirror dnSpy's `*Options` classes (Extensions/dnSpy.AsmEditor/{Types,Method,Field,Property,
+// Event}/*DefOptions.cs) field for field, so each codec can be read against the WPF original. Two
+// conventions run through all of them:
+//
+//  * Enum-valued fields travel as the raw dnlib integer. The WPF dialogs render them from named-flag
+//    lists built off the enums, and this port does the same, so neither side has to agree on the
+//    casing of an enum member's name.
+//  * `Display` fields are filled in by the backend. They are what the dialogs show in read-only
+//    previews and list rows — the same strings WPF's `FullName`-style properties produce — so the
+//    client never formats a type or a signature itself.
+// ---------------------------------------------------------------------------------------------
+
+/// <summary>
+/// A type as it is written into metadata: the assembly that declares it, its namespace, and its name.
+/// An empty <paramref name="Scope"/> means "this module"; the codecs resolve that against the module
+/// being edited before falling back to a reference.
+/// </summary>
+/// <remarks>
+/// <paramref name="NodeId"/> is set when the type was picked out of the assembly explorer, and is what
+/// the codecs try first: it names a type the workspace has already resolved, including one that lives in
+/// a referenced assembly and would be expensive — or impossible — to look up by name. The three name
+/// fields are the fallback and are always filled in, so the name alone is enough to rebuild the type.
+/// </remarks>
+public sealed record TypeRefDto(
+	string Scope,
+	string Namespace,
+	string Name,
+	string? NodeId = null);
+
+/// <summary>
+/// A method used by something other than itself — a property or event accessor. A node id names the row
+/// the user picked and is preferred; the token is what the model itself can always answer with, which is
+/// what lets a value the server produced be read back without asking the workspace again. A method that
+/// has neither — one created by this very transaction and never assigned a row — is matched by name,
+/// which two methods of one type can share, so it is only the last resort.
+/// </summary>
+public sealed record AccessorRefDto(
+	string Name,
+	uint Token = 0,
+	string? NodeId = null,
+	string Display = "");
+
+public static class TypeSigKinds {
+	public const string Type = "type";
+	public const string GenericInst = "genericInst";
+	public const string SzArray = "szarray";
+	public const string Array = "array";
+	public const string Pointer = "ptr";
+	public const string ByRef = "byref";
+	public const string Pinned = "pinned";
+	public const string CModReqd = "cmodreqd";
+	public const string CModOpt = "cmodopt";
+	public const string GenericVar = "genericvar";
+	public const string GenericMVar = "genericmvar";
+	public const string FnPtr = "fnptr";
+}
+
+/// <summary>
+/// One node of a type signature, covering everything dnSpy's <c>TypeSigCreator</c> can build. The
+/// wrapper kinds — <c>szarray</c>, <c>ptr</c>, <c>byref</c>, <c>pinned</c>, <c>array</c> — carry the
+/// type they wrap in <paramref name="Element"/>; the two custom-modifier kinds put the modifier in
+/// <paramref name="Modifier"/> and the type it modifies in <paramref name="Element"/>, which is the
+/// order dnlib's <c>CModOptSig</c>/<c>CModReqdSig</c> take them in.
+/// </summary>
+public sealed record TypeSigDto(
+	string Kind,
+	TypeRefDto? Type = null,
+	bool ValueType = false,
+	TypeSigDto? Element = null,
+	TypeSigDto? Modifier = null,
+	IReadOnlyList<TypeSigDto>? Arguments = null,
+	int Rank = 0,
+	IReadOnlyList<int>? Sizes = null,
+	IReadOnlyList<int>? LowerBounds = null,
+	int GenericParameterNumber = 0,
+	MethodSigDto? FunctionPointer = null,
+	string Display = "");
+
+/// <summary>
+/// A method signature. <paramref name="CallingConvention"/> is dnlib's <c>CallingConvention</c> as a
+/// raw value: the low nibble is the calling convention and bits 4-6 carry Generic/HasThis/ExplicitThis,
+/// which is exactly how <c>MethodSigCreatorVM</c> models it.
+/// </summary>
+public sealed record MethodSigDto(
+	int CallingConvention,
+	TypeSigDto ReturnType,
+	IReadOnlyList<TypeSigDto> Parameters,
+	IReadOnlyList<TypeSigDto>? VarArgParameters = null,
+	int GenericParameterCount = 0,
+	string Display = "");
+
+/// <summary>A property signature: dnlib's <c>PropertySig</c>, whose return type is the property's type.</summary>
+public sealed record PropertySigDto(
+	bool HasThis,
+	TypeSigDto PropertyType,
+	IReadOnlyList<TypeSigDto> Parameters,
+	string Display = "");
+
+/// <summary>A call target: the declaring type, the name, and the signature, which together identify it.</summary>
+public sealed record MethodRefDto(
+	TypeSigDto DeclaringType,
+	string Name,
+	MethodSigDto Signature,
+	string Display = "");
+
+public static class CaValueKinds {
+	public const string Null = "null";
+	public const string Primitive = "primitive";
+	public const string String = "string";
+	public const string Type = "type";
+	public const string Array = "array";
+	public const string Struct = "struct";
+}
+
+/// <summary>
+/// A custom-attribute argument value. dnlib types the value by the argument's own <c>Type</c>, so a
+/// primitive only has to carry its digits — <paramref name="Primitive"/> holds them as invariant
+/// text, which keeps every numeric width intact through JSON.
+/// </summary>
+/// <param name="ElementType">
+/// For a <see cref="CaValueKinds.Primitive"/> value, dnlib's <c>ElementType</c> of the boxed value
+/// itself. An enum argument is declared as the enum but holds a primitive, and a boxed one is declared
+/// as <c>System.Object</c> and holds whatever was boxed, so the declared type alone does not say how to
+/// read the digits back.
+/// </param>
+public sealed record CaValueDto(
+	string Kind,
+	string? Primitive = null,
+	string? Text = null,
+	TypeSigDto? ReferencedType = null,
+	IReadOnlyList<CaArgumentDto>? Elements = null,
+	int ElementType = 0);
+
+public sealed record CaArgumentDto(TypeSigDto Type, CaValueDto Value);
+
+public sealed record CaNamedArgumentDto(bool IsField, string Name, CaArgumentDto Argument);
+
+/// <summary>
+/// A custom attribute. The constructor's signature decides how many constructor arguments there are
+/// and what type each one is — dnSpy's <c>CustomAttributeVM</c> rebuilds that list whenever the
+/// constructor changes — so only the values are carried.
+/// </summary>
+public sealed record CustomAttributeDto(
+	MethodRefDto Constructor,
+	IReadOnlyList<CaArgumentDto> ConstructorArguments,
+	IReadOnlyList<CaNamedArgumentDto> NamedArguments,
+	string Display = "");
+
+/// <summary>A Constant row. <paramref name="ElementType"/> is dnlib's <c>ElementType</c> as an int.</summary>
+public sealed record ConstantDto(int ElementType, string? Value, string Display = "");
+
+public sealed record GenericParamConstraintDto(
+	TypeSigDto Constraint,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	string Display = "");
+
+public sealed record GenericParamDto(
+	int Number,
+	int Flags,
+	string Name,
+	TypeSigDto? Kind,
+	IReadOnlyList<GenericParamConstraintDto> Constraints,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	string Display = "");
+
+/// <summary>
+/// A security attribute as a <c>DeclSecurity</c> row stores it. Unlike a custom attribute it has no
+/// constructor: the type is the attribute itself and every value is a named field or property.
+/// </summary>
+public sealed record SecurityAttributeDto(
+	TypeSigDto AttributeType,
+	IReadOnlyList<CaNamedArgumentDto> NamedArguments,
+	string Display = "");
+
+/// <summary>A DeclSecurity row: the action plus either the parsed attributes or the raw .NET 1.x XML.</summary>
+public sealed record DeclSecurityDto(
+	int Action,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	IReadOnlyList<SecurityAttributeDto> SecurityAttributes,
+	string? V1XmlString = null,
+	string Display = "");
+
+public sealed record ImplMapDto(
+	int Attributes,
+	string Name,
+	string? ModuleName,
+	string Display = "");
+
+/// <summary>
+/// A MarshalType. <paramref name="NativeType"/> is dnlib's <c>NativeType</c> and picks which of the
+/// payload fields apply — the same eight cases <c>MarshalTypeVM</c> switches over. A null
+/// <paramref name="Size"/>, <paramref name="ParamNumber"/>, <paramref name="NumberOfElements"/>,
+/// <paramref name="Flags"/>, <paramref name="IidParamIndex"/> or <paramref name="VariantType"/> is the
+/// field's own "not present" state, which dnlib reports through the matching <c>Is…Valid</c> property.
+/// </summary>
+public sealed record MarshalTypeDto(
+	int NativeType,
+	string? RawData = null,
+	int? Size = null,
+	int? VariantType = null,
+	TypeSigDto? UserDefinedSubType = null,
+	int? ElementType = null,
+	int? ParamNumber = null,
+	int? NumberOfElements = null,
+	int? Flags = null,
+	string? Guid = null,
+	string? NativeTypeName = null,
+	TypeSigDto? CustomMarshaler = null,
+	string? Cookie = null,
+	int? IidParamIndex = null,
+	string Display = "");
+
+public sealed record MethodOverrideDto(
+	MethodRefDto MethodBody,
+	MethodRefDto MethodDeclaration,
+	string Display = "");
+
+public sealed record ParamDefDto(
+	string Name,
+	int Sequence,
+	int Attributes,
+	ConstantDto? Constant,
+	MarshalTypeDto? MarshalType,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	string Display = "");
+
+public sealed record TypeDefOrRefAndCaDto(
+	TypeSigDto TypeDefOrRef,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	string Display = "");
+
+public static class NodeOptionKinds {
+	public const string Type = "type";
+	public const string Method = "method";
+	public const string Field = "field";
+	public const string Property = "property";
+	public const string Event = "event";
+}
+
+public sealed record TypeOptionsDto(
+	int Attributes,
+	string Namespace,
+	string Name,
+	uint? PackingSize,
+	uint? ClassSize,
+	TypeSigDto? BaseType,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	IReadOnlyList<DeclSecurityDto> DeclSecurities,
+	IReadOnlyList<GenericParamDto> GenericParameters,
+	IReadOnlyList<TypeDefOrRefAndCaDto> Interfaces);
+
+public sealed record MethodOptionsDto(
+	int ImplAttributes,
+	int Attributes,
+	int SemanticsAttributes,
+	string Name,
+	MethodSigDto? MethodSig,
+	ImplMapDto? ImplMap,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	IReadOnlyList<DeclSecurityDto> DeclSecurities,
+	IReadOnlyList<ParamDefDto> ParamDefs,
+	IReadOnlyList<GenericParamDto> GenericParameters,
+	IReadOnlyList<MethodOverrideDto> Overrides,
+	uint Rva = 0);
+
+public sealed record FieldOptionsDto(
+	int Attributes,
+	string Name,
+	TypeSigDto? FieldSig,
+	uint? FieldOffset,
+	MarshalTypeDto? MarshalType,
+	string? InitialValue,
+	ImplMapDto? ImplMap,
+	ConstantDto? Constant,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes,
+	uint Rva = 0);
+
+public sealed record PropertyOptionsDto(
+	int Attributes,
+	string Name,
+	PropertySigDto? PropertySig,
+	ConstantDto? Constant,
+	IReadOnlyList<AccessorRefDto> GetMethods,
+	IReadOnlyList<AccessorRefDto> SetMethods,
+	IReadOnlyList<AccessorRefDto> OtherMethods,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes);
+
+public sealed record EventOptionsDto(
+	int Attributes,
+	string Name,
+	TypeSigDto? EventType,
+	AccessorRefDto? AddMethod,
+	AccessorRefDto? InvokeMethod,
+	AccessorRefDto? RemoveMethod,
+	IReadOnlyList<AccessorRefDto> OtherMethods,
+	IReadOnlyList<CustomAttributeDto> CustomAttributes);
+
+/// <summary>
+/// Every dialog's model, discriminated by <paramref name="Kind"/>. Only the member matching the kind
+/// is set; the others are null.
+/// </summary>
+public sealed record NodeOptionsDto(
+	string Kind,
+	TypeOptionsDto? Type = null,
+	MethodOptionsDto? Method = null,
+	FieldOptionsDto? Field = null,
+	PropertyOptionsDto? Property = null,
+	EventOptionsDto? Event = null)
+{
+	public static NodeOptionsDto OfType(TypeOptionsDto options) => new(NodeOptionKinds.Type, Type: options);
+	public static NodeOptionsDto OfMethod(MethodOptionsDto options) => new(NodeOptionKinds.Method, Method: options);
+	public static NodeOptionsDto OfField(FieldOptionsDto options) => new(NodeOptionKinds.Field, Field: options);
+	public static NodeOptionsDto OfProperty(PropertyOptionsDto options) => new(NodeOptionKinds.Property, Property: options);
+	public static NodeOptionsDto OfEvent(EventOptionsDto options) => new(NodeOptionKinds.Event, Event: options);
+}
+
+public sealed record GetNodeOptionsRequest(
+	string WorkspaceId,
+	string Kind,
+	string? NodeId = null,
+	string? OwnerNodeId = null,
+	bool IsNew = false);
+
+public sealed record CreateNodeRequest(
+	string WorkspaceId,
+	string TransactionId,
+	string OwnerNodeId,
+	NodeOptionsDto Options);
+
+public sealed record SetNodeOptionsRequest(
+	string WorkspaceId,
+	string TransactionId,
+	string NodeId,
+	NodeOptionsDto Options);
+
+/// <summary>
+/// The node a create- or edit-command was queued for, and the name it will have. Sent back by the
+/// queue calls so the client can reveal the node it just created once the commit lands.
+/// </summary>
+public sealed record EditNodeResponse(string NodeId, string Label, string Kind);
 
 public sealed record SaveModuleResponse(string Path, long Length, string Sha256);
 
