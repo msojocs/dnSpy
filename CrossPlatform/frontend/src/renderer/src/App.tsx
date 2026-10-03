@@ -146,7 +146,7 @@ const DELETABLE_KINDS = ['type', 'method', 'field', 'property', 'event', 'namesp
 
 // The node kinds whose Edit command — and Alt+Enter with it — opens a dialog: every one dnSpy has a
 // settings command for that the port has built the window of.
-const EDITABLE_KINDS = new Set<string>(['method', 'field', 'property', 'event'])
+const EDITABLE_KINDS = new Set<string>(['type', 'method', 'field', 'property', 'event'])
 const isEditableKind = (kind: string): kind is CreatedKind => EDITABLE_KINDS.has(kind)
 
 const loadTheme = (): ThemeName => {

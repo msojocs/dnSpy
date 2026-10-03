@@ -230,6 +230,83 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 	}
 
 	[Fact]
+	public async Task EditingATypeWritesTheWholeModelOverItAndUndoRestoresWhatItHeld() {
+		var workspaceId = await OpenContractsAssemblyAsync();
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
+		var before = await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, type.Id),
+			TestContext.Current.CancellationToken);
+
+		// Every page of the window at once: the name, the layout, an interface, a generic parameter and a
+		// security row. The collections are rebuilt rather than merged, so one write has to carry them all.
+		var edited = before.Type! with {
+			Name = "Renamed",
+			PackingSize = 8,
+			ClassSize = 0x40,
+			Interfaces = [new TypeDefOrRefAndCaDto(new TypeSigDto("type", new TypeRefDto("System.Runtime", "System", "IDisposable"), ValueType: false), [])],
+			GenericParameters = [new GenericParamDto(0, 0, "T", null, [], [])],
+			DeclSecurities = [new DeclSecurityDto(2, [], [])],
+		};
+		await WriteOptionsAsync(workspaceId, type.Id, NodeOptionsDto.OfType(edited));
+
+		// The tree says so where the type is listed, which is the namespace the name files it under.
+		var @namespace = await NamespaceOfAsync(workspaceId, type);
+		var renamed = Assert.Single(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == type.Id);
+		Assert.Equal("dnSpy.Backend.Contracts.Renamed", renamed.Label);
+
+		var after = Assert.IsType<TypeOptionsDto>((await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, type.Id), TestContext.Current.CancellationToken)).Type);
+		Assert.Equal(8u, after.PackingSize);
+		Assert.Equal(0x40u, after.ClassSize);
+		Assert.Equal("System.IDisposable", Assert.Single(after.Interfaces).Display);
+		Assert.Equal("T", Assert.Single(after.GenericParameters).Name);
+		Assert.Equal(2, Assert.Single(after.DeclSecurities).Action);
+		Assert.Equal(before.Type?.BaseType?.Display, after.BaseType?.Display);
+
+		await manager.UndoAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken);
+		var restored = Assert.IsType<TypeOptionsDto>((await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, type.Id), TestContext.Current.CancellationToken)).Type);
+		Assert.Equal("RpcException", restored.Name);
+		Assert.Null(restored.PackingSize);
+		Assert.Empty(restored.Interfaces);
+		Assert.Empty(restored.GenericParameters);
+		Assert.Empty(restored.DeclSecurities);
+	}
+
+	[Fact]
+	public async Task ATypeEditIsInTheFileThatIsSavedAndReopened() {
+		var workspaceId = await OpenContractsAssemblyAsync();
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
+		var before = await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, type.Id),
+			TestContext.Current.CancellationToken);
+		await WriteOptionsAsync(workspaceId, type.Id, NodeOptionsDto.OfType(before.Type! with {
+			Name = "Renamed",
+			PackingSize = 8,
+			ClassSize = 0x40,
+			GenericParameters = [new GenericParamDto(0, 0, "T", null, [], [])],
+		}));
+		var moduleId = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes).Id;
+
+		var destination = Path.Combine(Path.GetTempPath(), $"dnspy-edited-type-{Guid.NewGuid():N}.dll");
+		try {
+			await manager.SaveModuleAsync(new SaveModuleRequest(workspaceId, moduleId, destination), TestContext.Current.CancellationToken);
+
+			// The row's own fields and its generic parameter have to be in the file, not merely in the tree:
+			// a layout and a parameter list are metadata rows of their own, and it is the file that says
+			// whether they were written.
+			using var saved = ModuleDefMD.Load(destination);
+			var savedType = saved.Find("dnSpy.Backend.Contracts.Renamed", isReflectionName: true);
+			Assert.Equal((ushort?)8, savedType.ClassLayout?.PackingSize);
+			Assert.Equal((uint?)0x40, savedType.ClassLayout?.ClassSize);
+			Assert.Equal("T", Assert.Single(savedType.GenericParameters).Name);
+		}
+		finally {
+			File.Delete(destination);
+		}
+	}
+
+	[Fact]
 	public async Task AnEditWithTheWrongKindOfOptionsIsRejected() {
 		var workspaceId = await OpenContractsAssemblyAsync();
 		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
@@ -242,6 +319,16 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 			TestContext.Current.CancellationToken));
 		Assert.Equal(ErrorCodes.EditValidationFailed, exception.Code);
 		await manager.RollbackEditAsync(new EditTransactionRequest(workspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
+	}
+
+	/// <summary>Queues an edit of the node's options and commits it, which is what accepting one of the
+	/// dialogs does.</summary>
+	async Task WriteOptionsAsync(string workspaceId, string nodeId, NodeOptionsDto options) {
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(workspaceId), TestContext.Current.CancellationToken);
+		await manager.QueueSetOptionsAsync(
+			new SetNodeOptionsRequest(workspaceId, transaction.TransactionId, nodeId, options),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(new EditTransactionRequest(workspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
 	}
 
 	async Task<EditNodeResponse> CreateAsync(string workspaceId, string ownerNodeId, NodeOptionsDto options, bool nested = false) {

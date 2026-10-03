@@ -157,7 +157,7 @@ const EDIT_ENTRIES: EditEntry[] = [
   // 5000 — AsmEditor: Settings
   { group: GROUP_SETTINGS, order: 0, label: (ctx) => ctx.t('Edit Assembly...'), shortcut: 'Alt+Enter', visible: kindIs('module') },
   { group: GROUP_SETTINGS, order: 10, label: (ctx) => ctx.t('Edit Module...'), shortcut: 'Alt+Enter', visible: kindIs('module') },
-  { group: GROUP_SETTINGS, order: 20, label: (ctx) => ctx.t('Edit Type...'), shortcut: 'Alt+Enter', visible: kindIs('type') },
+  { group: GROUP_SETTINGS, order: 20, label: (ctx) => ctx.t('Edit Type...'), shortcut: 'Alt+Enter', visible: kindIs('type'), action: (ctx) => ctx.onEditNode() },
   { group: GROUP_SETTINGS, order: 30, label: (ctx) => ctx.t('Edit Method...'), shortcut: 'Alt+Enter', visible: kindIs('method'), action: (ctx) => ctx.onEditNode() },
   { group: GROUP_SETTINGS, order: 40, label: (ctx) => ctx.t('Edit Method ({language})...', { language: 'C#' }), visible: kindIs('method') },
   { group: GROUP_SETTINGS, order: 41, label: (ctx) => ctx.t('Edit Assembly Attributes ({language})...', { language: 'C#' }), visible: kindIs('module') },

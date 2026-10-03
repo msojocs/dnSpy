@@ -2,6 +2,10 @@ import { useState } from 'react'
 import type { TypeOptionsDto } from '../../../shared/protocol'
 import { useLanguage } from '../localization'
 import { OptionsShell } from './OptionsShell'
+import { CustomAttributeListEditor } from './widgets/CustomAttributeListEditor'
+import { DeclSecurityListEditor } from './widgets/DeclSecurityListEditor'
+import { GenericParamListEditor } from './widgets/GenericParamListEditor'
+import { TypeDefOrRefAndCAsListEditor } from './widgets/TypeDefOrRefAndCAsListEditor'
 import { TypeSigEditor, type TypeSigEditorOptions } from './widgets/TypeSigEditor'
 import { applyTypeKind, hasTypeFlag, initializeTypeKind, TYPE_CUSTOM_FORMATS, TYPE_FLAGS, TYPE_KINDS, TYPE_LAYOUTS, TYPE_SEMANTICS, TYPE_STRING_FORMATS, typeCustomFormatOf, typeLayoutOf, typeOptionsDraft, typeOptionsDto, typeOptionsError, typeSemanticsOf, typeStringFormatOf, typeVisibilityOf, typeVisibilities, withTypeCustomFormat, withTypeFlag, withTypeLayout, withTypeSemantics, withTypeStringFormat, withTypeVisibility, type TypeOptionsDraft } from './widgets/type-options'
 
@@ -138,6 +142,53 @@ export const TypeOptionsDialog = ({ workspaceId, value, isNew, nested = false, f
                 options={signatureOptions}
               />
             </div>
+          ),
+        },
+        {
+          label: 'Generic Params',
+          content: (
+            <GenericParamListEditor
+              workspaceId={workspaceId}
+              items={draft.genericParameters}
+              onChange={(genericParameters) => { edit({ genericParameters }) }}
+              options={signatureOptions}
+            />
+          ),
+        },
+        {
+          // An interface is the same row a generic parameter's constraint is — a type with attributes on
+          // it — which is the one control dnSpy serves both with, titles and all.
+          label: 'Interfaces',
+          content: (
+            <TypeDefOrRefAndCAsListEditor
+              workspaceId={workspaceId}
+              items={draft.interfaces}
+              onChange={(interfaces) => { edit({ interfaces }) }}
+              options={signatureOptions}
+              editTitle="Edit Interface Impl"
+              createTitle="Create Interface Impl"
+              ariaLabel={t('Interfaces')}
+            />
+          ),
+        },
+        {
+          label: 'Custom Attrs',
+          content: (
+            <CustomAttributeListEditor
+              workspaceId={workspaceId}
+              items={draft.customAttributes}
+              onChange={(customAttributes) => { edit({ customAttributes }) }}
+            />
+          ),
+        },
+        {
+          label: 'Sec Decls',
+          content: (
+            <DeclSecurityListEditor
+              workspaceId={workspaceId}
+              items={draft.declSecurities}
+              onChange={(declSecurities) => { edit({ declSecurities }) }}
+            />
           ),
         },
       ]}

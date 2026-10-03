@@ -741,12 +741,14 @@ describe('MenuBar', () => {
   it('lists the Edit commands the port has not implemented yet as disabled', () => {
     renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest' })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    // Delete, the type's two create commands and the four member dialogs are wired up; nothing opens
-    // this window's own editor yet.
+    // Delete, the type's two create commands, its own editor and the four member dialogs are wired up;
+    // what is left of the group is the C#-scripting commands and the dependency and reference searches.
     expect(screen.getByRole('menuitem', { name: /^Delete HelloRequest/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Create Type\.\.\./ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Create Nested Type\.\.\./ })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Edit Class \(C#\)\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Find String References in Module/ })).toBeDisabled()
     expect(screen.queryByRole('menuitem', { name: /^Edit Method Body/ })).not.toBeInTheDocument()
   })
 
@@ -772,6 +774,7 @@ describe('MenuBar', () => {
     }
 
     const edits: { kind: string, label: string }[] = [
+      { kind: 'type', label: 'Edit Type...' },
       { kind: 'method', label: 'Edit Method...' },
       { kind: 'field', label: 'Edit Field...' },
       { kind: 'property', label: 'Edit Property...' },

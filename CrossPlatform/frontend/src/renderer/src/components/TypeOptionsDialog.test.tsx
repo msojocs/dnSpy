@@ -60,12 +60,18 @@ const accept = (): void => { fireEvent.click(screen.getByRole('button', { name: 
 const okButton = (): HTMLElement => screen.getByRole('button', { name: 'OK' })
 const kindOf = (label: string): string => TYPE_KINDS.find((entry) => entry.label === label)!.value.toString()
 
+/** The one row a page's list holds, on the page opened first — every page of the window holds a list of
+ * its own, and only the page being looked at is drawn. */
+const rowOn = (tab: string): HTMLElement => {
+  open(tab)
+  return screen.getByRole('option')
+}
+
 describe('TypeOptionsDialog', () => {
-  it('draws the pages the port has of dnSpy\'s type window, in its order', () => {
-    // The window's other four pages — Generic Params, Interfaces, Custom Attrs and Sec Decls — arrive
-    // with the edit path: a page whose rows cannot be written back would drop them on the way out.
+  it('draws dnSpy\'s six pages in its order', () => {
     renderDialog()
-    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Main', 'Base Type'])
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent))
+      .toEqual(['Main', 'Base Type', 'Generic Params', 'Interfaces', 'Custom Attrs', 'Sec Decls'])
   })
 
   it('titles the same window for the command that opened it', () => {
@@ -231,6 +237,59 @@ describe('TypeOptionsDialog', () => {
     expect(screen.getByText('There is already a type with that name.')).toBeTruthy()
     expect(box('Name')).toHaveValue('MyType')
     expect(okButton()).toBeEnabled()
+  })
+
+  it('shows the four collections the type holds on their own pages, and writes them back', () => {
+    const { accepted } = renderDialog(type({
+      genericParameters: [{ number: 0, flags: 0, name: 'T', constraints: [], customAttributes: [] }],
+      interfaces: [{ typeDefOrRef: { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'IDisposable' } }, customAttributes: [] }],
+      customAttributes: [{
+        constructor: { declaringType: { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'ObsoleteAttribute' } }, name: '.ctor', signature: { callingConvention: 0x20, returnType: { kind: 'empty' }, parameters: [] } },
+        constructorArguments: [],
+        namedArguments: [],
+      }],
+      declSecurities: [{ action: 2, securityAttributes: [], customAttributes: [] }],
+    }))
+
+    // One row on each page, listed under the text dnSpy's row view model gives it.
+    expect(rowOn('Generic Params')).toHaveTextContent('gparam(0) T')
+    expect(rowOn('Interfaces')).toHaveTextContent('System.IDisposable')
+    expect(rowOn('Custom Attrs')).toHaveTextContent('System.ObsoleteAttribute')
+    expect(rowOn('Sec Decls')).toHaveTextContent('Demand')
+
+    // And removing one there is what the window hands back, because the dialog rebuilds the whole list
+    // rather than merging into it — a row the user removed has to go.
+    for (const tab of ['Generic Params', 'Interfaces', 'Custom Attrs', 'Sec Decls']) {
+      open(tab)
+      fireEvent.click(screen.getByRole('option'))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
+    }
+
+    accept()
+    expect(accepted[0].genericParameters).toEqual([])
+    expect(accepted[0].interfaces).toEqual([])
+    expect(accepted[0].customAttributes).toEqual([])
+    expect(accepted[0].declSecurities).toEqual([])
+  })
+
+  it('adds a row through the page\'s own row dialogs', () => {
+    const { accepted } = renderDialog()
+
+    open('Generic Params')
+    fireEvent.click(screen.getByRole('button', { name: 'Add...' }))
+    // The row dialogs are dnSpy's, titles and all: a parameter's own window and the interface
+    // implementation one, which is the same control a constraint is edited with.
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Create Generic Parameter' })).getByRole('button', { name: 'OK' }))
+    expect(screen.getByRole('option')).toHaveTextContent('gparam(0) <<no-name>>')
+
+    open('Interfaces')
+    fireEvent.click(screen.getByRole('button', { name: 'Add...' }))
+    const picking = screen.getByRole('dialog', { name: 'Create Interface Impl' })
+    fireEvent.click(within(picking).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryAllByRole('option')).toEqual([])
+
+    accept()
+    expect(accepted[0].genericParameters).toEqual([{ number: 0, flags: 0, name: '', constraints: [], customAttributes: [] }])
   })
 
   it('keeps the model in the window when it is cancelled', () => {
