@@ -192,8 +192,8 @@ interface AppState {
   analyzeNode(node: TreeNode): Promise<AnalyzeReferencesResponse | undefined>
   renameNode(node: TreeNode, newName: string): Promise<boolean>
   /** Adds the type or member a create dialog assembled to the node that owns it, and selects the new
-   * node. Returns the created node, or undefined when the edit was refused. */
-  createNode(ownerNodeId: string, options: NodeOptionsDto): Promise<TreeNode | undefined>
+   * node. Says whether it was created; a refused one has already been reported. */
+  createNode(ownerNodeId: string, options: NodeOptionsDto): Promise<boolean>
   /** Writes an edit dialog's model over the node it was opened for. */
   applyNodeOptions(nodeId: string, options: NodeOptionsDto): Promise<boolean>
   /** Opens the tree down to a node and selects it, which is what makes a new node visible. */
@@ -622,7 +622,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   createNode: async (ownerNodeId, options) => {
     const workspaceId = get().workspaceId
     if (!workspaceId)
-      return undefined
+      return false
     set({ busy: true, error: undefined })
     let transactionId: string | undefined
     try {
@@ -634,8 +634,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       await refreshAfterEdit(get, set, committed)
       await get().revealNode(created.nodeId)
       get().appendOutput(t('Created {name}.', { name: created.label }))
-      const node = get().selectedNode
-      return node?.id === created.nodeId ? node : undefined
+      return true
     } catch (error) {
       if (transactionId) {
         try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
@@ -643,7 +642,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
       get().appendOutput(t('Create failed: {message}', { message }))
-      return undefined
+      return false
     } finally {
       set({ busy: false })
     }

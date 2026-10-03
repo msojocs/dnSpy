@@ -38,7 +38,14 @@ export interface EditMenuContext {
   onRenameNamespace(): void
   onMoveTypesToEmptyNamespace(): void
   onReplaceMethodBodyWithStub(): void
+  /** Opens the create dialog for a node of this kind, in the type the selection belongs to. */
+  onCreateMember(kind: CreatedKind): void
+  /** Opens the edit dialog for the selected node, which is also what Alt+Enter does. */
+  onEditNode(): void
 }
+
+/** The kinds a create command produces — one entry per command of dnSpy's New group. */
+export type CreatedKind = 'type' | 'method' | 'field' | 'property' | 'event'
 
 interface EditEntry {
   group: number
@@ -131,7 +138,7 @@ const EDIT_ENTRIES: EditEntry[] = [
   { group: GROUP_NEW, order: 30, label: (ctx) => ctx.t('Create NetModule...'), visible: never },
   { group: GROUP_NEW, order: 40, label: (ctx) => ctx.t('Create Type...'), visible: kindIs('type', 'namespace', 'module') },
   { group: GROUP_NEW, order: 50, label: (ctx) => ctx.t('Create Nested Type...'), visible: isMember },
-  { group: GROUP_NEW, order: 60, label: (ctx) => ctx.t('Create Method...'), visible: isMember },
+  { group: GROUP_NEW, order: 60, label: (ctx) => ctx.t('Create Method...'), visible: isMember, action: (ctx) => ctx.onCreateMember('method') },
   { group: GROUP_NEW, order: 70, label: (ctx) => ctx.t('Create Field...'), visible: isMember },
   { group: GROUP_NEW, order: 80, label: (ctx) => ctx.t('Create Property...'), visible: isMember },
   { group: GROUP_NEW, order: 90, label: (ctx) => ctx.t('Create Event...'), visible: isMember },
@@ -149,7 +156,7 @@ const EDIT_ENTRIES: EditEntry[] = [
   { group: GROUP_SETTINGS, order: 0, label: (ctx) => ctx.t('Edit Assembly...'), shortcut: 'Alt+Enter', visible: kindIs('module') },
   { group: GROUP_SETTINGS, order: 10, label: (ctx) => ctx.t('Edit Module...'), shortcut: 'Alt+Enter', visible: kindIs('module') },
   { group: GROUP_SETTINGS, order: 20, label: (ctx) => ctx.t('Edit Type...'), shortcut: 'Alt+Enter', visible: kindIs('type') },
-  { group: GROUP_SETTINGS, order: 30, label: (ctx) => ctx.t('Edit Method...'), shortcut: 'Alt+Enter', visible: kindIs('method') },
+  { group: GROUP_SETTINGS, order: 30, label: (ctx) => ctx.t('Edit Method...'), shortcut: 'Alt+Enter', visible: kindIs('method'), action: (ctx) => ctx.onEditNode() },
   { group: GROUP_SETTINGS, order: 40, label: (ctx) => ctx.t('Edit Method ({language})...', { language: 'C#' }), visible: kindIs('method') },
   { group: GROUP_SETTINGS, order: 41, label: (ctx) => ctx.t('Edit Assembly Attributes ({language})...', { language: 'C#' }), visible: kindIs('module') },
   { group: GROUP_SETTINGS, order: 42, label: (ctx) => ctx.t('Edit Class ({language})...', { language: 'C#' }), visible: isMember },

@@ -9,8 +9,10 @@ import { describeMethodSig } from './type-sig-text'
 // is why the combo and the checkboxes all write into the one value.
 const CALLING_CONVENTION_MASK = 0x0F
 const GENERIC_FLAG = 0x10
-const HAS_THIS_FLAG = 0x20
 const EXPLICIT_THIS_FLAG = 0x40
+/** Exported because the method dialog ties it to the method's static bit, which is a property of the
+ * method rather than of the signature this control edits. */
+export const HAS_THIS_FLAG = 0x20
 
 /** The conventions the combo offers, which is dnSpy's `MethodCallingConv` list in its own order. */
 const CALLING_CONVENTIONS: { value: number, name: string }[] = [

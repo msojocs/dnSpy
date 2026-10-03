@@ -398,6 +398,10 @@ export interface MethodOptionsDto {
   genericParameters: GenericParamDto[]
   overrides: MethodOverrideDto[]
   rva?: number
+  /** How many generic parameters the type declaring the method has. No page edits it: it is what the
+   * signature editor's Var button is gated on, and dnSpy reads it off the live type instead of carrying
+   * it. Read only, and left off on the way back. */
+  ownerGenericParameterCount?: number
 }
 
 /** A field's dialog model. Declared here because the new-member defaults for other kinds are read

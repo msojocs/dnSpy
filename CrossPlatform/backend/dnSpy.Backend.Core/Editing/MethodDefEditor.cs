@@ -33,7 +33,8 @@ public sealed class MethodDefEditor {
 			context.ParamDefs.ToDtoList(method.ParamDefs),
 			context.GenericParams.ToDtoList(method.GenericParameters),
 			context.MethodOverrides.ToDtoList(method.Overrides),
-			(uint)method.RVA);
+			(uint)method.RVA,
+			method.DeclaringType?.GenericParameters.Count ?? 0);
 
 	/// <summary>Adds a method to the module, row id and all, without putting it in any type yet.</summary>
 	public MethodDef Create(MethodOptionsDto dto) =>

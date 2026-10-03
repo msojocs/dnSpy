@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight } from 'lucide-react'
 import { useLanguage, type LanguagePreference } from '../localization'
-import { buildEditMenu, type ActiveDocument, type MenuItem } from './edit-menu'
+import { buildEditMenu, type ActiveDocument, type CreatedKind, type MenuItem } from './edit-menu'
 import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
@@ -46,6 +46,8 @@ interface MenuBarProps {
   onRenameNamespace(): void
   onMoveTypesToEmptyNamespace(): void
   onReplaceMethodBodyWithStub(): void
+  onCreateMember(kind: CreatedKind): void
+  onEditNode(): void
   onShowCode(): void
   onCollapseTreeViewNodes(): void
   onStartDebug(): void
@@ -142,6 +144,8 @@ export const MenuBar = ({
   onRenameNamespace,
   onMoveTypesToEmptyNamespace,
   onReplaceMethodBodyWithStub,
+  onCreateMember,
+  onEditNode,
   onShowCode,
   onCollapseTreeViewNodes,
   onStartDebug,
@@ -242,6 +246,8 @@ export const MenuBar = ({
       onRenameNamespace,
       onMoveTypesToEmptyNamespace,
       onReplaceMethodBodyWithStub,
+      onCreateMember,
+      onEditNode,
     }),
     [t('View')]: [
       { label: t('Word Wrap'), shortcut: 'Ctrl+E, Ctrl+W', checked: wordWrap, action: onToggleWordWrap },

@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { TreeNode } from '../../shared/protocol'
-import { methodBreakpointName, useAppStore } from './app-store'
+import { methodBreakpointName, ownerTypeIdOf, useAppStore } from './app-store'
 import { clearBookmarks, clearBookmarksInDocument, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from './bookmark-commands'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
@@ -16,9 +16,10 @@ import { BookmarksPane } from './components/BookmarksPane'
 import { AttachDialog } from './components/AttachDialog'
 import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
+import { NodeOptionsDialog } from './components/NodeOptionsDialog'
 import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, closeDocumentTabsFor, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
-import type { ActiveDocument } from './components/edit-menu'
+import type { ActiveDocument, CreatedKind } from './components/edit-menu'
 import { findInActiveDocumentEditor, focusDocumentEditor } from './editor-registry'
 import { translate, useLanguage } from './localization'
 
@@ -159,6 +160,9 @@ export const App = (): React.JSX.Element => {
   const [renameNode, setRenameNode] = useState<TreeNode>()
   const [renameNamespaceNode, setRenameNamespaceNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
+  // The create or edit dialog the Edit menu opened, over the node it acts on: `nodeId` is what is being
+  // edited, and is left off when a new node is being created in `ownerNodeId` instead.
+  const [editNode, setEditNode] = useState<{ kind: CreatedKind, nodeId?: string, ownerNodeId?: string }>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [debugProgramDialogOpen, setDebugProgramDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
@@ -385,6 +389,21 @@ export const App = (): React.JSX.Element => {
 
   const collapseTreeViewNodes = (): void => useAppStore.getState().collapseTreeViewNodes()
 
+  /** dnSpy's settings command for the selected node — Edit Method... and its Alt+Enter. A node whose
+   * dialog has not been built yet has no shortcut, since there is nothing for it to open. */
+  const openEditNode = (): void => {
+    if (selectedNode?.kind === 'method')
+      setEditNode({ kind: 'method', nodeId: selectedNode.id })
+  }
+
+  /** The five create commands: the new node goes into the type the selection belongs to, which is the
+   * selected type itself or the type a selected member hangs off. */
+  const createMember = (kind: CreatedKind): void => {
+    const ownerNodeId = ownerTypeIdOf(treeParents, selectedNode)
+    if (ownerNodeId !== undefined)
+      setEditNode({ kind, ownerNodeId })
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       const target = event.target as HTMLElement | null
@@ -458,6 +477,11 @@ export const App = (): React.JSX.Element => {
       } else if (event.ctrlKey && event.key.toLowerCase() === 'y' && canRedo && !editingText) {
         event.preventDefault()
         void redoEdit()
+      } else if (event.altKey && event.key === 'Enter' && !editingText) {
+        // dnSpy's Alt+Enter: the settings command of the selected node, which its menu lists beside
+        // Edit Method...
+        event.preventDefault()
+        openEditNode()
       } else if (event.key === 'F2' && selectedNode && !editingText && ['type', 'method', 'field', 'property', 'event'].includes(selectedNode.kind)) {
         event.preventDefault()
         setRenameNode(selectedNode)
@@ -494,7 +518,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -694,6 +718,8 @@ export const App = (): React.JSX.Element => {
         onRenameNamespace={() => { if (selectedNode?.kind === 'namespace') setRenameNamespaceNode(selectedNode) }}
         onMoveTypesToEmptyNamespace={() => { if (selectedNode?.kind === 'namespace') void moveTypesToEmptyNamespace(selectedNode) }}
         onReplaceMethodBodyWithStub={() => { if (selectedNode?.kind === 'method') void replaceMethodBodyWithStub(selectedNode) }}
+        onCreateMember={createMember}
+        onEditNode={openEditNode}
         onShowCode={() => void showCode()}
         onCollapseTreeViewNodes={collapseTreeViewNodes}
         onStartDebug={() => setDebugProgramDialogOpen(true)}
@@ -813,6 +839,16 @@ export const App = (): React.JSX.Element => {
       {renameNode && <RenameDialog node={renameNode} onClose={() => setRenameNode(undefined)} />}
       {renameNamespaceNode && <RenameNamespaceDialog node={renameNamespaceNode} onClose={() => setRenameNamespaceNode(undefined)} />}
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
+      {editNode && workspaceId && (
+        <NodeOptionsDialog
+          key={`${editNode.kind}:${editNode.nodeId ?? editNode.ownerNodeId}`}
+          workspaceId={workspaceId}
+          kind={editNode.kind}
+          nodeId={editNode.nodeId}
+          ownerNodeId={editNode.ownerNodeId}
+          onClose={() => setEditNode(undefined)}
+        />
+      )}
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
       {debugProgramDialogOpen && <DebugProgramDialog onClose={() => setDebugProgramDialogOpen(false)} />}
       {aboutDialogOpen && <AboutDialog onClose={() => setAboutDialogOpen(false)} />}

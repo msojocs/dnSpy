@@ -36,6 +36,8 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   onRenameNamespace: vi.fn(),
   onMoveTypesToEmptyNamespace: vi.fn(),
   onReplaceMethodBodyWithStub: vi.fn(),
+  onCreateMember: vi.fn(),
+  onEditNode: vi.fn(),
   onShowCode: vi.fn(),
   onCollapseTreeViewNodes: vi.fn(),
   onStartDebug: vi.fn(),
@@ -398,6 +400,8 @@ describe('MenuBar', () => {
       onRenameNamespace={vi.fn()}
       onMoveTypesToEmptyNamespace={vi.fn()}
       onReplaceMethodBodyWithStub={vi.fn()}
+      onCreateMember={vi.fn()}
+      onEditNode={vi.fn()}
       onShowCode={vi.fn()}
       onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
@@ -519,6 +523,8 @@ describe('MenuBar', () => {
       onRenameNamespace={vi.fn()}
       onMoveTypesToEmptyNamespace={vi.fn()}
       onReplaceMethodBodyWithStub={vi.fn()}
+      onCreateMember={vi.fn()}
+      onEditNode={vi.fn()}
       onShowCode={vi.fn()}
       onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
@@ -735,11 +741,28 @@ describe('MenuBar', () => {
   it('lists the Edit commands the port has not implemented yet as disabled', () => {
     renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest' })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    // Delete is wired up; the create and edit dialogs still have no backend to call.
+    // Delete and the method dialog are wired up; the other member dialogs have no backend to call yet.
     expect(screen.getByRole('menuitem', { name: /^Delete HelloRequest/ })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: /^Create Method\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Nested Type\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Field\.\.\./ })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeDisabled()
     expect(screen.queryByRole('menuitem', { name: /^Edit Method Body/ })).not.toBeInTheDocument()
+  })
+
+  it('runs Create Method and Edit Method, which are the dialogs the port has built', () => {
+    const onCreateMember = vi.fn()
+    renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest', onCreateMember })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Create Method\.\.\./ }))
+    // The kind is what the dialog is for; which type it goes into is the selection's business.
+    expect(onCreateMember).toHaveBeenCalledWith('method')
+
+    cleanup()
+    const onEditNode = vi.fn()
+    renderMenuWith({ selectionKind: 'method', selectionLabel: 'M()', onEditNode })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Edit Method\.\.\./ }))
+    expect(onEditNode).toHaveBeenCalledTimes(1)
   })
 
   it('runs Delete and the stub replacement for a selected method', () => {

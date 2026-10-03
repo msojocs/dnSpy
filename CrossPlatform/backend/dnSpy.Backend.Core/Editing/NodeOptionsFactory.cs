@@ -78,7 +78,8 @@ public sealed class NodeOptionsFactory {
 			[],
 			[],
 			[],
-			[]));
+			[],
+			OwnerGenericParameterCount: owner.GenericParameters.Count));
 	}
 
 	/// <summary>

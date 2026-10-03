@@ -543,7 +543,10 @@ public sealed record MethodOptionsDto(
 	IReadOnlyList<ParamDefDto> ParamDefs,
 	IReadOnlyList<GenericParamDto> GenericParameters,
 	IReadOnlyList<MethodOverrideDto> Overrides,
-	uint Rva = 0);
+	uint Rva = 0,
+	// How many generic parameters the declaring type has. No page edits it; it is read-only context the
+	// signature editor needs, and dnSpy takes it from the live type rather than from its options class.
+	int OwnerGenericParameterCount = 0);
 
 public sealed record FieldOptionsDto(
 	int Attributes,
