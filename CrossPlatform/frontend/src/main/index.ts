@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell } from 'electron'
+import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -11,6 +12,9 @@ let backend: BackendClient | undefined
 let dialogPathHistory: DialogPathHistory | undefined
 let lastBackendStatus: BackendStatus = { state: 'starting' }
 let uiLocale: UiLocale = 'en'
+// Set while a restart-as-administrator request waits on the window actually closing; see the IPC
+// handler that sets it.
+let restartPending = false
 const initialPaths = parseInitialPaths(process.argv)
 // dnSpy spells it `--dont-load-files`; both are accepted so a script written against either works.
 const noLoadFiles = process.argv.includes('--no-load-files') || process.argv.includes('--dont-load-files')
@@ -29,6 +33,7 @@ const nativeMessages = {
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
     selectWorkingDirectory: '选择工作目录',
+    restartFailed: '无法以管理员身份重启',
   },
   en: {
     openAssembly: 'Open Assembly',
@@ -43,10 +48,29 @@ const nativeMessages = {
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
     selectWorkingDirectory: 'Select Working Directory',
+    restartFailed: 'Could not restart with elevated rights',
   },
 } as const
 
 const nativeText = () => nativeMessages[uiLocale]
+
+// dnSpy's Constants.IsRunningAsAdministrator (a WindowsPrincipal role check) in Linux terms: the
+// process is elevated when it owns uid 0.
+const isRunningAsAdministrator = (): boolean => process.getuid?.() === 0
+
+// dnSpy restarts itself by starting Constants.ExecutablePath through the shell's "runas" verb, the
+// UAC prompt. Linux has no such verb — pkexec is the PolicyKit equivalent, asking for the same
+// credentials before running the command. Unpackaged, the executable is Electron itself and the app
+// directory is its argument; packaged, execPath is dnSpy and takes no arguments, which is also how
+// dnSpy relaunches (no file arguments — the remembered session reopens what was open).
+const relaunchElevated = (): void => {
+  const args = app.isPackaged ? [] : [app.getAppPath()]
+  const child = spawn('pkexec', [process.execPath, ...args], { detached: true, stdio: 'ignore' })
+  child.on('error', (error) => {
+    dialog.showErrorBox('dnSpy', `${nativeText().restartFailed}: ${error.message}`)
+  })
+  child.unref()
+}
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'app',
@@ -108,6 +132,17 @@ const createWindow = (): void => {
   })
   mainWindow.on('closed', () => {
     mainWindow = undefined
+    if (restartPending) {
+      restartPending = false
+      relaunchElevated()
+    }
+  })
+  // Restarting closes the window like any other quit, so a document still unsaved would normally
+  // hold it open. The renderer has already asked about that before requesting the restart, so once
+  // one is pending the unload is let through rather than blocked a second time.
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    if (restartPending)
+      event.preventDefault()
   })
   const sendMaximizedState = (): void => {
     mainWindow?.webContents.send('window:maximized-changed', mainWindow.isMaximized())
@@ -441,6 +476,16 @@ const registerIpc = (): void => {
       uiLocale = locale
   })
   ipcMain.handle('app:quit', () => app.quit())
+  ipcMain.handle('app:isRunningAsAdministrator', () => isRunningAsAdministrator())
+  ipcMain.handle('app:restartAsAdministrator', () => {
+    // dnSpy's RestartAsAdministratorCommand closes the main window and restarts from its closing
+    // handler, so the restart rides the ordinary quit path rather than racing it. The renderer has
+    // already settled the unsaved-edits question by the time it asks for this.
+    if (!mainWindow || restartPending)
+      return
+    restartPending = true
+    mainWindow.close()
+  })
 }
 
 app.whenReady().then(async () => {

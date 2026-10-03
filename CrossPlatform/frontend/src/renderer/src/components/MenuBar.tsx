@@ -36,6 +36,8 @@ interface MenuBarProps {
   wordWrap: boolean
   highlightCurrentLine: boolean
   fullScreen: boolean
+  /** Whether the app already has elevated rights, which is what hides the File menu's restart entry. */
+  elevated: boolean
   visibleToolWindows: ReadonlySet<string>
   onOpen(): void
   onOpenRecent(paths: string[]): void
@@ -123,6 +125,7 @@ interface MenuBarProps {
   onToggleFullScreen(): void
   onSetLanguage(language: LanguagePreference): void
   onAbout(): void
+  onRestartAsAdministrator(): void
   onQuit(): void
   onShowOptions(category?: 'environment' | 'decompiler' | 'debugger'): void
 }
@@ -150,6 +153,7 @@ export const MenuBar = ({
   wordWrap,
   highlightCurrentLine,
   fullScreen,
+  elevated,
   onOpen,
   onOpenRecent,
   onCloseAll,
@@ -235,6 +239,7 @@ export const MenuBar = ({
   onToggleFullScreen,
   onSetLanguage,
   onAbout,
+  onRestartAsAdministrator,
   onQuit,
   onShowOptions,
 }: MenuBarProps): React.JSX.Element => {
@@ -253,6 +258,7 @@ export const MenuBar = ({
       hasWorkspace,
       hasModule,
       dirty,
+      elevated,
       recentWorkspaces,
       onOpen,
       onOpenRecent,
@@ -262,6 +268,7 @@ export const MenuBar = ({
       onReloadAll,
       onCloseAll,
       onSortAssemblies,
+      onRestartAsAdministrator,
       onQuit,
     }),
     // dnSpy's Edit menu in full: see edit-menu.ts for the ordering and visibility rules.

@@ -23,6 +23,7 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   wordWrap: false,
   highlightCurrentLine: true,
   fullScreen: false,
+  elevated: false,
   onOpen: vi.fn(),
   onOpenRecent: vi.fn(),
   onCloseAll: vi.fn(),
@@ -106,6 +107,7 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   onToggleFullScreen: vi.fn(),
   onSetLanguage: vi.fn(),
   onAbout: vi.fn(),
+  onRestartAsAdministrator: vi.fn(),
   onQuit: vi.fn(),
   onShowOptions: vi.fn(),
 })
@@ -166,14 +168,32 @@ describe('MenuBar', () => {
       'Restart as Administrator',
       'ExitAlt+F4',
     ])
-    for (const name of [/^Export to Project/, /^SaveCtrl/, /^Save All/, /^Open from GAC/, /^Open List/, /^Recent Files/, /^Close Old In-Memory/, /^Close All Framework/, /^Close All Missing/, /^Restart as Administrator/])
+    for (const name of [/^Export to Project/, /^SaveCtrl/, /^Save All/, /^Open from GAC/, /^Open List/, /^Recent Files/, /^Close Old In-Memory/, /^Close All Framework/, /^Close All Missing/])
       expect(screen.getByRole('menuitem', { name })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /^Open\.\.\./ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Save Module\.\.\./ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Reload All Assemblies/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Close All$/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Sort Assemblies/ })).toBeEnabled()
+    // dnSpy never greys the restart entry — it is clickable or not there at all.
+    expect(screen.getByRole('menuitem', { name: /^Restart as Administrator/ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Exit/ })).toBeEnabled()
+  })
+
+  it('drops the restart entry altogether once the app is already elevated', () => {
+    // dnSpy's IsVisible: RestartAsAdministratorCommand is shown only while not running as admin.
+    render(<MenuBar {...baseProps()} elevated={true} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'File' }))
+    expect(screen.queryByRole('menuitem', { name: /^Restart as Administrator/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /^Exit/ })).toBeEnabled()
+  })
+
+  it('asks the app to restart with elevation when the entry is chosen', () => {
+    const onRestartAsAdministrator = vi.fn()
+    render(<MenuBar {...baseProps()} onRestartAsAdministrator={onRestartAsAdministrator} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'File' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Restart as Administrator/ }))
+    expect(onRestartAsAdministrator).toHaveBeenCalledOnce()
   })
 
   it('enables Save and Save All only once something is modified', () => {
@@ -440,6 +460,7 @@ describe('MenuBar', () => {
       wordWrap={false}
       highlightCurrentLine={true}
       fullScreen={false}
+      elevated={false}
       visibleToolWindows={new Set(['explorer'])}
       onOpen={vi.fn()}
       onOpenRecent={vi.fn()}
@@ -523,6 +544,7 @@ describe('MenuBar', () => {
       onToggleFullScreen={vi.fn()}
       onSetLanguage={vi.fn()}
       onAbout={vi.fn()}
+      onRestartAsAdministrator={vi.fn()}
       onQuit={vi.fn()}
       onShowOptions={vi.fn()}
     />)
@@ -575,6 +597,7 @@ describe('MenuBar', () => {
       wordWrap={true}
       highlightCurrentLine={true}
       fullScreen={true}
+      elevated={false}
       onOpen={vi.fn()}
       onOpenRecent={vi.fn()}
       onCloseAll={vi.fn()}
@@ -658,6 +681,7 @@ describe('MenuBar', () => {
       onToggleFullScreen={vi.fn()}
       onSetLanguage={vi.fn()}
       onAbout={vi.fn()}
+      onRestartAsAdministrator={vi.fn()}
       onQuit={vi.fn()}
       onShowOptions={vi.fn()}
     />)

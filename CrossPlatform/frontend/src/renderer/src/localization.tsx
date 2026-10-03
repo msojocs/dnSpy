@@ -14,9 +14,8 @@ const zhCN: Record<string, string> = {
   'Window': '窗口',
   'Help': '帮助',
   // dnSpy's File menu (dnSpy.Resources.zh-CN.resx / dnSpy.AsmEditor.Resources.zh-CN.resx). Entries the
-  // port has not implemented — Export to Project, Open from GAC, Open List, the Close* sweeps, Restart
-  // as Administrator — are listed and translated all the same: they keep dnSpy's place in the menu and
-  // render disabled.
+  // port has not implemented — Export to Project, Open from GAC, Open List, the Close* sweeps — are
+  // listed and translated all the same: they keep dnSpy's place in the menu and render disabled.
   'Open...': '打开...',
   'Export to Project...': '导出到工程...',
   'Save': '保存',
@@ -437,6 +436,7 @@ const zhCN: Record<string, string> = {
   'Cross-platform .NET assembly browser, decompiler, editor and debugger.': '跨平台 .NET 程序集浏览器、反编译器、编辑器和调试器。',
   'Licensed under GNU GPL v3.0 only.': '仅依 GNU GPL v3.0 许可证授权。',
   'Discard unsaved changes and close the workspace?': '放弃未保存的更改并关闭工作区吗？',
+  'Discard unsaved changes and restart with elevated rights?': '放弃未保存的更改并以管理员身份重启吗？',
   'Stopped: {reason}': '已停止：{reason}',
   'starting': '正在启动',
   'ready': '就绪',

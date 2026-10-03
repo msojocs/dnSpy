@@ -8,6 +8,8 @@ export interface FileMenuContext {
   hasModule: boolean
   /** Whether an edit is unsaved. dnSpy gates Save and Save All on there being something to write. */
   dirty: boolean
+  /** Whether the app already has elevated rights; "Restart as Administrator" only makes sense if not. */
+  elevated: boolean
   /** The workspace sets the user opened before, most recent first; each is the path list of one open. */
   recentWorkspaces: string[][]
   onOpen(): void
@@ -18,6 +20,7 @@ export interface FileMenuContext {
   onReloadAll(): void
   onCloseAll(): void
   onSortAssemblies(): void
+  onRestartAsAdministrator(): void
   onQuit(): void
 }
 
@@ -26,6 +29,8 @@ interface FileEntry {
   order: number
   label(ctx: FileMenuContext): string
   shortcut?: string
+  /** dnSpy's IsVisible: the entry is left out of the menu altogether when this is false. */
+  visible?(ctx: FileMenuContext): boolean
   /** Only consulted for entries that have an action or a submenu; the rest render disabled. */
   enabled?(ctx: FileMenuContext): boolean
   action?(ctx: FileMenuContext): void
@@ -60,8 +65,8 @@ export const recentLabel = (paths: string[], workspaceLabel: string): string => 
 /**
  * dnSpy's File menu (AppMenus.cs + the ExportMenuItem registrations across dnSpy.Documents.Tabs,
  * dnSpy.AsmEditor and MainApp), in the order its Group and Order values give. Entries this port has no
- * command for — Export to Project, Open from GAC, Open List, the Close* sweeps, Restart as
- * Administrator — keep dnSpy's place and render disabled, so the menu still reads as dnSpy's.
+ * command for — Export to Project, Open from GAC, Open List, the Close* sweeps — keep dnSpy's place and
+ * render disabled, so the menu still reads as dnSpy's.
  */
 const FILE_ENTRIES: FileEntry[] = [
   // 0 — Save
@@ -86,7 +91,9 @@ const FILE_ENTRIES: FileEntry[] = [
   { group: GROUP_OPEN, order: 100, label: (ctx) => ctx.t('Sort Assemblies'), enabled: (ctx) => ctx.hasWorkspace, action: (ctx) => ctx.onSortAssemblies() },
 
   // 1000000 — Exit
-  { group: GROUP_EXIT, order: 900000, label: (ctx) => ctx.t('Restart as Administrator'), enabled: () => false },
+  // dnSpy's RestartAsAdministratorCommand is visible only while the app is not already elevated,
+  // and unlike the entries above it is never greyed: it is either there and clickable, or gone.
+  { group: GROUP_EXIT, order: 900000, label: (ctx) => ctx.t('Restart as Administrator'), visible: (ctx) => !ctx.elevated, enabled: always, action: (ctx) => ctx.onRestartAsAdministrator() },
   { group: GROUP_EXIT, order: 1000000, label: (ctx) => ctx.t('Exit'), shortcut: 'Alt+F4', enabled: always, action: (ctx) => ctx.onQuit() },
 ]
 
@@ -102,10 +109,15 @@ export const buildFileMenu = (ctx: FileMenuContext): MenuItem[] => {
 
   const items: MenuItem[] = []
   for (const group of [...groups.keys()].sort((a, b) => a - b)) {
+    // An entry the context hides is dropped before the separators are placed, so a group left with
+    // nothing in it takes neither a rule nor a gap.
+    const entries = groups.get(group)!.sort((a, b) => a.order - b.order).filter((entry) => entry.visible?.(ctx) !== false)
+    if (entries.length === 0)
+      continue
     if (items.length > 0)
       items.push({ separator: true })
     // Array.prototype.sort is stable, so entries sharing an order keep their table order.
-    for (const entry of groups.get(group)!.sort((a, b) => a.order - b.order)) {
+    for (const entry of entries) {
       const submenu = entry.submenu?.(ctx)
       const action = entry.action
       items.push({

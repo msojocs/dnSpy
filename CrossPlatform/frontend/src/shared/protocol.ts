@@ -813,6 +813,10 @@ export interface DnSpyApi {
   toggleFullScreen(): Promise<boolean>
   isFullScreen(): Promise<boolean>
   quit(): Promise<void>
+  /** dnSpy's Constants.IsRunningAsAdministrator: on Linux, uid 0. Hides "Restart as Administrator". */
+  isRunningAsAdministrator(): Promise<boolean>
+  /** Closes the app and starts an elevated copy in its place, the way dnSpy's runas restart does. */
+  restartAsAdministrator(): Promise<void>
   getBackendStatus(): Promise<BackendStatus>
   getProcessId(): Promise<number>
   setLocale(locale: UiLocale): Promise<void>

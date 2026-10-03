@@ -104,6 +104,10 @@ test.describe('the workspace shell', () => {
   test('shows the upstream File menu, in its order, with what it cannot do greyed out', async () => {
     await page.getByRole('menuitem', { name: 'File', exact: true }).click()
 
+    // dnSpy hides its restart entry while the app is already elevated, so a run under a normal user
+    // and one under root see different menus. Ask the app which it is rather than assuming.
+    const elevated = await application.evaluate(() => process.getuid?.() === 0)
+
     // The labels only: the shortcut column is a sibling span, so the row's text is asked for directly.
     const labels = page.locator('.menu-popup > .menu-item > span:nth-child(2), .menu-popup > .menu-item-row > .menu-item > span:nth-child(2)')
     await expect(labels).toHaveText([
@@ -111,7 +115,8 @@ test.describe('the workspace shell', () => {
       'Open...', 'Open from GAC...', 'Open List...', 'Recent Files', 'Reload All Assemblies',
       'Close All', 'Close Old In-Memory Modules', 'Close All Framework Assemblies', 'Close All Missing Files',
       'Sort Assemblies',
-      'Restart as Administrator', 'Exit',
+      ...(elevated ? [] : ['Restart as Administrator']),
+      'Exit',
     ])
 
     // Nothing is open yet, so the entries that work on a workspace are greyed; the ones Linux has no
@@ -120,9 +125,12 @@ test.describe('the workspace shell', () => {
     const row = (label: string) => page
       .locator('.menu-popup > .menu-item, .menu-popup > .menu-item-row > .menu-item')
       .filter({ has: page.locator(`span:nth-child(2):text-is("${label}")`) })
-    for (const label of ['Export to Project...', 'Save', 'Save All...', 'Open from GAC...', 'Open List...', 'Reload All Assemblies', 'Close All', 'Close Old In-Memory Modules', 'Close All Framework Assemblies', 'Close All Missing Files', 'Sort Assemblies', 'Restart as Administrator'])
+    for (const label of ['Export to Project...', 'Save', 'Save All...', 'Open from GAC...', 'Open List...', 'Reload All Assemblies', 'Close All', 'Close Old In-Memory Modules', 'Close All Framework Assemblies', 'Close All Missing Files', 'Sort Assemblies'])
       await expect(row(label)).toBeDisabled()
     await expect(row('Open...')).toBeEnabled()
+    // The restart entry is Unix dnSpy's: never greyed, only present or absent.
+    if (!elevated)
+      await expect(row('Restart as Administrator')).toBeEnabled()
     await expect(row('Exit')).toBeEnabled()
   })
 

@@ -162,6 +162,8 @@ export const App = (): React.JSX.Element => {
   const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const setHighlightCurrentLine = useAppStore((state) => state.setHighlightCurrentLine)
   const [fullScreen, setFullScreen] = useState<boolean>(false)
+  // dnSpy reads this once at startup and never again; elevation can't change under a running app.
+  const [elevated, setElevated] = useState<boolean>(false)
   const [renameNode, setRenameNode] = useState<TreeNode>()
   const [renameNamespaceNode, setRenameNamespaceNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
@@ -347,6 +349,14 @@ export const App = (): React.JSX.Element => {
       mounted = false
       unsubscribe()
     }
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+    void window.dnSpy.isRunningAsAdministrator().then((value) => {
+      if (mounted) setElevated(value)
+    })
+    return () => { mounted = false }
   }, [])
 
   useEffect(() => {
@@ -847,6 +857,13 @@ export const App = (): React.JSX.Element => {
       void closeWorkspace()
   }
 
+  // dnSpy's restart goes through the ordinary close, so unsaved edits still get their say first;
+  // the confirm stands in for that prompt and a "no" leaves the app, and the edits, alone.
+  const restartAsAdministrator = (): void => {
+    if (!dirty || window.confirm(t('Discard unsaved changes and restart with elevated rights?')))
+      void window.dnSpy.restartAsAdministrator()
+  }
+
   const factory = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
       case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} onShowHex={(item) => addSpecialTab('hex', item)} onShowModuleInfo={(item) => addSpecialTab('module-info', item)} />
@@ -974,11 +991,13 @@ export const App = (): React.JSX.Element => {
         wordWrap={wordWrap}
         highlightCurrentLine={highlightCurrentLine}
         fullScreen={fullScreen}
+        elevated={elevated}
         onToggleWordWrap={() => setWordWrap(!wordWrap)}
         onToggleHighlightCurrentLine={() => setHighlightCurrentLine(!highlightCurrentLine)}
         onToggleFullScreen={() => void window.dnSpy.toggleFullScreen()}
         onSetLanguage={setLanguage}
         onAbout={() => setAboutDialogOpen(true)}
+        onRestartAsAdministrator={restartAsAdministrator}
         onQuit={() => void window.dnSpy.quit()}
         onShowOptions={(category) => setOptionsDialogCategory(category ?? 'environment')}
       />
