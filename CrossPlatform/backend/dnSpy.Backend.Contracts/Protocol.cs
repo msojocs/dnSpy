@@ -43,6 +43,10 @@ public static class RpcMethods {
 	public const string EditUndo = "edit/undo";
 	public const string EditRedo = "edit/redo";
 	public const string ModuleSaveAs = "module/saveAs";
+	public const string ModuleSave = "module/save";
+	public const string ModuleSaveAll = "module/saveAll";
+	public const string WorkspaceReload = "workspace/reload";
+	public const string WorkspaceSortAssemblies = "workspace/sortAssemblies";
 	public const string DebugLaunch = "debug/launch";
 	public const string DebugListProcesses = "debug/listProcesses";
 	public const string DebugAttach = "debug/attach";
@@ -324,6 +328,14 @@ public sealed record EditTransactionRequest(string WorkspaceId, string Transacti
 public sealed record EditCommitResponse(int Version, string StateId, IReadOnlyList<string> ChangedNodeIds, bool CanUndo, bool CanRedo);
 
 public sealed record SaveModuleRequest(string WorkspaceId, string ModuleId, string DestinationPath, bool Overwrite = false);
+
+/// <summary>Saves one module back over the file it was loaded from — dnSpy's Save command, as opposed
+/// to <see cref="SaveModuleRequest"/>'s Save As.</summary>
+public sealed record SaveModuleInPlaceRequest(string WorkspaceId, string ModuleId);
+
+/// <summary>Every module of the workspace that has unsaved edits, each written back over its own file.
+/// The list is empty when nothing was modified, which is not an error.</summary>
+public sealed record SaveAllResponse(IReadOnlyList<SaveModuleResponse> Saved);
 
 // ---------------------------------------------------------------------------------------------
 // AsmEditor option DTOs.

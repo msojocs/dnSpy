@@ -183,6 +183,18 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 	public Task<SaveModuleResponse> SaveModuleAsync(SaveModuleRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.SaveModuleAsync(request, cancellationToken), cancellationToken);
 
+	public Task<SaveModuleResponse> SaveModuleInPlaceAsync(SaveModuleInPlaceRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.SaveModuleInPlaceAsync(request, cancellationToken), cancellationToken);
+
+	public Task<SaveAllResponse> SaveAllModulesAsync(WorkspaceRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.SaveAllModulesAsync(cancellationToken), cancellationToken);
+
+	public Task<OpenWorkspaceResponse> ReloadAsync(WorkspaceRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.ReloadAsync(cancellationToken), cancellationToken);
+
+	public Task<TreeNodesResponse> SortAssembliesAsync(WorkspaceRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.SortAssemblies(), cancellationToken);
+
 	// ---------------------------------------------------------------- debug symbols
 
 	public Task<ResolveBreakpointsResponse> ResolveBreakpointsAsync(string workspaceId, IReadOnlyList<BreakpointQuery> queries, CancellationToken cancellationToken) =>
@@ -781,6 +793,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		readonly SemaphoreSlim gate = new(1, 1);
 		readonly SymbolResolver symbols;
 		readonly Dictionary<string, ModuleEntry> modules = new(StringComparer.Ordinal);
+		// The root nodes in the order the tree shows them. The dictionary above is keyed by node id, so
+		// its iteration order is a hash order that the client cannot rely on — the same two assemblies
+		// would come back in a different order across runs. This list is that order: load order until the
+		// Sort Assemblies command rearranges it.
+		readonly List<string> rootOrder = new();
 		// The assemblies reached through a reference, loaded on demand. Unlike the debugger's cache these
 		// are never evicted: a tree node for a type in one of them holds the module object, and evicting
 		// it would leave that node pointing at a disposed module. The memory is bounded by what the user
@@ -841,6 +858,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				var root = GetOrAddNode($"module:{fullPath}", NodeKind.Module, module, entry);
 				entry.Id = root.Id;
 				modules.Add(entry.Id, entry);
+				rootOrder.Add(entry.Id);
 				added.Add(entry);
 			}
 			return added;
@@ -869,14 +887,41 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		public OpenWorkspaceResponse CreateOpenResponse() => new(
 			Id,
-			modules.Values.Select(m => new OpenedModule(
+			OrderedModules().Select(m => new OpenedModule(
 				m.Id,
 				m.Module.Assembly?.Name.String ?? m.Module.Name.String,
 				m.Path,
 				File.Exists(Path.ChangeExtension(m.Path, ".pdb")))).ToArray(),
 			stateId);
 
-		public TreeNodesResponse GetRoots() => new(modules.Values.Select(m => ToDto(nodes[m.Id])).ToArray());
+		public TreeNodesResponse GetRoots() => new(OrderedModules().Select(m => ToDto(nodes[m.Id])).ToArray());
+
+		/// <summary>
+		/// The modules in the order the tree shows them, which is what keeps the client's root list and its
+		/// module list in step. An id with no module behind it is skipped rather than trusted, so a reload
+		/// that rebuilds the modules cannot hand out a root that is no longer there.
+		/// </summary>
+		IEnumerable<ModuleEntry> OrderedModules() {
+			foreach (var id in rootOrder) {
+				if (modules.TryGetValue(id, out var module))
+					yield return module;
+			}
+		}
+
+		/// <summary>
+		/// Sorts the root nodes by the name the tree shows, case-insensitively, with the current position
+		/// as the tie-breaker so two identical names keep the order they were loaded in. This is dnSpy's
+		/// Sort Assemblies (IDocumentTreeView.SortTopNodes).
+		/// </summary>
+		public TreeNodesResponse SortAssemblies() {
+			var position = rootOrder.Select((id, index) => (id, index)).ToDictionary(entry => entry.id, entry => entry.index, StringComparer.Ordinal);
+			rootOrder.Sort((left, right) => {
+				var byName = StringComparer.OrdinalIgnoreCase.Compare(GetLabel(nodes[left]), GetLabel(nodes[right]));
+				return byName != 0 ? byName : position[left].CompareTo(position[right]);
+			});
+			version++;
+			return GetRoots();
+		}
 
 		public TreeNodesResponse GetChildren(string nodeId) {
 			var node = GetNode(nodeId);
@@ -2295,6 +2340,66 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				catch (IOException) {
 				}
 			}
+		}
+
+		/// <summary>
+		/// Writes a module back over the file it was loaded from — dnSpy's Save, where Save As is
+		/// <see cref="SaveModuleAsync"/>. The file is replaced in place, so the path the tree node holds
+		/// still names it and no dialog is involved.
+		/// </summary>
+		public async Task<SaveModuleResponse> SaveModuleInPlaceAsync(SaveModuleInPlaceRequest request, CancellationToken cancellationToken) {
+			var module = GetModule(request.ModuleId);
+			var saved = await SaveModuleAsync(
+				new SaveModuleRequest(request.WorkspaceId, request.ModuleId, module.Path, Overwrite: true),
+				cancellationToken).ConfigureAwait(false);
+			module.IsModified = false;
+			return saved;
+		}
+
+		/// <summary>
+		/// Writes every module that has unsaved edits back over its own file, which is dnSpy's Save All.
+		/// Nothing modified means nothing written, and that is not an error. A module that fails to save
+		/// stops the run: the ones already written stay written, and the error names what went wrong.
+		/// </summary>
+		public async Task<SaveAllResponse> SaveAllModulesAsync(CancellationToken cancellationToken) {
+			var saved = new List<SaveModuleResponse>();
+			foreach (var module in OrderedModules()) {
+				if (!module.IsModified)
+					continue;
+				saved.Add(await SaveModuleInPlaceAsync(
+					new SaveModuleInPlaceRequest(Id, module.Id), cancellationToken).ConfigureAwait(false));
+			}
+			return new SaveAllResponse(saved);
+		}
+
+		/// <summary>
+		/// Drops every assembly and loads the files again, which is dnSpy's Reload All Assemblies: edits
+		/// are lost, and so are the tabs, the undo stack and the loaded reference assemblies. The workspace
+		/// keeps its id, so the client's handle on it still resolves, but every node id it cached is gone —
+		/// it has to read the tree again. Node ids are not numbered from zero again either: a tab the client
+		/// has not reset yet would otherwise match a node that is not the one it named.
+		/// </summary>
+		public async Task<OpenWorkspaceResponse> ReloadAsync(CancellationToken cancellationToken) {
+			var paths = modules.Values.Select(module => module.Path).ToArray();
+			modules.Clear();
+			referenceModules.Clear();
+			referenceResolvers.Clear();
+			referencePaths.Clear();
+			nodes.Clear();
+			nodeIdsByKey.Clear();
+			transactions.Clear();
+			undoHistory.Clear();
+			redoHistory.Clear();
+			codeStatementsByNode.Clear();
+			rootOrder.Clear();
+			cachedStatementsStateId = string.Empty;
+			version = 0;
+			stateId = Guid.NewGuid().ToString("N");
+			symbols.Invalidate();
+			await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
+			if (modules.Count == 0)
+				throw new RpcException(ErrorCodes.FileNotFound, "None of the assemblies could be reloaded.");
+			return CreateOpenResponse();
 		}
 
 		/// <summary>

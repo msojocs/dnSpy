@@ -203,6 +203,7 @@ export const App = (): React.JSX.Element => {
   const busy = useAppStore((state) => state.busy)
   const error = useAppStore((state) => state.error)
   const selectedNode = useAppStore((state) => state.selectedNode)
+  const modules = useAppStore((state) => state.modules)
   const chooseAndOpen = useAppStore((state) => state.chooseAndOpen)
   const closeWorkspace = useAppStore((state) => state.closeWorkspace)
   const dirty = useAppStore((state) => state.dirty)
@@ -213,6 +214,10 @@ export const App = (): React.JSX.Element => {
   const undoEdit = useAppStore((state) => state.undoEdit)
   const redoEdit = useAppStore((state) => state.redoEdit)
   const saveModuleAs = useAppStore((state) => state.saveModuleAs)
+  const saveModule = useAppStore((state) => state.saveModule)
+  const saveAllModules = useAppStore((state) => state.saveAllModules)
+  const reloadAllAssemblies = useAppStore((state) => state.reloadAllAssemblies)
+  const sortAssemblies = useAppStore((state) => state.sortAssemblies)
   const saveCode = useAppStore((state) => state.saveCode)
   const replaceResource = useAppStore((state) => state.replaceResource)
   const deleteNode = useAppStore((state) => state.deleteNode)
@@ -455,9 +460,12 @@ export const App = (): React.JSX.Element => {
         event.preventDefault()
         void chooseAndOpen()
       } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 's') {
+        // dnSpy's Save All. Save Module... is the one without a gesture, so it moves no other binding.
         event.preventDefault()
-        void saveModuleAs()
+        void saveAllModules()
       } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 's') {
+        // dnSpy's Save: the active document. A code tab is a document of its own here, and the tab menu
+        // advertises this key for its "Save Code..."; with no such tab the command falls to the module.
         const tab = model.getActiveTabset()?.getSelectedNode()
         const config = tab?.getComponent() === 'document'
           ? tab.getConfig() as { documentId?: string } | undefined
@@ -466,6 +474,9 @@ export const App = (): React.JSX.Element => {
         if (config?.documentId && document && !document.loading) {
           event.preventDefault()
           void saveCode(config.documentId)
+        } else if (!editingText) {
+          event.preventDefault()
+          void saveModule()
         }
       } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 't') {
         const tab = model.getActiveTabset()?.getSelectedNode()
@@ -543,7 +554,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveAllModules, saveCode, saveModule, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   // Closing the workspace's documents is also the first thing a restore does, so the two share it.
   const closeDocumentTabs = (): void => {
@@ -868,6 +879,7 @@ export const App = (): React.JSX.Element => {
     <div className="app-shell">
       <MenuBar
         hasWorkspace={Boolean(workspaceId)}
+        hasModule={modules.length > 0}
         selectionKind={selectedNode?.kind}
         selectionLabel={selectedNode?.label}
         hasEmptyNamespaceSibling={hasEmptyNamespaceSibling}
@@ -881,8 +893,13 @@ export const App = (): React.JSX.Element => {
         theme={theme}
         onOpen={() => void chooseAndOpen()}
         onOpenRecent={(paths) => void openPaths(paths)}
-        onClose={closeCurrentWorkspace}
-        onSave={() => void saveModuleAs()}
+        onCloseAll={closeCurrentWorkspace}
+        dirty={dirty}
+        onSave={() => void saveModule()}
+        onSaveModule={() => void saveModuleAs()}
+        onSaveAll={() => void saveAllModules()}
+        onReloadAll={() => void reloadAllAssemblies()}
+        onSortAssemblies={() => void sortAssemblies()}
         onFind={() => { findInActiveDocumentEditor() }}
         onSearchAssemblies={() => showBorderTab('search')}
         onUndo={() => void undoEdit()}

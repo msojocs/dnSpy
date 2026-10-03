@@ -229,6 +229,14 @@ internal sealed class JsonRpcServer {
 				return await workspaces.RedoAsync(DeserializeParams<WorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.ModuleSaveAs:
 				return await workspaces.SaveModuleAsync(DeserializeParams<SaveModuleRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.ModuleSave:
+				return await workspaces.SaveModuleInPlaceAsync(DeserializeParams<SaveModuleInPlaceRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.ModuleSaveAll:
+				return await workspaces.SaveAllModulesAsync(DeserializeParams<WorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.WorkspaceReload:
+				return await workspaces.ReloadAsync(DeserializeParams<WorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.WorkspaceSortAssemblies:
+				return await workspaces.SortAssembliesAsync(DeserializeParams<WorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.ScriptEvaluate:
 				return await scripts.EvaluateAsync(DeserializeParams<ScriptEvaluateRequest>(request).Code, cancellationToken).ConfigureAwait(false);
 			case RpcMethods.ScriptReset:

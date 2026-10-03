@@ -241,6 +241,10 @@ export interface SaveModuleResponse {
   sha256: string
 }
 
+export interface SaveAllResponse {
+  saved: SaveModuleResponse[]
+}
+
 export interface BackendStatus {
   state: 'starting' | 'ready' | 'stopped' | 'error'
   message?: string
@@ -718,6 +722,11 @@ export interface DnSpyApi {
    * instead of replacing it. Paths already open come back in `skipped`. */
   addModules(workspaceId: string, paths: string[]): Promise<AddModulesResponse>
   closeWorkspace(workspaceId: string): Promise<void>
+  /** Drops every assembly and loads the same files again, discarding edits — dnSpy's Reload All
+   * Assemblies. The workspace keeps its id, but every node id the client held is stale. */
+  reloadWorkspace(workspaceId: string): Promise<OpenWorkspaceResponse>
+  /** Reorders the root nodes by name and answers with the tree in its new order — dnSpy's Sort Assemblies. */
+  sortAssemblies(workspaceId: string): Promise<TreeNodesResponse>
   getRoots(workspaceId: string): Promise<TreeNodesResponse>
   getChildren(workspaceId: string, nodeId: string): Promise<TreeNodesResponse>
   getNode(workspaceId: string, nodeId: string): Promise<TreeNode>
@@ -763,6 +772,10 @@ export interface DnSpyApi {
   undoEdit(workspaceId: string): Promise<EditCommitResponse>
   redoEdit(workspaceId: string): Promise<EditCommitResponse>
   saveModuleAs(workspaceId: string, moduleId: string, suggestedName: string): Promise<SaveModuleResponse | undefined>
+  /** Writes a module back over the file it was loaded from — dnSpy's Save. */
+  saveModule(workspaceId: string, moduleId: string): Promise<SaveModuleResponse>
+  /** Writes every modified module back over its own file — dnSpy's Save All. */
+  saveAllModules(workspaceId: string): Promise<SaveAllResponse>
   saveCode(suggestedName: string, text: string): Promise<string | undefined>
   /** Picks a text file and returns its contents, or undefined when the picker was dismissed. Used to import bookmarks. */
   readTextFile(): Promise<string | undefined>

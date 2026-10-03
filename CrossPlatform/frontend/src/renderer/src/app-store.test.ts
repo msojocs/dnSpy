@@ -1511,3 +1511,145 @@ describe('orderedDocumentKeys', () => {
     expect(orderedDocumentKeys(model).active).toBeUndefined()
   })
 })
+
+describe('file commands', () => {
+  const rootA = moduleNode('n1', '/A.dll')
+  const rootB = moduleNode('n2', '/B.dll')
+  const saveModule = vi.fn()
+  const saveAllModules = vi.fn()
+  const reloadWorkspace = vi.fn()
+  const sortAssemblies = vi.fn()
+  const getRoots = vi.fn()
+
+  const reset = (): void => useAppStore.setState({
+    workspaceId: undefined,
+    modules: [],
+    roots: [],
+    children: {},
+    parents: {},
+    expanded: {},
+    loadingNodes: {},
+    selectedNode: undefined,
+    documents: {},
+    documentOrder: [],
+    activeDocumentId: undefined,
+    searchResults: [],
+    references: [],
+    output: [],
+    dirty: false,
+    workspaceStateId: undefined,
+    savedStateId: undefined,
+    canUndo: false,
+    canRedo: false,
+  })
+
+  beforeEach(() => {
+    saveModule.mockReset().mockResolvedValue({ path: '/A.dll', length: 10, sha256: 'aa' })
+    saveAllModules.mockReset().mockResolvedValue({ saved: [{ path: '/A.dll', length: 10, sha256: 'aa' }] })
+    reloadWorkspace.mockReset().mockResolvedValue({ workspaceId: 'w1', modules: [openedModule('n1', '/A.dll')], stateId: 's9' })
+    sortAssemblies.mockReset().mockResolvedValue({ nodes: [rootA, rootB] })
+    getRoots.mockReset().mockResolvedValue({ nodes: [rootA, rootB] })
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, saveModule, saveAllModules, reloadWorkspace, sortAssemblies, getRoots },
+    })
+    reset()
+  })
+
+  it('saves the selected module back over its own file', async () => {
+    useAppStore.setState({
+      workspaceId: 'w1',
+      modules: [openedModule('n1', '/A.dll'), openedModule('n2', '/B.dll')],
+      roots: [rootA, rootB],
+      selectedNode: rootB,
+      dirty: true,
+      workspaceStateId: 's2',
+      savedStateId: 's1',
+    })
+
+    await expect(useAppStore.getState().saveModule()).resolves.toBe(true)
+    expect(saveModule).toHaveBeenCalledWith('w1', 'n2')
+    expect(useAppStore.getState().dirty).toBe(false)
+    expect(useAppStore.getState().savedStateId).toBe('s2')
+  })
+
+  it('saves every module the backend reports modified', async () => {
+    useAppStore.setState({
+      workspaceId: 'w1',
+      modules: [openedModule('n1', '/A.dll')],
+      roots: [rootA],
+      selectedNode: rootA,
+      dirty: true,
+      workspaceStateId: 's2',
+      savedStateId: 's1',
+    })
+
+    await expect(useAppStore.getState().saveAllModules()).resolves.toBe(true)
+    expect(saveAllModules).toHaveBeenCalledWith('w1')
+    expect(useAppStore.getState().dirty).toBe(false)
+    expect(useAppStore.getState().savedStateId).toBe('s2')
+  })
+
+  it('drops every node-backed part of the workspace when the assemblies are reloaded', async () => {
+    useAppStore.setState({
+      workspaceId: 'w1',
+      modules: [openedModule('n1', '/A.dll'), openedModule('n2', '/B.dll')],
+      roots: [rootA, rootB],
+      children: { n1: [rootA] },
+      parents: { n1: 'n2' },
+      expanded: { n1: true },
+      selectedNode: rootB,
+      documents: { n1: documentState('n1') },
+      documentOrder: ['n1'],
+      activeDocumentId: 'n1',
+      dirty: true,
+      canUndo: true,
+      workspaceStateId: 's2',
+      savedStateId: 's1',
+    })
+
+    await expect(useAppStore.getState().reloadAllAssemblies()).resolves.toBe(true)
+    const state = useAppStore.getState()
+    // The workspace id survives the reload; every node id it handed out does not, so nothing that named
+    // a node can be kept.
+    expect(state.workspaceId).toBe('w1')
+    expect(state.modules).toEqual([openedModule('n1', '/A.dll')])
+    expect(state.roots).toEqual([rootA, rootB])
+    expect(state.children).toEqual({})
+    expect(state.parents).toEqual({})
+    expect(state.expanded).toEqual({})
+    expect(state.documents).toEqual({})
+    expect(state.documentOrder).toEqual([])
+    expect(state.activeDocumentId).toBeUndefined()
+    expect(state.dirty).toBe(false)
+    expect(state.canUndo).toBe(false)
+    expect(state.workspaceStateId).toBe('s9')
+    expect(state.savedStateId).toBe('s9')
+  })
+
+  it('takes the order the backend sorted the assemblies into', async () => {
+    const sorted = [rootB, rootA]
+    sortAssemblies.mockResolvedValue({ nodes: sorted })
+    useAppStore.setState({ workspaceId: 'w1', modules: [openedModule('n1', '/A.dll')], roots: [rootA, rootB] })
+
+    await expect(useAppStore.getState().sortAssemblies()).resolves.toBe(true)
+    expect(sortAssemblies).toHaveBeenCalledWith('w1')
+    expect(useAppStore.getState().roots).toEqual(sorted)
+  })
+
+  it('reports a failed save without clearing the modified state', async () => {
+    saveModule.mockRejectedValue(new Error('disk full'))
+    useAppStore.setState({
+      workspaceId: 'w1',
+      modules: [openedModule('n1', '/A.dll')],
+      roots: [rootA],
+      dirty: true,
+      workspaceStateId: 's2',
+      savedStateId: 's1',
+    })
+
+    await expect(useAppStore.getState().saveModule()).resolves.toBe(false)
+    expect(useAppStore.getState().dirty).toBe(true)
+    expect(useAppStore.getState().error).toBe('disk full')
+  })
+})

@@ -1351,6 +1351,140 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	/// <summary>
+	/// Save, as opposed to Save As: no destination is named, so the module goes back over the file the
+	/// workspace read it from and that file is what a later open sees.
+	/// </summary>
+	[Fact]
+	public async Task SavingInPlaceWritesBackOverTheFileTheWorkspaceWasOpenedFrom() {
+		var directory = CopyFixtureAssemblies();
+		try {
+			var path = Path.Combine(directory, "dnSpy.Backend.Contracts.dll");
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+			var moduleId = Assert.Single(opened.Modules).Id;
+			var method = await FindRpcExceptionGetterAsync(opened.WorkspaceId);
+			var target = await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, method.Id), TestContext.Current.CancellationToken);
+			var body = Assert.IsType<HexMethodTargetDto>(target.Method);
+			await CommitHexPatchAsync(opened.WorkspaceId, method.Id, body.BodyOffset, [0x0A, 0x17, 0x2A]);
+
+			var saved = await manager.SaveModuleInPlaceAsync(new SaveModuleInPlaceRequest(opened.WorkspaceId, moduleId), TestContext.Current.CancellationToken);
+			Assert.Equal(path, saved.Path);
+			Assert.True(saved.Length > 512);
+
+			// Read back through the same path: the file on disk is the one that carries the edit.
+			var reopened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+			var savedMethod = await FindRpcExceptionGetterAsync(reopened.WorkspaceId);
+			var savedTarget = await manager.ResolveHexTargetAsync(new HexTargetRequest(reopened.WorkspaceId, savedMethod.Id), TestContext.Current.CancellationToken);
+			var savedBody = Assert.IsType<HexMethodTargetDto>(savedTarget.Method);
+			var bytes = Convert.FromBase64String((await manager.ReadHexAsync(
+				new HexReadRequest(reopened.WorkspaceId, savedTarget.ModuleId, savedBody.BodyOffset, 3),
+				TestContext.Current.CancellationToken)).Base64Data);
+			Assert.Equal(new byte[] { 0x0A, 0x17, 0x2A }, bytes);
+		}
+		finally {
+			Directory.Delete(directory, recursive: true);
+		}
+	}
+
+	/// <summary>
+	/// Save All walks the modules rather than the tree, and writes only the ones that carry edits: an
+	/// untouched assembly is left exactly as it was on disk.
+	/// </summary>
+	[Fact]
+	public async Task SaveAllWritesOnlyTheModulesWithUnsavedEdits() {
+		var directory = CopyFixtureAssemblies();
+		try {
+			var editedPath = Path.Combine(directory, "dnSpy.Backend.Contracts.dll");
+			var untouchedPath = Path.Combine(directory, "dnSpy.Backend.Tests.dll");
+			var before = await File.ReadAllBytesAsync(untouchedPath, TestContext.Current.CancellationToken);
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([editedPath, untouchedPath]), TestContext.Current.CancellationToken);
+			Assert.Empty((await manager.SaveAllModulesAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Saved);
+
+			// The tree holds two modules, so the type is looked up under the one it belongs to.
+			var helloRequest = await FindTypeInModuleAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+			var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+			await manager.QueueRenameAsync(
+				new RenameEditRequest(opened.WorkspaceId, transaction.TransactionId, helloRequest.Id, "HelloRequestRenamed"),
+				TestContext.Current.CancellationToken);
+			await manager.CommitEditAsync(new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
+
+			var saved = await manager.SaveAllModulesAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+			Assert.Equal(editedPath, Assert.Single(saved.Saved).Path);
+			Assert.Equal(before, await File.ReadAllBytesAsync(untouchedPath, TestContext.Current.CancellationToken));
+
+			// Saving clears the flag the walk selects on, so a second Save All has nothing left to write.
+			Assert.Empty((await manager.SaveAllModulesAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Saved);
+		}
+		finally {
+			Directory.Delete(directory, recursive: true);
+		}
+	}
+
+	/// <summary>
+	/// Reload All Assemblies is not Close followed by Open: the workspace object survives, so the id the
+	/// client holds still resolves — but everything built on the old modules is gone with them.
+	/// </summary>
+	[Fact]
+	public async Task ReloadAllRebuildsTheTreeUnderTheSameWorkspaceId() {
+		var opened = await OpenContractsAssemblyAsync();
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		await manager.QueueRenameAsync(
+			new RenameEditRequest(opened.WorkspaceId, transaction.TransactionId, helloRequest.Id, "HelloRequestRenamed"),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
+
+		var reloaded = await manager.ReloadAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		Assert.Equal(opened.WorkspaceId, reloaded.WorkspaceId);
+		Assert.Equal(opened.Modules.Select(module => module.Path), reloaded.Modules.Select(module => module.Path));
+		// The file was never written, so the rename dies with the modules it was made on. The node is a
+		// different node — its id was issued again — but it is the same type, which is what the stable
+		// key says and what lets the client recognise what it is looking at.
+		var restored = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		Assert.Equal(helloRequest.Key, restored.Key);
+		Assert.NotEqual(helloRequest.Id, restored.Id);
+		Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+		// The id the client cached before the reload names nothing now.
+		await Assert.ThrowsAnyAsync<RpcException>(() => manager.GetNodeAsync(
+			new NodeRequest(opened.WorkspaceId, helloRequest.Id), TestContext.Current.CancellationToken));
+	}
+
+	/// <summary>Sort Assemblies reorders the roots the workspace already has; it loads and drops nothing.</summary>
+	[Fact]
+	public async Task SortAssembliesOrdersTheRootsByDisplayName() {
+		var directory = CopyFixtureAssemblies();
+		try {
+			// A workspace opens its files in path order, and the tree shows assembly names instead, so the
+			// file names decide which order the tree is in before anything is sorted. These two are named to
+			// put dnSpy.Backend.Tests first, which is the order the sort has to undo.
+			var testsPath = Path.Combine(directory, "a-Debug.dll");
+			var contractsPath = Path.Combine(directory, "z-Release.dll");
+			File.Move(Path.Combine(directory, "dnSpy.Backend.Tests.dll"), testsPath);
+			File.Move(Path.Combine(directory, "dnSpy.Backend.Contracts.dll"), contractsPath);
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([contractsPath, testsPath]), TestContext.Current.CancellationToken);
+			var request = new WorkspaceRequest(opened.WorkspaceId);
+
+			var before = (await manager.GetRootsAsync(request, TestContext.Current.CancellationToken)).Nodes;
+			Assert.Equal(["dnSpy.Backend.Tests", "dnSpy.Backend.Contracts"], before.Select(node => node.Label));
+
+			var sorted = await manager.SortAssembliesAsync(request, TestContext.Current.CancellationToken);
+			Assert.Equal(["dnSpy.Backend.Contracts", "dnSpy.Backend.Tests"], sorted.Nodes.Select(node => node.Label));
+			// Sorting is a view order, not a reopen: the nodes keep the ids the client already has, and the
+			// order the sort produced is the one later reads of the tree see.
+			Assert.Equal(before.Select(node => node.Id).OrderBy(id => id), sorted.Nodes.Select(node => node.Id).OrderBy(id => id));
+			Assert.Equal(sorted.Nodes.Select(node => node.Label), (await manager.GetRootsAsync(request, TestContext.Current.CancellationToken)).Nodes.Select(node => node.Label));
+			// The root list and the module list are the same order, which is what the client's explorer and
+			// its per-module commands both walk.
+			Assert.Equal(sorted.Nodes.Select(node => node.Label), opened.Modules
+				.Select(module => module.Name)
+				.OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
+		}
+		finally {
+			Directory.Delete(directory, recursive: true);
+		}
+	}
+
+	/// <summary>
 	/// A node id is a counter value issued in the order nodes are materialised, so it cannot be stored
 	/// across sessions; the key that travels with it can. This is the regression test for that property:
 	/// a key that quietly picked up a node id — as the resource keys once did — would fail here.
@@ -1419,6 +1553,17 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		return Assert.Single(types.Nodes, node => node.Label == typeName);
 	}
 
+	/// <summary>A type node under a named module, for the tests whose workspace holds more than one.</summary>
+	async Task<TreeNodeDto> FindTypeInModuleAsync(string workspaceId, string moduleLabel, string namespaceName, string typeName) {
+		var root = Assert.Single(
+			(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes,
+			node => node.Label == moduleLabel);
+		var rootChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, root.Id), TestContext.Current.CancellationToken);
+		var @namespace = Assert.Single(rootChildren.Nodes, node => node.Label == namespaceName);
+		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
+		return Assert.Single(types.Nodes, node => node.Label == typeName);
+	}
+
 	/// <summary>The one-liner getter the hex write commands are pointed at: <c>RpcException.get_Code()</c>.</summary>
 	async Task<TreeNodeDto> FindRpcExceptionGetterAsync(string workspaceId) {
 		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
@@ -1438,6 +1583,19 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	async Task<OpenWorkspaceResponse> OpenContractsAssemblyAsync() => await manager.OpenAsync(
 		new OpenWorkspaceRequest([typeof(HelloRequest).Assembly.Location]),
 		TestContext.Current.CancellationToken);
+
+	/// <summary>
+	/// A throwaway copy of the test output, for the saves that write back over the file they read: the
+	/// assemblies the rest of the suite opens must not be edited out from under it. Everything the test
+	/// output holds is copied, so references resolve the same way in there as they do at home.
+	/// </summary>
+	string CopyFixtureAssemblies() {
+		var directory = Path.Combine(Path.GetTempPath(), $"dnspy-save-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(directory);
+		foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "*.dll"))
+			File.Copy(file, Path.Combine(directory, Path.GetFileName(file)), overwrite: true);
+		return directory;
+	}
 
 	public void Dispose() => manager.Dispose();
 

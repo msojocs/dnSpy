@@ -248,6 +248,14 @@ interface AppState {
   hexPasteMethodBody(): Promise<boolean>
   replaceResource(node: TreeNode): Promise<boolean>
   saveModuleAs(): Promise<boolean>
+  /** Writes the selected module back over its own file — dnSpy's Save. */
+  saveModule(): Promise<boolean>
+  /** Writes every modified module back over its own file — dnSpy's Save All. */
+  saveAllModules(): Promise<boolean>
+  /** Drops every assembly and reopens the same files, discarding edits — dnSpy's Reload All Assemblies. */
+  reloadAllAssemblies(): Promise<boolean>
+  /** Reorders the tree's root nodes by name — dnSpy's Sort Assemblies. */
+  sortAssemblies(): Promise<boolean>
   saveCode(documentId: string): Promise<boolean>
   methodBodyChanged(node: TreeNode, result: EditCommitResponse): Promise<void>
   undoEdit(): Promise<void>
@@ -328,6 +336,19 @@ interface AppState {
 }
 
 const timestamp = (): string => new Date().toLocaleTimeString(getActiveLocale())
+
+/**
+ * The module a File-menu save acts on: the one the tree has selected, or the first the workspace holds
+ * when the selection is not a module. dnSpy saves the active document, which is this selection here.
+ */
+const currentModule = (state: Pick<AppState, 'modules' | 'selectedNode'>): OpenedModule | undefined => {
+  if (state.selectedNode?.kind === 'module') {
+    const selected = state.modules.find((module) => module.id === state.selectedNode?.id)
+    if (selected)
+      return selected
+  }
+  return state.modules[0]
+}
 
 const loadBool = (key: string, fallback: boolean): boolean => {
   if (typeof localStorage === 'undefined')
@@ -987,12 +1008,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   saveModuleAs: async () => {
-    const { workspaceId, modules, selectedNode } = get()
-    if (!workspaceId || modules.length === 0)
+    const { workspaceId } = get()
+    const module = currentModule(get())
+    if (!workspaceId || !module)
       return false
-    const module = selectedNode?.kind === 'module'
-      ? modules.find((candidate) => candidate.id === selectedNode.id) ?? modules[0]
-      : modules[0]
     set({ busy: true, error: undefined })
     try {
       const saved = await window.dnSpy.saveModuleAs(workspaceId, module.id, module.name.endsWith('.dll') || module.name.endsWith('.exe') ? module.name : `${module.name}.dll`)
@@ -1008,6 +1027,107 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     } finally {
       set({ busy: false })
+    }
+  },
+
+  saveModule: async () => {
+    const { workspaceId } = get()
+    const module = currentModule(get())
+    if (!workspaceId || !module)
+      return false
+    set({ busy: true, error: undefined })
+    try {
+      const saved = await window.dnSpy.saveModule(workspaceId, module.id)
+      set((state) => ({ dirty: false, savedStateId: state.workspaceStateId }))
+      get().appendOutput(t('Saved {path} ({length} bytes, SHA-256 {sha256}).', { path: saved.path, length: saved.length.toLocaleString(getActiveLocale()), sha256: saved.sha256 }))
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Save failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  saveAllModules: async () => {
+    const { workspaceId } = get()
+    if (!workspaceId)
+      return false
+    set({ busy: true, error: undefined })
+    try {
+      const result = await window.dnSpy.saveAllModules(workspaceId)
+      set((state) => ({ dirty: false, savedStateId: state.workspaceStateId }))
+      for (const saved of result.saved)
+        get().appendOutput(t('Saved {path} ({length} bytes, SHA-256 {sha256}).', { path: saved.path, length: saved.length.toLocaleString(getActiveLocale()), sha256: saved.sha256 }))
+      get().appendOutput(t('Saved {count} module(s).', { count: result.saved.length }))
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Save failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  reloadAllAssemblies: async () => {
+    const { workspaceId } = get()
+    if (!workspaceId)
+      return false
+    set({ busy: true, error: undefined })
+    try {
+      const reloaded = await window.dnSpy.reloadWorkspace(workspaceId)
+      const roots = await window.dnSpy.getRoots(workspaceId)
+      // Every node id the workspace handed out is gone with the reload, so the tabs, the expanded
+      // branches and the selection all name nodes that no longer exist and are dropped with them. The
+      // workspace id survives, which is what lets the reload stay inside the same session.
+      set({
+        modules: reloaded.modules,
+        roots: roots.nodes,
+        children: {},
+        parents: {},
+        expanded: {},
+        loadingNodes: {},
+        selectedNode: roots.nodes[0],
+        documents: {},
+        documentOrder: [],
+        activeDocumentId: undefined,
+        searchResults: [],
+        references: [],
+        dirty: false,
+        workspaceStateId: reloaded.stateId,
+        savedStateId: reloaded.stateId,
+        canUndo: false,
+        canRedo: false,
+      })
+      get().appendOutput(t('Reloaded {count} module(s).', { count: reloaded.modules.length }))
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Reload failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  sortAssemblies: async () => {
+    const { workspaceId } = get()
+    if (!workspaceId)
+      return false
+    try {
+      const roots = await window.dnSpy.sortAssemblies(workspaceId)
+      set({ roots: roots.nodes })
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Sort failed: {message}', { message }))
+      return false
     }
   },
 

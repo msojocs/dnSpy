@@ -8,6 +8,7 @@ type MenuBarProps = ComponentProps<typeof MenuBar>
 
 const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; items?: { name: string; enabled: boolean }[] } = {}): MenuBarProps => ({
   hasWorkspace: true,
+  hasModule: true,
   selectionKind: undefined,
   selectionLabel: undefined,
   hasEmptyNamespaceSibling: false,
@@ -24,8 +25,13 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   fullScreen: false,
   onOpen: vi.fn(),
   onOpenRecent: vi.fn(),
-  onClose: vi.fn(),
+  onCloseAll: vi.fn(),
+  dirty: false,
   onSave: vi.fn(),
+  onSaveModule: vi.fn(),
+  onSaveAll: vi.fn(),
+  onReloadAll: vi.fn(),
+  onSortAssemblies: vi.fn(),
   onFind: vi.fn(),
   onSearchAssemblies: vi.fn(),
   onUndo: vi.fn(),
@@ -138,12 +144,55 @@ afterEach(() => {
 })
 
 describe('MenuBar', () => {
-  it('exposes workspace commands and their shortcuts', () => {
-    renderMenu()
-    fireEvent.click(screen.getByRole('menuitem', { name: 'File' }))
+  it('mirrors the upstream File menu layout', () => {
+    // Nothing modified and nothing recently opened, which is the state that greys Save, Save All and
+    // Recent Files. The commands dnSpy has and this port does not stay in place, disabled.
+    renderMenuWith({ dirty: false })
+    expect(openMenu('File')).toEqual([
+      'Export to Project...',
+      'SaveCtrl+S',
+      'Save Module...',
+      'Save All...Ctrl+Shift+S',
+      'Open...Ctrl+O',
+      'Open from GAC...Ctrl+Shift+O',
+      'Open List...',
+      'Recent Files',
+      'Reload All Assemblies',
+      'Close All',
+      'Close Old In-Memory Modules',
+      'Close All Framework Assemblies',
+      'Close All Missing Files',
+      'Sort Assemblies',
+      'Restart as Administrator',
+      'ExitAlt+F4',
+    ])
+    for (const name of [/^Export to Project/, /^SaveCtrl/, /^Save All/, /^Open from GAC/, /^Open List/, /^Recent Files/, /^Close Old In-Memory/, /^Close All Framework/, /^Close All Missing/, /^Restart as Administrator/])
+      expect(screen.getByRole('menuitem', { name })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: /^Open\.\.\./ })).toBeEnabled()
-    expect(screen.getByText('Ctrl+O')).toBeVisible()
-    expect(screen.getByRole('menuitem', { name: /^Save As\.\.\./ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Save Module\.\.\./ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Reload All Assemblies/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Close All$/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Sort Assemblies/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Exit/ })).toBeEnabled()
+  })
+
+  it('enables Save and Save All only once something is modified', () => {
+    renderMenuWith({ dirty: true })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'File' }))
+    expect(screen.getByRole('menuitem', { name: /^SaveCtrl/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Save All/ })).toBeEnabled()
+  })
+
+  it('lists the recent workspaces under the Recent Files submenu', () => {
+    const onOpenRecent = vi.fn()
+    renderMenuWith({ recentWorkspaces: [['/tmp/a/One.dll'], ['/tmp/b/Two.dll', '/tmp/b/Three.dll']], onOpenRecent })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'File' }))
+    expect(screen.getByRole('menuitem', { name: /^Recent Files/ })).toBeEnabled()
+    fireEvent.pointerEnter(screen.getByRole('menuitem', { name: /^Recent Files/ }))
+    const submenu = screen.getAllByRole('menu')[1]
+    expect(within(submenu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['1  One.dll', '2  Two.dll +1'])
+    fireEvent.click(within(submenu).getByRole('menuitem', { name: /Two\.dll/ }))
+    expect(onOpenRecent).toHaveBeenCalledWith(['/tmp/b/Two.dll', '/tmp/b/Three.dll'])
   })
 
   it('enables CoreCLR commands only when the backend reports support', () => {
@@ -376,6 +425,7 @@ describe('MenuBar', () => {
     const onShowDisassembly = vi.fn()
     render(<MenuBar
       hasWorkspace={true}
+      hasModule={true}
       selectionKind={undefined}
       selectionLabel={undefined}
       hasEmptyNamespaceSibling={false}
@@ -393,8 +443,13 @@ describe('MenuBar', () => {
       visibleToolWindows={new Set(['explorer'])}
       onOpen={vi.fn()}
       onOpenRecent={vi.fn()}
-      onClose={vi.fn()}
+      onCloseAll={vi.fn()}
+      dirty={false}
       onSave={vi.fn()}
+      onSaveModule={vi.fn()}
+      onSaveAll={vi.fn()}
+      onReloadAll={vi.fn()}
+      onSortAssemblies={vi.fn()}
       onFind={vi.fn()}
       onSearchAssemblies={vi.fn()}
       onUndo={vi.fn()}
@@ -505,6 +560,7 @@ describe('MenuBar', () => {
   it('exposes View toggles in their checked state', () => {
     render(<MenuBar
       hasWorkspace={true}
+      hasModule={true}
       selectionKind={undefined}
       selectionLabel={undefined}
       hasEmptyNamespaceSibling={false}
@@ -521,8 +577,13 @@ describe('MenuBar', () => {
       fullScreen={true}
       onOpen={vi.fn()}
       onOpenRecent={vi.fn()}
-      onClose={vi.fn()}
+      onCloseAll={vi.fn()}
+      dirty={false}
       onSave={vi.fn()}
+      onSaveModule={vi.fn()}
+      onSaveAll={vi.fn()}
+      onReloadAll={vi.fn()}
+      onSortAssemblies={vi.fn()}
       onFind={vi.fn()}
       onSearchAssemblies={vi.fn()}
       onUndo={vi.fn()}

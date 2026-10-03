@@ -56,9 +56,13 @@ const closeApp = async (options: { keepUserData?: boolean } = {}): Promise<void>
 const openAssemblyAndNamespace = async (): Promise<void> => {
   await page.getByRole('button', { name: 'Open Assembly' }).first().click()
   await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
-  await page.getByRole('menuitem', { name: 'File' }).click()
+  // The menu's own entries name files too, so the root button is asked for by its exact name.
+  const fileMenu = page.getByRole('menuitem', { name: 'File', exact: true })
+  await fileMenu.click()
+  // The remembered sessions live under File > Recent Files, the way dnSpy has them.
+  await page.getByRole('menuitem', { name: 'Recent Files' }).click()
   await expect(page.getByRole('menuitem', { name: /dnSpy\.Backend\.Contracts\.dll/ })).toBeVisible()
-  await page.getByRole('menuitem', { name: 'File' }).click()
+  await fileMenu.click()
   const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
   await expect(namespaceRow).toBeVisible()
   await namespaceRow.locator('.tree-expander').click()
@@ -95,6 +99,31 @@ test.describe('the workspace shell', () => {
     await page.keyboard.press('Escape')
     await expect(about).not.toBeVisible()
     await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
+  })
+
+  test('shows the upstream File menu, in its order, with what it cannot do greyed out', async () => {
+    await page.getByRole('menuitem', { name: 'File', exact: true }).click()
+
+    // The labels only: the shortcut column is a sibling span, so the row's text is asked for directly.
+    const labels = page.locator('.menu-popup > .menu-item > span:nth-child(2), .menu-popup > .menu-item-row > .menu-item > span:nth-child(2)')
+    await expect(labels).toHaveText([
+      'Export to Project...', 'Save', 'Save Module...', 'Save All...',
+      'Open...', 'Open from GAC...', 'Open List...', 'Recent Files', 'Reload All Assemblies',
+      'Close All', 'Close Old In-Memory Modules', 'Close All Framework Assemblies', 'Close All Missing Files',
+      'Sort Assemblies',
+      'Restart as Administrator', 'Exit',
+    ])
+
+    // Nothing is open yet, so the entries that work on a workspace are greyed; the ones Linux has no
+    // command for are greyed whatever is open. The row is found by its label span, since the shortcut
+    // column next to it is part of the button's own text.
+    const row = (label: string) => page
+      .locator('.menu-popup > .menu-item, .menu-popup > .menu-item-row > .menu-item')
+      .filter({ has: page.locator(`span:nth-child(2):text-is("${label}")`) })
+    for (const label of ['Export to Project...', 'Save', 'Save All...', 'Open from GAC...', 'Open List...', 'Reload All Assemblies', 'Close All', 'Close Old In-Memory Modules', 'Close All Framework Assemblies', 'Close All Missing Files', 'Sort Assemblies', 'Restart as Administrator'])
+      await expect(row(label)).toBeDisabled()
+    await expect(row('Open...')).toBeEnabled()
+    await expect(row('Exit')).toBeEnabled()
   })
 
   test('maximizes and restores the window from the title bar', async () => {

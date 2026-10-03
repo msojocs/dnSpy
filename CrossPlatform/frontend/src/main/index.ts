@@ -217,6 +217,8 @@ const registerIpc = (): void => {
   ipcMain.handle('workspace:open', (_event, paths: string[]) => requireBackend().invoke('workspace/open', { paths }))
   ipcMain.handle('workspace:addModules', (_event, workspaceId: string, paths: string[]) => requireBackend().invoke('workspace/addModules', { workspaceId, paths }))
   ipcMain.handle('workspace:close', (_event, workspaceId: string) => requireBackend().invoke('workspace/close', { workspaceId }))
+  ipcMain.handle('workspace:reload', (_event, workspaceId: string) => requireBackend().invoke('workspace/reload', { workspaceId }))
+  ipcMain.handle('workspace:sortAssemblies', (_event, workspaceId: string) => requireBackend().invoke('workspace/sortAssemblies', { workspaceId }))
   ipcMain.handle('tree:roots', (_event, workspaceId: string) => requireBackend().invoke('tree/getRoots', { workspaceId }))
   ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }))
   ipcMain.handle('tree:node', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getNode', { workspaceId, nodeId }))
@@ -299,6 +301,12 @@ const registerIpc = (): void => {
       overwrite: true,
     })
   })
+  // Save and Save All write back over the files the assemblies came from, so neither has a dialog to
+  // go through — unlike Save As, which is the one that needs a destination.
+  ipcMain.handle('module:save', (_event, workspaceId: string, moduleId: string) =>
+    requireBackend().invoke('module/save', { workspaceId, moduleId }))
+  ipcMain.handle('module:saveAll', (_event, workspaceId: string) =>
+    requireBackend().invoke('module/saveAll', { workspaceId }))
   ipcMain.handle('document:saveCode', async (_event, suggestedName: string, text: string) => {
     if (typeof suggestedName !== 'string' || typeof text !== 'string')
       throw new TypeError('Invalid save-code request.')

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight } from 'lucide-react'
 import { useLanguage, type LanguagePreference } from '../localization'
 import { buildEditMenu, type ActiveDocument, type CreatedKind, type HexShowKind, type MenuItem } from './edit-menu'
+import { buildFileMenu } from './file-menu'
 import type { HexBodyKind } from '../app-store'
 import type { HexRange, HexTargetResponse } from '../../../shared/protocol'
 import { WindowControls } from './WindowControls'
@@ -16,6 +17,8 @@ const openExternal = (url: string): void => {
 
 interface MenuBarProps {
   hasWorkspace: boolean
+  /** Whether the workspace holds a module, which is what the File menu's "Save Module..." acts on. */
+  hasModule: boolean
   /** `selectedNode.kind` / `selectedNode.label` from the assembly explorer, feeding the Edit menu. */
   selectionKind?: string
   selectionLabel?: string
@@ -36,8 +39,14 @@ interface MenuBarProps {
   visibleToolWindows: ReadonlySet<string>
   onOpen(): void
   onOpenRecent(paths: string[]): void
-  onClose(): void
+  onCloseAll(): void
+  /** Whether an edit is unsaved, which is what enables the File menu's Save and Save All. */
+  dirty: boolean
   onSave(): void
+  onSaveModule(): void
+  onSaveAll(): void
+  onReloadAll(): void
+  onSortAssemblies(): void
   onFind(): void
   onSearchAssemblies(): void
   onUndo(): void
@@ -126,6 +135,7 @@ const languageOptions: { value: LanguagePreference; label: string }[] = [
 
 export const MenuBar = ({
   hasWorkspace,
+  hasModule,
   selectionKind,
   selectionLabel,
   hasEmptyNamespaceSibling,
@@ -142,8 +152,13 @@ export const MenuBar = ({
   fullScreen,
   onOpen,
   onOpenRecent,
-  onClose,
+  onCloseAll,
+  dirty,
   onSave,
+  onSaveModule,
+  onSaveAll,
+  onReloadAll,
+  onSortAssemblies,
   onFind,
   onSearchAssemblies,
   onUndo,
@@ -232,17 +247,23 @@ export const MenuBar = ({
   // App hands over as the two flags, so "all of them are on" is nothing left to enable.
   const allBookmarksEnabled = !canEnableAllBookmarks && canDisableAllBookmarks
   const menus: Record<string, MenuItem[]> = {
-    [t('File')]: [
-      { label: t('Open...'), shortcut: 'Ctrl+O', action: onOpen },
-      { label: t('Save As...'), shortcut: 'Ctrl+Shift+S', disabled: !hasWorkspace, action: onSave },
-      { label: t('Close Workspace'), disabled: !hasWorkspace, action: onClose },
-      ...(recentWorkspaces.length > 0 ? [
-        { separator: true },
-        ...recentWorkspaces.map((paths, index) => ({ label: `${index + 1}  ${recentLabel(paths, t('Workspace'))}`, action: () => onOpenRecent(paths) })),
-      ] : []),
-      { separator: true },
-      { label: t('Exit'), shortcut: 'Alt+F4', action: onQuit },
-    ],
+    // dnSpy's File menu in full: see file-menu.ts for the ordering and the disabled entries.
+    [t('File')]: buildFileMenu({
+      t,
+      hasWorkspace,
+      hasModule,
+      dirty,
+      recentWorkspaces,
+      onOpen,
+      onOpenRecent,
+      onSave,
+      onSaveModule,
+      onSaveAll,
+      onReloadAll,
+      onCloseAll,
+      onSortAssemblies,
+      onQuit,
+    }),
     // dnSpy's Edit menu in full: see edit-menu.ts for the ordering and visibility rules.
     [t('Edit')]: buildEditMenu({
       t,
@@ -436,13 +457,14 @@ const MenuPopup = ({ items, onClose, depth = 0 }: { items: MenuItem[]; onClose: 
                 aria-haspopup="menu"
                 aria-expanded={openIndex === index}
                 className={`menu-item${openIndex === index ? ' menu-item-open' : ''}`}
+                disabled={item.disabled}
                 onClick={() => setOpenIndex(openIndex === index ? undefined : index)}
               >
                 <span className="menu-check" />
                 <span>{item.label}</span>
                 <span className="menu-shortcut"><ChevronRight size={12} /></span>
               </button>
-              {openIndex === index && (
+              {openIndex === index && item.submenu.length > 0 && (
                 <MenuPopup items={item.submenu} onClose={onClose} depth={depth + 1} />
               )}
             </div>
@@ -466,9 +488,4 @@ const MenuPopup = ({ items, onClose, depth = 0 }: { items: MenuItem[]; onClose: 
       })}
     </div>
   )
-}
-
-const recentLabel = (paths: string[], workspaceLabel: string): string => {
-  const first = paths[0]?.split(/[\\/]/).at(-1) ?? workspaceLabel
-  return paths.length > 1 ? `${first} +${paths.length - 1}` : first
 }
