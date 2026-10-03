@@ -206,7 +206,7 @@ const registerIpc = (): void => {
   ipcMain.handle('edit:begin', (_event, workspaceId: string) => requireBackend().invoke('edit/begin', { workspaceId }))
   ipcMain.handle('edit:getMethodBody', (_event, workspaceId: string, methodNodeId: string) => requireBackend().invoke('edit/getMethodBody', { workspaceId, methodNodeId }))
   ipcMain.handle('edit:getOptions', (_event, workspaceId: string, kind: string, request: { nodeId?: string, ownerNodeId?: string, isNew?: boolean }) => requireBackend().invoke('edit/getOptions', { workspaceId, kind, ...request }))
-  ipcMain.handle('edit:create', (_event, workspaceId: string, transactionId: string, ownerNodeId: string, options: unknown) => requireBackend().invoke('edit/create', { workspaceId, transactionId, ownerNodeId, options }))
+  ipcMain.handle('edit:create', (_event, workspaceId: string, transactionId: string, ownerNodeId: string, options: unknown, nested = false) => requireBackend().invoke('edit/create', { workspaceId, transactionId, ownerNodeId, options, nested }))
   ipcMain.handle('edit:setOptions', (_event, workspaceId: string, transactionId: string, nodeId: string, options: unknown) => requireBackend().invoke('edit/setOptions', { workspaceId, transactionId, nodeId, options }))
   ipcMain.handle('edit:rename', (_event, workspaceId: string, transactionId: string, nodeId: string, newName: string) => requireBackend().invoke('edit/rename', { workspaceId, transactionId, nodeId, newName }))
   ipcMain.handle('edit:delete', (_event, workspaceId: string, transactionId: string, nodeId: string) => requireBackend().invoke('edit/delete', { workspaceId, transactionId, nodeId }))

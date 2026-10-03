@@ -167,7 +167,7 @@ export const App = (): React.JSX.Element => {
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   // The create or edit dialog the Edit menu opened, over the node it acts on: `nodeId` is what is being
   // edited, and is left off when a new node is being created in `ownerNodeId` instead.
-  const [editNode, setEditNode] = useState<{ kind: CreatedKind, nodeId?: string, ownerNodeId?: string }>()
+  const [editNode, setEditNode] = useState<{ kind: CreatedKind, nodeId?: string, ownerNodeId?: string, nested?: boolean }>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [debugProgramDialogOpen, setDebugProgramDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
@@ -402,12 +402,18 @@ export const App = (): React.JSX.Element => {
       setEditNode({ kind: node.kind, nodeId: node.id })
   }
 
-  /** The five create commands: the new node goes into the type the selection belongs to, which is the
-   * selected type itself or the type a selected member hangs off. */
-  const createMember = (kind: CreatedKind): void => {
-    const ownerNodeId = ownerTypeIdOf(treeParents, selectedNode)
+  /**
+   * The five create commands. A member goes into the type the selection belongs to, which is the selected
+   * type itself or the type a selected member hangs off. A type is the one of them with two forms: a
+   * nested one goes into that same type, while a top-level one is filed by whoever is selected — a
+   * namespace by its own name, a type by the namespace it is already in, and a module by nothing at all.
+   * dnSpy reaches the first through the namespace ancestor of the selection and the second through the
+   * selected node itself, which is why the owner is picked differently here.
+   */
+  const createMember = (kind: CreatedKind, nested = false): void => {
+    const ownerNodeId = kind === 'type' && !nested ? selectedNode?.id : ownerTypeIdOf(treeParents, selectedNode)
     if (ownerNodeId !== undefined)
-      setEditNode({ kind, ownerNodeId })
+      setEditNode({ kind, ownerNodeId, nested })
   }
 
   useEffect(() => {
@@ -847,11 +853,12 @@ export const App = (): React.JSX.Element => {
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
       {editNode && workspaceId && (
         <NodeOptionsDialog
-          key={`${editNode.kind}:${editNode.nodeId ?? editNode.ownerNodeId}`}
+          key={`${editNode.kind}:${editNode.nodeId ?? editNode.ownerNodeId}:${editNode.nested === true}`}
           workspaceId={workspaceId}
           kind={editNode.kind}
           nodeId={editNode.nodeId}
           ownerNodeId={editNode.ownerNodeId}
+          nested={editNode.nested}
           onClose={() => setEditNode(undefined)}
         />
       )}

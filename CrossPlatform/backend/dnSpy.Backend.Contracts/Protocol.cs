@@ -529,7 +529,18 @@ public sealed record TypeOptionsDto(
 	IReadOnlyList<CustomAttributeDto> CustomAttributes,
 	IReadOnlyList<DeclSecurityDto> DeclSecurities,
 	IReadOnlyList<GenericParamDto> GenericParameters,
-	IReadOnlyList<TypeDefOrRefAndCaDto> Interfaces);
+	IReadOnlyList<TypeDefOrRefAndCaDto> Interfaces,
+	// How many generic parameters the type has itself. No page edits it; it is read-only context the base
+	// type's editor gates its Var button on — dnSpy hands the type being edited over as the signature
+	// creator's OwnerType — and it is absent while creating one, where dnSpy hands over nothing and every
+	// Var is allowed.
+	int? TypeGenericParameterCount = null,
+	// The simple name of the module's corlib, which is the scope a base type carries when it comes from
+	// there. dnSpy's Kind combo reads the base type back to tell a class from a struct, an enum and a
+	// delegate, and it asks whether that type's assembly is the corlib as it does so: a type that merely
+	// happens to be called System.Object is a plain class, not a static one. The dialog cannot ask that
+	// on its own, so the answer travels with the model.
+	string? CorLibScope = null);
 
 public sealed record MethodOptionsDto(
 	int ImplAttributes,
@@ -613,13 +624,20 @@ public sealed record GetNodeOptionsRequest(
 	string Kind,
 	string? NodeId = null,
 	string? OwnerNodeId = null,
-	bool IsNew = false);
+	bool IsNew = false,
+	// Whether the type is being created inside another one, which only the type kind reads. dnSpy has a
+	// command for each: Create Type puts a type at the top level whatever is selected, while Create Nested
+	// Type puts it in the selected type — or in the type the selected member belongs to — and gives it no
+	// namespace of its own.
+	bool Nested = false);
 
 public sealed record CreateNodeRequest(
 	string WorkspaceId,
 	string TransactionId,
 	string OwnerNodeId,
-	NodeOptionsDto Options);
+	NodeOptionsDto Options,
+	// The same flag the dialog was opened with: it is what says which list the new type joins.
+	bool Nested = false);
 
 public sealed record SetNodeOptionsRequest(
 	string WorkspaceId,

@@ -1513,18 +1513,19 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public NodeOptionsDto GetOptions(GetNodeOptionsRequest request) {
 			var owner = GetNodeOrNull(request.OwnerNodeId);
 			if (request.IsNew)
-				return NewOptions(request.Kind, owner);
+				return NewOptions(request.Kind, owner, request.Nested);
 			if (GetNodeOrNull(request.NodeId) is not { } node || node.Value is not IMDTokenProvider member)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be edited.");
 			return CreateEditContext(node.Module).Options.Existing(member);
 		}
 
-		NodeOptionsDto NewOptions(string kind, NodeEntry? owner) {
+		NodeOptionsDto NewOptions(string kind, NodeEntry? owner, bool nested) {
 			var module = owner?.Module ?? OpenModules.FirstOrDefault()
 				?? throw new RpcException(ErrorCodes.EditValidationFailed, "The workspace has no module to create the item in.");
 			var options = CreateEditContext(module).Options;
 			return kind switch {
-				NodeOptionKinds.Type => options.NewType(NamespaceOf(owner), IsNestedType(owner)),
+				// A nested type has no namespace of its own, which is what dnSpy's own create command passes.
+				NodeOptionKinds.Type => options.NewType(nested ? string.Empty : NamespaceOf(owner), nested),
 				NodeOptionKinds.Method => options.NewMethod(OwnerTypeOf(owner)),
 				NodeOptionKinds.Field => options.NewField(OwnerTypeOf(owner)),
 				NodeOptionKinds.Property => options.NewProperty(OwnerTypeOf(owner)),
@@ -1545,13 +1546,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			_ => throw new RpcException(ErrorCodes.EditValidationFailed, "Select a type or one of its members."),
 		};
 
-		/// <summary>A type created from a type node is nested — and so is one created while a member of a
-		/// type is selected, since dnSpy's create command walks up to the nearest type node. One created
-		/// from a namespace or a module is not nested, and takes that namespace's name: a nested type has
-		/// no namespace of its own.</summary>
-		static bool IsNestedType(NodeEntry? owner) => owner?.Value is TypeDef or MethodDef or FieldDef or PropertyDef or EventDef;
-
-		static string NamespaceOf(NodeEntry? owner) => owner?.Value is NamespaceValue value ? value.Name : string.Empty;
+		/// <summary>The namespace a new top-level type goes into, which is the selected namespace's own name
+		/// or the one the selected type is already filed under — dnSpy asks the selection for its nearest
+		/// namespace ancestor, and a type's is the one its name is written with. A module has none, so its
+		/// types go into the empty namespace.</summary>
+		static string NamespaceOf(NodeEntry? owner) => owner?.Value switch {
+			NamespaceValue value => value.Name,
+			TypeDef type => type.Namespace.String,
+			_ => string.Empty,
+		};
 
 		/// <summary>
 		/// The state an edit operation runs against: the module new rows are written into, the other open
@@ -1907,11 +1910,17 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			// request should not burn a row id on an object nothing will ever hold.
 			TypeDef? ownerType;
 			if (options.Kind == NodeOptionKinds.Type) {
-				if (owner.Value is not (TypeDef or NamespaceValue or ModuleDef))
+				// Create Nested Type puts the new type inside the selected one, or inside the type the
+				// selected member belongs to — dnSpy's command takes a type or a member of one. Create Type
+				// is the other command, and it puts the type at the top level whatever is selected, a type
+				// node included: the module holds it and its own namespace is what files it. The two
+				// ask for different selections, and so are checked apart.
+				if (request.Nested)
+					ownerType = OwnerTypeOf(owner);
+				else if (owner.Value is TypeDef or NamespaceValue or ModuleDef)
+					ownerType = null;
+				else
 					throw new RpcException(ErrorCodes.EditValidationFailed, "Select a type, a namespace or a module.");
-				// From a type or one of its members the type is nested in it; from a namespace or a module it
-				// is top-level and belongs to the module, where its own namespace is what files it.
-				ownerType = owner.Value is NamespaceValue or ModuleDef ? null : OwnerTypeOf(owner);
 			}
 			else
 				ownerType = OwnerTypeOf(owner);
@@ -1995,8 +2004,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// module itself when it was created from a namespace or a module node.
 		/// </summary>
 		static (Action Add, Action Remove) MembershipOf(NodeEntry owner, TypeDef? ownerType, IMDTokenProvider created) => created switch {
-			TypeDef type when owner.Value is ModuleDef or NamespaceValue => Pair(owner.Module.Module.Types, type),
-			TypeDef type => Pair(ownerType!.NestedTypes, type),
+			// A type with no type to be nested in is a top-level one, which the module holds; its own
+			// namespace is what files it, and there is no list per namespace to put it in.
+			TypeDef type when ownerType is null => Pair(owner.Module.Module.Types, type),
+			TypeDef type => Pair(ownerType.NestedTypes, type),
 			MethodDef method => Pair(ownerType!.Methods, method),
 			FieldDef field => Pair(ownerType!.Fields, field),
 			PropertyDef property => Pair(ownerType!.Properties, property),

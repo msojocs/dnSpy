@@ -29,7 +29,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 	}
 
 	[Fact]
-	public async Task CreatingATypeInANamespacePutsItInTheModuleAndNotInTheType() {
+	public async Task CreatingATypePutsItAtTheTopLevelOfTheNamespaceItIsFiledUnder() {
 		var workspaceId = await OpenContractsAssemblyAsync();
 		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
 		var @namespace = await NamespaceOfAsync(workspaceId, type);
@@ -44,10 +44,77 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		var nestedInSelected = await ChildrenAsync(workspaceId, type.Id);
 		Assert.DoesNotContain(nestedInSelected, node => node.Id == created.NodeId);
 
-		var nested = await CreateAsync(workspaceId, type.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id));
+		// Create Type says top-level whatever is selected, so a type node is not an instruction to nest in
+		// it — dnSpy's own command reads the selection's nearest namespace ancestor instead, and a type's is
+		// the namespace its name is written with.
+		var fromAType = await CreateAsync(workspaceId, type.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id));
+		Assert.Equal("dnSpy.Backend.Contracts.MyType", fromAType.Label);
+		Assert.Contains(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == fromAType.NodeId);
+		Assert.DoesNotContain(await ChildrenAsync(workspaceId, type.Id), node => node.Id == fromAType.NodeId);
+	}
+
+	[Fact]
+	public async Task CreatingANestedTypePutsItInTheSelectedTypeAndNowhereElse() {
+		var workspaceId = await OpenContractsAssemblyAsync();
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
+		var @namespace = await NamespaceOfAsync(workspaceId, type);
+
+		var nested = await CreateAsync(workspaceId, type.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id, nested: true), nested: true);
+
+		Assert.Equal("type", nested.Kind);
+		// A nested type has no namespace of its own: its name is its declaring type's and the hash-marked
+		// one the metadata gives it.
 		Assert.Equal("dnSpy.Backend.Contracts.RpcException+MyType", nested.Label);
-		var nestedTypes = await ChildrenAsync(workspaceId, type.Id);
-		Assert.Contains(nestedTypes, node => node.Id == nested.NodeId && node.Kind == "type");
+		Assert.Contains(await ChildrenAsync(workspaceId, type.Id), node => node.Id == nested.NodeId);
+		Assert.DoesNotContain(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == nested.NodeId);
+
+		// Which is also what a member selection nests in: the type the member belongs to, since a method
+		// cannot hold a type.
+		var member = await FindMethodAsync(workspaceId, type.Id);
+		var fromAMember = await CreateAsync(workspaceId, member.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, member.Id, nested: true), nested: true);
+		Assert.Equal("dnSpy.Backend.Contracts.RpcException+MyType", fromAMember.Label);
+		Assert.Contains(await ChildrenAsync(workspaceId, type.Id), node => node.Id == fromAMember.NodeId);
+	}
+
+	[Fact]
+	public async Task ACreatedTypeIsWrittenWithTheAttributesTheCommandsUse() {
+		var workspaceId = await OpenContractsAssemblyAsync();
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
+		var @namespace = await NamespaceOfAsync(workspaceId, type);
+
+		var flat = await CreateAsync(workspaceId, @namespace.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, @namespace.Id));
+		var nested = await CreateAsync(workspaceId, type.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id, nested: true), nested: true);
+
+		var flatOptions = Assert.IsType<TypeOptionsDto>((await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, flat.NodeId), TestContext.Current.CancellationToken)).Type);
+		var nestedOptions = Assert.IsType<TypeOptionsDto>((await manager.GetOptionsAsync(
+			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, nested.NodeId), TestContext.Current.CancellationToken)).Type);
+
+		Assert.Equal(
+			TypeAttributes.Public | TypeAttributes.AutoLayout | TypeAttributes.Class | TypeAttributes.AnsiClass,
+			(TypeAttributes)flatOptions.Attributes);
+		Assert.Equal(
+			TypeAttributes.NestedPublic | TypeAttributes.AutoLayout | TypeAttributes.Class | TypeAttributes.AnsiClass,
+			(TypeAttributes)nestedOptions.Attributes);
+		Assert.Equal("System.Object", flatOptions.BaseType?.Display);
+		Assert.Equal("System.Object", nestedOptions.BaseType?.Display);
+	}
+
+	[Fact]
+	public async Task ACreatedTypeIsFiledInTheNamespaceTheDialogWasOpenedWith() {
+		var workspaceId = await OpenContractsAssemblyAsync();
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
+
+		// The dialog's namespace box is writable, so what it was changed to is what files the type: the
+		// module holds it either way, and nothing else is keyed by the namespace.
+		var options = await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id);
+		var renamed = options with { Type = options.Type! with { Name = "Widget", Namespace = "Other.Place" } };
+		var created = await CreateAsync(workspaceId, type.Id, renamed);
+
+		Assert.Equal("Other.Place.Widget", created.Label);
+		var module = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var @namespace = Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "namespace" && node.Label == "Other.Place");
+		Assert.Single(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == created.NodeId);
 	}
 
 	[Fact]
@@ -177,10 +244,10 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		await manager.RollbackEditAsync(new EditTransactionRequest(workspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
 	}
 
-	async Task<EditNodeResponse> CreateAsync(string workspaceId, string ownerNodeId, NodeOptionsDto options) {
+	async Task<EditNodeResponse> CreateAsync(string workspaceId, string ownerNodeId, NodeOptionsDto options, bool nested = false) {
 		var transaction = await manager.BeginEditAsync(new BeginEditRequest(workspaceId), TestContext.Current.CancellationToken);
 		var created = await manager.QueueCreateAsync(
-			new CreateNodeRequest(workspaceId, transaction.TransactionId, ownerNodeId, options),
+			new CreateNodeRequest(workspaceId, transaction.TransactionId, ownerNodeId, options, nested),
 			TestContext.Current.CancellationToken);
 		var committed = await manager.CommitEditAsync(new EditTransactionRequest(workspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
 		// What the client reveals after a create is this id, so it has to be in the response the commit gives back.
@@ -188,8 +255,8 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		return created;
 	}
 
-	Task<NodeOptionsDto> NewOptionsAsync(string workspaceId, string kind, string ownerNodeId) => manager.GetOptionsAsync(
-		new GetNodeOptionsRequest(workspaceId, kind, OwnerNodeId: ownerNodeId, IsNew: true),
+	Task<NodeOptionsDto> NewOptionsAsync(string workspaceId, string kind, string ownerNodeId, bool nested = false) => manager.GetOptionsAsync(
+		new GetNodeOptionsRequest(workspaceId, kind, OwnerNodeId: ownerNodeId, IsNew: true, Nested: nested),
 		TestContext.Current.CancellationToken);
 
 	async Task<IReadOnlyList<TreeNodeDto>> ChildrenAsync(string workspaceId, string nodeId) =>

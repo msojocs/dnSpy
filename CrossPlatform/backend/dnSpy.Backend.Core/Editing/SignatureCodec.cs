@@ -288,7 +288,9 @@ public sealed class SignatureCodec {
 		ElementType.I, ElementType.U, ElementType.TypedByRef,
 	];
 
-	string CorLibScope => context.Module.CorLibTypes.AssemblyRef?.Name.String ?? "mscorlib";
+	/// <summary>The scope every corlib type signature this module reads or writes is described with,
+	/// which is also what tells a signature that came from the corlib from one that did not.</summary>
+	public string CorLibScope => context.Module.CorLibTypes.AssemblyRef?.Name.String ?? "mscorlib";
 
 	static string? CorLibNameOf(ElementType element) =>
 		CorLibNames.FirstOrDefault(entry => entry.Element == element).Name;

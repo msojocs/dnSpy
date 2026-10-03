@@ -1921,6 +1921,15 @@ fieldset.options-group {
   display: contents;
 }
 
+/* Three label/box pairs to a line, which is what the type dialog's six combinations take. */
+.options-combos {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 5px 10px;
+  align-items: center;
+}
+
+.options-combos select,
 .options-pairs select {
   min-width: 0;
   height: 24px;

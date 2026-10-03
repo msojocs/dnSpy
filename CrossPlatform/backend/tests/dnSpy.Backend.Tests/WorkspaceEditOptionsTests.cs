@@ -76,6 +76,12 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		Assert.Equal("dnSpy.Backend.Tests", typeOptions.Namespace);
 		Assert.Equal(TypeAttributes.Public | TypeAttributes.AutoLayout | TypeAttributes.Class | TypeAttributes.AnsiClass, (TypeAttributes)typeOptions.Attributes);
 		Assert.Equal("System.Object", typeOptions.BaseType?.Display);
+		// The corlib the base type comes from travels with the model, because the Kind combo reads the base
+		// type back and a type is a static class only when its base type is the corlib's System.Object.
+		Assert.Equal("System.Runtime", typeOptions.CorLibScope);
+		// How many generic parameters the type has is the other thing the dialog cannot work out for
+		// itself, and a type being created has none to allow a Var of.
+		Assert.Null(typeOptions.TypeGenericParameterCount);
 
 		var newMethod = await GetNewOptionsAsync(workspaceId, NodeOptionKinds.Method, type.Id);
 		var methodOptions = Assert.IsType<MethodOptionsDto>(newMethod.Method);
@@ -95,6 +101,32 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		Assert.Equal("MyEvent", eventOptions.Name);
 		Assert.Equal("System.EventHandler", eventOptions.EventType?.Display);
 		Assert.Null(eventOptions.AddMethod);
+	}
+
+	[Fact]
+	public async Task NewNestedTypeOptionsAreNestedAndHaveNoNamespaceOfTheirOwn() {
+		var workspaceId = await OpenTestAssemblyAsync();
+		var module = await FindModuleAsync(workspaceId);
+		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
+		var @namespace = Assert.Single(moduleChildren.Nodes, node => node.Kind == "namespace" && node.Label == "dnSpy.Backend.Tests");
+		var namespaceChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
+		var type = Assert.Single(namespaceChildren.Nodes, node => node.Label == "dnSpy.Backend.Tests.WorkspaceEditOptionsTests");
+
+		var nested = Assert.IsType<TypeOptionsDto>((await GetNewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id, nested: true)).Type);
+		Assert.Equal("MyType", nested.Name);
+		// A nested type carries no namespace: the one it is reached by is its declaring type's.
+		Assert.Equal(string.Empty, nested.Namespace);
+		Assert.Equal(
+			TypeAttributes.NestedPublic | TypeAttributes.AutoLayout | TypeAttributes.Class | TypeAttributes.AnsiClass,
+			(TypeAttributes)nested.Attributes);
+
+		// The two commands answer from the same selection and differ only in that: Create Type files the
+		// type where the selected type is filed, top-level.
+		var flat = Assert.IsType<TypeOptionsDto>((await GetNewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id)).Type);
+		Assert.Equal("dnSpy.Backend.Tests", flat.Namespace);
+		Assert.Equal(
+			TypeAttributes.Public | TypeAttributes.AutoLayout | TypeAttributes.Class | TypeAttributes.AnsiClass,
+			(TypeAttributes)flat.Attributes);
 	}
 
 	[Fact]
@@ -127,6 +159,11 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		Assert.Equal("RpcException", type.Name);
 		Assert.Equal("dnSpy.Backend.Contracts", type.Namespace);
 		Assert.Equal("System.Exception", type.BaseType?.Display);
+		// Read-only context: how many generic parameters the type has, and which assembly the base type's
+		// scope names when it is the corlib's. Neither is a page of the dialog, and both are what the base
+		// type's editor gates its Var button on and what the Kind combo tells a class from a static class by.
+		Assert.Equal(0, type.TypeGenericParameterCount);
+		Assert.Equal("System.Runtime", type.CorLibScope);
 	}
 
 	[Fact]
@@ -140,8 +177,8 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		Assert.Equal(ErrorCodes.EditValidationFailed, exception.Code);
 	}
 
-	async Task<NodeOptionsDto> GetNewOptionsAsync(string workspaceId, string kind, string ownerNodeId) => await manager.GetOptionsAsync(
-		new GetNodeOptionsRequest(workspaceId, kind, OwnerNodeId: ownerNodeId, IsNew: true),
+	async Task<NodeOptionsDto> GetNewOptionsAsync(string workspaceId, string kind, string ownerNodeId, bool nested = false) => await manager.GetOptionsAsync(
+		new GetNodeOptionsRequest(workspaceId, kind, OwnerNodeId: ownerNodeId, IsNew: true, Nested: nested),
 		TestContext.Current.CancellationToken);
 
 	async Task<string> OpenTestAssemblyAsync() {

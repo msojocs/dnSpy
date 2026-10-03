@@ -6,6 +6,7 @@ import { EventOptionsDialog } from './EventOptionsDialog'
 import { FieldOptionsDialog } from './FieldOptionsDialog'
 import { MethodOptionsDialog } from './MethodOptionsDialog'
 import { PropertyOptionsDialog } from './PropertyOptionsDialog'
+import { TypeOptionsDialog } from './TypeOptionsDialog'
 import { OptionsShell } from './OptionsShell'
 import type { CreatedKind } from './edit-menu'
 
@@ -15,8 +16,12 @@ interface NodeOptionsDialogProps {
   kind: CreatedKind
   /** The node being edited. Left off when a new one is being created, which is what the title says. */
   nodeId?: string
-  /** The node a new one is added to — the type the selection belongs to. */
+  /** The node a new one is added to — the type a member goes into, or the node a new top-level type is
+   * filed from. */
   ownerNodeId?: string
+  /** Whether a new type is being created inside the selected one, which dnSpy spells as a command of its
+   * own: the same window, a title of its own, and a type that goes in a nested type list. */
+  nested?: boolean
   onClose(): void
 }
 
@@ -38,7 +43,7 @@ const TITLES: Record<CreatedKind, { create: string, edit: string }> = {
  * A write the backend refuses leaves the window where it is, with the reason on it: the model the user
  * built is still there to fix, and the store has already put the message in its own error strip.
  */
-export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, onClose }: NodeOptionsDialogProps): React.JSX.Element => {
+export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, nested = false, onClose }: NodeOptionsDialogProps): React.JSX.Element => {
   const { t } = useLanguage()
   const createNode = useAppStore((state) => state.createNode)
   const applyNodeOptions = useAppStore((state) => state.applyNodeOptions)
@@ -49,20 +54,20 @@ export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, onCl
   const [writeFailure, setWriteFailure] = useState<string>()
   const [busy, setBusy] = useState(false)
   const isNew = nodeId === undefined
-  const title = isNew ? TITLES[kind].create : TITLES[kind].edit
+  const title = isNew ? (kind === 'type' && nested ? 'Create Nested Type' : TITLES[kind].create) : TITLES[kind].edit
 
   useEffect(() => {
     let cancelled = false
-    void window.dnSpy.getNodeOptions(workspaceId, kind, isNew ? { ownerNodeId, isNew: true } : { nodeId })
+    void window.dnSpy.getNodeOptions(workspaceId, kind, isNew ? { ownerNodeId, isNew: true, nested } : { nodeId })
       .then((response) => { if (!cancelled) setOptions(response) })
       .catch((reason: unknown) => { if (!cancelled) setLoadFailure(reason instanceof Error ? reason.message : String(reason)) })
     return () => { cancelled = true }
-  }, [workspaceId, kind, nodeId, ownerNodeId, isNew])
+  }, [workspaceId, kind, nodeId, ownerNodeId, isNew, nested])
 
   const accept = async (next: NodeOptionsDto): Promise<void> => {
     setBusy(true)
     setWriteFailure(undefined)
-    const written = isNew ? await createNode(ownerNodeId ?? '', next) : await applyNodeOptions(nodeId ?? '', next)
+    const written = isNew ? await createNode(ownerNodeId ?? '', next, nested) : await applyNodeOptions(nodeId ?? '', next)
     setBusy(false)
     if (written)
       onClose()
@@ -91,6 +96,18 @@ export const NodeOptionsDialog = ({ workspaceId, kind, nodeId, ownerNodeId, onCl
   // One window per kind, and a kind whose dialog the port has not built yet has nothing to show.
   const dialog = (): React.JSX.Element | undefined => {
     switch (kind) {
+      case 'type':
+        return options.type === undefined ? undefined : (
+          <TypeOptionsDialog
+            workspaceId={workspaceId}
+            value={options.type}
+            isNew={isNew}
+            nested={nested}
+            failure={writeFailure}
+            onAccept={(type) => { void accept({ kind, type }) }}
+            onCancel={onClose}
+          />
+        )
       case 'method':
         return options.method === undefined ? undefined : (
           <MethodOptionsDialog

@@ -193,7 +193,7 @@ interface AppState {
   renameNode(node: TreeNode, newName: string): Promise<boolean>
   /** Adds the type or member a create dialog assembled to the node that owns it, and selects the new
    * node. Says whether it was created; a refused one has already been reported. */
-  createNode(ownerNodeId: string, options: NodeOptionsDto): Promise<boolean>
+  createNode(ownerNodeId: string, options: NodeOptionsDto, nested?: boolean): Promise<boolean>
   /** Writes an edit dialog's model over the node it was opened for. */
   applyNodeOptions(nodeId: string, options: NodeOptionsDto): Promise<boolean>
   /** Opens the tree down to a node and selects it, which is what makes a new node visible. */
@@ -619,7 +619,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  createNode: async (ownerNodeId, options) => {
+  createNode: async (ownerNodeId, options, nested) => {
     const workspaceId = get().workspaceId
     if (!workspaceId)
       return false
@@ -627,7 +627,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     let transactionId: string | undefined
     try {
       transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
-      const created = await window.dnSpy.createNode(workspaceId, transactionId, ownerNodeId, options)
+      const created = await window.dnSpy.createNode(workspaceId, transactionId, ownerNodeId, options, nested)
       const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
       // The created node is already in the commit's changed list, so its owner — the node it was added
       // to — is refreshed by the same pass that refreshes everything else.

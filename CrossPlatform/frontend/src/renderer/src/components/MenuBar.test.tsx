@@ -741,16 +741,19 @@ describe('MenuBar', () => {
   it('lists the Edit commands the port has not implemented yet as disabled', () => {
     renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest' })
     fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
-    // Delete and the member dialogs are wired up; the type's own two dialogs have nothing to call yet.
+    // Delete, the type's two create commands and the four member dialogs are wired up; nothing opens
+    // this window's own editor yet.
     expect(screen.getByRole('menuitem', { name: /^Delete HelloRequest/ })).toBeEnabled()
-    expect(screen.getByRole('menuitem', { name: /^Create Type\.\.\./ })).toBeDisabled()
-    expect(screen.getByRole('menuitem', { name: /^Create Nested Type\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Type\.\.\./ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Nested Type\.\.\./ })).toBeEnabled()
     expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeDisabled()
     expect(screen.queryByRole('menuitem', { name: /^Edit Method Body/ })).not.toBeInTheDocument()
   })
 
   it('runs the create and edit commands whose dialogs the port has built', () => {
-    const cases: { label: string, create: string }[] = [
+    const cases: { label: string, create: string, nested?: boolean }[] = [
+      { label: 'Create Type...', create: 'type' },
+      { label: 'Create Nested Type...', create: 'type', nested: true },
       { label: 'Create Method...', create: 'method' },
       { label: 'Create Field...', create: 'field' },
       { label: 'Create Property...', create: 'property' },
@@ -761,8 +764,10 @@ describe('MenuBar', () => {
       renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest', onCreateMember })
       fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
       fireEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${entry.label.replace('.', '\\.')}`) }))
-      // The kind is what the dialog is for; which type it goes into is the selection's business.
-      expect(onCreateMember).toHaveBeenCalledWith(entry.create)
+      // The kind is what the dialog is for, and the nested flag is what tells the type's two commands
+      // apart — the other four leave it off, having only one form; which type it goes into is the
+      // selection's business.
+      expect(onCreateMember).toHaveBeenCalledWith(...(entry.nested === true ? [entry.create, true] : [entry.create]))
       cleanup()
     }
 

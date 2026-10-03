@@ -30,7 +30,9 @@ public sealed class TypeDefEditor {
 			context.Attributes.ToDtoList(type.CustomAttributes),
 			context.DeclSecurities.ToDtoList(type.DeclSecurities),
 			context.GenericParams.ToDtoList(type.GenericParameters),
-			[.. type.Interfaces.Select(ToDto)]);
+			[.. type.Interfaces.Select(ToDto)],
+			type.GenericParameters.Count,
+			context.Signatures.CorLibScope);
 
 	/// <summary>Adds a type to the module, row id and all, without putting it in any list yet.</summary>
 	public TypeDef Create(TypeOptionsDto dto) =>

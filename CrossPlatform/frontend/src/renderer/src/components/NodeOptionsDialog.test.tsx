@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EventOptionsDto, FieldOptionsDto, MethodOptionsDto, NodeOptionsDto, PropertyOptionsDto, TypeSigDto } from '../../../shared/protocol'
+import type { EventOptionsDto, FieldOptionsDto, MethodOptionsDto, NodeOptionsDto, PropertyOptionsDto, TypeOptionsDto, TypeSigDto } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { NodeOptionsDialog } from './NodeOptionsDialog'
 import { FIELD_ACCESSES, FIELD_ATTRIBUTES } from './widgets/field-options'
 import { METHOD_ACCESSES, METHOD_ATTRIBUTES, METHOD_IMPL_ATTRIBUTES } from './widgets/method-options'
+import { TYPE_ATTRIBUTES } from './widgets/type-options'
 
 const voidType: TypeSigDto = { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'Void' } }
 const intType: TypeSigDto = { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'Int32' }, valueType: true }
@@ -53,13 +54,25 @@ const event: EventOptionsDto = {
   customAttributes: [],
 }
 
+const type: TypeOptionsDto = {
+  attributes: TYPE_ATTRIBUTES.Public,
+  namespace: 'Alpha',
+  name: 'MyType',
+  baseType: { kind: 'type', type: { scope: 'mscorlib', namespace: 'System', name: 'Object' } },
+  customAttributes: [],
+  declSecurities: [],
+  genericParameters: [],
+  interfaces: [],
+  corlibScope: 'mscorlib',
+}
+
 const getNodeOptions = vi.fn()
 const createNode = vi.fn()
 const applyNodeOptions = vi.fn()
 
-const renderDialog = (props: { kind?: 'type' | 'method' | 'field' | 'property' | 'event', nodeId?: string, ownerNodeId?: string } = {}): { onClose: () => void } => {
+const renderDialog = (props: { kind?: 'type' | 'method' | 'field' | 'property' | 'event', nodeId?: string, ownerNodeId?: string, nested?: boolean } = {}): { onClose: () => void } => {
   const onClose = vi.fn()
-  render(<NodeOptionsDialog workspaceId="ws" kind={props.kind ?? 'method'} nodeId={props.nodeId} ownerNodeId={props.ownerNodeId} onClose={onClose} />)
+  render(<NodeOptionsDialog workspaceId="ws" kind={props.kind ?? 'method'} nodeId={props.nodeId} ownerNodeId={props.ownerNodeId} nested={props.nested} onClose={onClose} />)
   return { onClose }
 }
 
@@ -83,7 +96,7 @@ describe('NodeOptionsDialog', () => {
     renderDialog({ ownerNodeId: 'type-1' })
 
     expect(await screen.findByLabelText('Name')).toHaveValue('MyMethod')
-    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'method', { ownerNodeId: 'type-1', isNew: true })
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'method', { ownerNodeId: 'type-1', isNew: true, nested: false })
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Method')
   })
 
@@ -155,12 +168,44 @@ describe('NodeOptionsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
+  it('runs the type window off the same three calls the method one does, nested or not', async () => {
+    getNodeOptions.mockResolvedValue({ kind: 'type', type })
+    const { onClose } = renderDialog({ kind: 'type', ownerNodeId: 'ns-1', nested: true })
+    expect(await screen.findByLabelText('Name')).toHaveValue('MyType')
+    // The nested flag travels both ways: it is what the backend files the type by, and what the window
+    // says it is.
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Nested Type')
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'type', { ownerNodeId: 'ns-1', isNew: true, nested: true })
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'OK' }))
+
+    await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
+    const [owner, options, nested] = createNode.mock.calls[0] as [string, NodeOptionsDto, boolean]
+    expect(owner).toBe('ns-1')
+    expect(nested).toBe(true)
+    expect(options.type?.name).toBe('Renamed')
+
+    cleanup()
+    getNodeOptions.mockReset().mockResolvedValue({ kind: 'type', type })
+    renderDialog({ kind: 'type', ownerNodeId: 'type-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('MyType')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Type')
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'type', { ownerNodeId: 'type-1', isNew: true, nested: false })
+
+    cleanup()
+    getNodeOptions.mockReset().mockResolvedValue({ kind: 'type', type })
+    renderDialog({ kind: 'type', nodeId: 'type-1' })
+    expect(await screen.findByLabelText('Name')).toHaveValue('MyType')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Type')
+  })
+
   it('runs the field window off the same three calls the method one does', async () => {
     getNodeOptions.mockResolvedValue({ kind: 'field', field })
     const { onClose } = renderDialog({ kind: 'field', ownerNodeId: 'type-1' })
     expect(await screen.findByLabelText('Name')).toHaveValue('Count')
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Field')
-    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'field', { ownerNodeId: 'type-1', isNew: true })
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'field', { ownerNodeId: 'type-1', isNew: true, nested: false })
 
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -182,7 +227,7 @@ describe('NodeOptionsDialog', () => {
     const { onClose } = renderDialog({ kind: 'property', ownerNodeId: 'type-1' })
     expect(await screen.findByLabelText('Name')).toHaveValue('Count')
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Property')
-    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'property', { ownerNodeId: 'type-1', isNew: true })
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'property', { ownerNodeId: 'type-1', isNew: true, nested: false })
 
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -204,7 +249,7 @@ describe('NodeOptionsDialog', () => {
     const { onClose } = renderDialog({ kind: 'event', ownerNodeId: 'type-1' })
     expect(await screen.findByLabelText('Name')).toHaveValue('Changed')
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Create Event')
-    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'event', { ownerNodeId: 'type-1', isNew: true })
+    expect(getNodeOptions).toHaveBeenCalledWith('ws', 'event', { ownerNodeId: 'type-1', isNew: true, nested: false })
 
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Renamed' } })
     fireEvent.click(screen.getByRole('button', { name: 'OK' }))
@@ -221,7 +266,9 @@ describe('NodeOptionsDialog', () => {
     expect(screen.getByRole('dialog')).toHaveAttribute('aria-label', 'Edit Event')
   })
 
-  it('says so rather than drawing an empty window for a kind it has no dialog for', async () => {
+  it('says so rather than drawing an empty window for a model the kind has nothing in', async () => {
+    // Every kind has a window now, so the only way the fallback is reached is a model that answers for
+    // a different kind than the one that was asked for.
     getNodeOptions.mockResolvedValue({ kind: 'type' })
 
     renderDialog({ kind: 'type', nodeId: 'type-1' })

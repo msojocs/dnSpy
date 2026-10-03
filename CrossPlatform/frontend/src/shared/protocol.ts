@@ -469,13 +469,31 @@ export interface AccessorRefDto {
   display?: string
 }
 
-/** A type's dialog model. Only the generic parameters are read by the signature editor — they say how
- * many arguments an instance of the type takes. The rest travels with it and is declared with the
- * type dialog. */
+/**
+ * A type's dialog model, which is the whole row: the attribute word the six combinations are carved out
+ * of, the namespace and name, the layout, the base type, and the four collections dnSpy's window rebuilds
+ * rather than merges.
+ */
 export interface TypeOptionsDto {
+  attributes: number
   namespace: string
   name: string
+  /** The class layout, absent when the type has none: dnSpy reads a packing size and class size of zero
+   * as the row not being there at all. */
+  packingSize?: number
+  classSize?: number
+  baseType?: TypeSigDto
+  customAttributes: CustomAttributeDto[]
+  declSecurities: DeclSecurityDto[]
   genericParameters: GenericParamDto[]
+  interfaces: TypeDefOrRefAndCaDto[]
+  /** How many generic parameters the type has itself, which is what the base type editor's Var button is
+   * gated on. Absent while creating one, where dnSpy allows every Var. */
+  typeGenericParameterCount?: number
+  /** The simple name of the module's corlib: the scope a type from there is named with. The Kind combo
+   * reads the base type back to tell a class from a struct, an enum and a delegate, and it has to know
+   * which `System.Object` it is looking at to do that — a type of one's own with that name is a class. */
+  corlibScope?: string
 }
 
 /** What a create or edit dialog opens with, discriminated by the kind it was opened for: only the
@@ -494,6 +512,9 @@ export interface NodeOptionsRequest {
   nodeId?: string
   ownerNodeId?: string
   isNew?: boolean
+  /** Whether a type is being created inside another one, which only the type kind reads: Create Nested
+   * Type puts it in the selected type, Create Type at the top level whatever is selected. */
+  nested?: boolean
 }
 
 /** The node a create or edit was queued for, and the name it will have once committed. */
@@ -644,7 +665,7 @@ export interface DnSpyApi {
   getNodeOptions(workspaceId: string, kind: string, request: NodeOptionsRequest): Promise<NodeOptionsDto>
   /** Adds a type or a member to the node that owns it. The response names the row that was created,
    * which is the node the client reveals once the transaction is committed. */
-  createNode(workspaceId: string, transactionId: string, ownerNodeId: string, options: NodeOptionsDto): Promise<EditNodeResponse>
+  createNode(workspaceId: string, transactionId: string, ownerNodeId: string, options: NodeOptionsDto, nested?: boolean): Promise<EditNodeResponse>
   /** Writes a dialog's model over an existing type or member. */
   setNodeOptions(workspaceId: string, transactionId: string, nodeId: string, options: NodeOptionsDto): Promise<EditNodeResponse>
   queueRename(workspaceId: string, transactionId: string, nodeId: string, newName: string): Promise<void>

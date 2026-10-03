@@ -52,7 +52,9 @@ public sealed class NodeOptionsFactory {
 		[],
 		[],
 		[],
-		[]));
+		[],
+		null,
+		context.Signatures.CorLibScope));
 
 	/// <summary>A method of <paramref name="owner"/>. A static class has no instance to be called on, so
 	/// its member starts out static; an interface's starts out abstract, which is the only kind of method

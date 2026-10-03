@@ -38,8 +38,10 @@ export interface EditMenuContext {
   onRenameNamespace(): void
   onMoveTypesToEmptyNamespace(): void
   onReplaceMethodBodyWithStub(): void
-  /** Opens the create dialog for a node of this kind, in the type the selection belongs to. */
-  onCreateMember(kind: CreatedKind): void
+  /** Opens the create dialog for a node of this kind, in the type the selection belongs to. A nested
+   * type goes inside the selected type instead of at the top level, which is the one create command with
+   * two forms: dnSpy has one command for each of them. */
+  onCreateMember(kind: CreatedKind, nested?: boolean): void
   /** Opens the edit dialog for the selected node, which is also what Alt+Enter does. */
   onEditNode(): void
 }
@@ -136,8 +138,8 @@ const EDIT_ENTRIES: EditEntry[] = [
   { group: GROUP_NEW, order: 10, label: (ctx) => ctx.t('Add New NetModule to Assembly...'), visible: never },
   { group: GROUP_NEW, order: 20, label: (ctx) => ctx.t('Add Existing NetModule to Assembly...'), visible: never },
   { group: GROUP_NEW, order: 30, label: (ctx) => ctx.t('Create NetModule...'), visible: never },
-  { group: GROUP_NEW, order: 40, label: (ctx) => ctx.t('Create Type...'), visible: kindIs('type', 'namespace', 'module') },
-  { group: GROUP_NEW, order: 50, label: (ctx) => ctx.t('Create Nested Type...'), visible: isMember },
+  { group: GROUP_NEW, order: 40, label: (ctx) => ctx.t('Create Type...'), visible: kindIs('type', 'namespace', 'module'), action: (ctx) => ctx.onCreateMember('type') },
+  { group: GROUP_NEW, order: 50, label: (ctx) => ctx.t('Create Nested Type...'), visible: isMember, action: (ctx) => ctx.onCreateMember('type', true) },
   { group: GROUP_NEW, order: 60, label: (ctx) => ctx.t('Create Method...'), visible: isMember, action: (ctx) => ctx.onCreateMember('method') },
   { group: GROUP_NEW, order: 70, label: (ctx) => ctx.t('Create Field...'), visible: isMember, action: (ctx) => ctx.onCreateMember('field') },
   { group: GROUP_NEW, order: 80, label: (ctx) => ctx.t('Create Property...'), visible: isMember, action: (ctx) => ctx.onCreateMember('property') },
