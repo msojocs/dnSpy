@@ -323,7 +323,13 @@ export interface DnSpyApi {
   beginEdit(workspaceId: string): Promise<BeginEditResponse>
   getMethodBody(workspaceId: string, methodNodeId: string): Promise<MethodBodyResponse>
   queueRename(workspaceId: string, transactionId: string, nodeId: string, newName: string): Promise<void>
+  /** Removes a type, member, resource, or every type of a namespace from its owner. */
+  queueDelete(workspaceId: string, transactionId: string, nodeId: string): Promise<void>
+  /** Renames a namespace, or moves its types to the empty namespace when `newName` is empty. */
+  queueSetNamespace(workspaceId: string, transactionId: string, nodeId: string, newName: string): Promise<void>
   queueMethodBody(workspaceId: string, transactionId: string, methodNodeId: string, body: MethodBodyResponse, clearExceptionHandlers: boolean): Promise<void>
+  /** Replaces a method body with the stub the backend derives from the method's signature. */
+  queueMethodBodyStub(workspaceId: string, transactionId: string, methodNodeId: string): Promise<void>
   replaceResourceFromFile(workspaceId: string, transactionId: string, resourceNodeId: string): Promise<boolean>
   commitEdit(workspaceId: string, transactionId: string): Promise<EditCommitResponse>
   rollbackEdit(workspaceId: string, transactionId: string): Promise<void>

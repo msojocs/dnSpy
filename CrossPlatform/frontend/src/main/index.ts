@@ -206,6 +206,8 @@ const registerIpc = (): void => {
   ipcMain.handle('edit:begin', (_event, workspaceId: string) => requireBackend().invoke('edit/begin', { workspaceId }))
   ipcMain.handle('edit:getMethodBody', (_event, workspaceId: string, methodNodeId: string) => requireBackend().invoke('edit/getMethodBody', { workspaceId, methodNodeId }))
   ipcMain.handle('edit:rename', (_event, workspaceId: string, transactionId: string, nodeId: string, newName: string) => requireBackend().invoke('edit/rename', { workspaceId, transactionId, nodeId, newName }))
+  ipcMain.handle('edit:delete', (_event, workspaceId: string, transactionId: string, nodeId: string) => requireBackend().invoke('edit/delete', { workspaceId, transactionId, nodeId }))
+  ipcMain.handle('edit:setNamespace', (_event, workspaceId: string, transactionId: string, nodeId: string, newName: string) => requireBackend().invoke('edit/setNamespace', { workspaceId, transactionId, nodeId, newName }))
   ipcMain.handle('edit:replaceMethodBody', (_event, workspaceId: string, transactionId: string, methodNodeId: string, body: { maxStack: number; initLocals: boolean; instructions: unknown[] }, clearExceptionHandlers: boolean) => requireBackend().invoke('edit/replaceMethodBody', {
     workspaceId,
     transactionId,
@@ -236,6 +238,7 @@ const registerIpc = (): void => {
     })
     return true
   })
+  ipcMain.handle('edit:replaceMethodBodyWithStub', (_event, workspaceId: string, transactionId: string, methodNodeId: string) => requireBackend().invoke('edit/replaceMethodBodyWithStub', { workspaceId, transactionId, methodNodeId }))
   ipcMain.handle('edit:commit', (_event, workspaceId: string, transactionId: string) => requireBackend().invoke('edit/commit', { workspaceId, transactionId }))
   ipcMain.handle('edit:rollback', (_event, workspaceId: string, transactionId: string) => requireBackend().invoke('edit/rollback', { workspaceId, transactionId }))
   ipcMain.handle('edit:undo', (_event, workspaceId: string) => requireBackend().invoke('edit/undo', { workspaceId }))

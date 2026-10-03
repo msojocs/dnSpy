@@ -280,8 +280,8 @@ test.describe('the workspace shell', () => {
     await namespaceRow.locator('.tree-expander').click()
     const helloType = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
     await helloType.click()
-    await page.getByRole('menuitem', { name: 'Edit' }).click()
-    await page.getByRole('menuitem', { name: 'Rename...' }).click()
+    // Rename is a tree command in dnSpy, not an Edit menu entry, so it is F2 here too.
+    await page.keyboard.press('F2')
     const renameDialog = page.getByRole('dialog', { name: 'Rename' })
     await renameDialog.getByLabel('Name').fill('HelloRequestEdited')
     await renameDialog.getByRole('button', { name: 'Rename' }).click()
@@ -298,7 +298,7 @@ test.describe('the workspace shell', () => {
     const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\)$/ })
     await getCode.click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
-    await page.getByRole('menuitem', { name: 'Edit IL Body...' }).click()
+    await page.getByRole('menuitem', { name: 'Edit Method Body...' }).click()
     const ilDialog = page.getByRole('dialog', { name: /Edit IL/ })
     await expect(ilDialog.getByLabel('Opcode 0')).toBeVisible()
     await ilDialog.getByRole('button', { name: 'Apply' }).click()
@@ -306,6 +306,47 @@ test.describe('the workspace shell', () => {
     await page.getByRole('toolbar', { name: 'Main toolbar' }).getByRole('button', { name: 'Save As' }).click()
     await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
     expect(existsSync(savePath)).toBe(true)
+  })
+
+  test('deletes a type, renames the namespace and restores both with undo', async () => {
+    await openAssemblyAndNamespace()
+    const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
+    const helloType = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
+    await helloType.click()
+
+    // The Edit menu names the node it would delete, the way the WPF command does.
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Delete dnSpy\.Backend\.Contracts\.HelloRequest\b/ }).click()
+    await expect(helloType).not.toBeVisible()
+
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect(helloType).toBeVisible()
+
+    await namespaceRow.click()
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: 'Rename Namespace' }).click()
+    const namespaceDialog = page.getByRole('dialog', { name: 'Edit Namespace' })
+    await namespaceDialog.getByLabel('Name').fill('dnSpy.Backend.Renamed')
+    await namespaceDialog.getByRole('button', { name: 'OK' }).click()
+    await expect(page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Renamed$/ })).toBeVisible()
+
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect(namespaceRow).toBeVisible()
+
+    // The stub body is built by the backend from the method's signature, so its only job here is to
+    // land as an edit the user can undo.
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.locator('.tree-expander').click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\)$/ }).click()
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: 'Replace Method Body with stub...' }).click()
+    await expect(page.getByText('Modified', { exact: true })).toBeVisible()
+
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
   })
 
   test('toggles a line breakpoint by clicking the editor gutter', async () => {

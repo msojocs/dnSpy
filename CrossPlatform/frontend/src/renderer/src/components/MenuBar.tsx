@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight } from 'lucide-react'
 import { useLanguage, type LanguagePreference } from '../localization'
+import { buildEditMenu, type ActiveDocument, type MenuItem } from './edit-menu'
 import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
@@ -13,9 +14,13 @@ const openExternal = (url: string): void => {
 
 interface MenuBarProps {
   hasWorkspace: boolean
-  canRename: boolean
-  canEditMethod: boolean
-  canReplaceResource: boolean
+  /** `selectedNode.kind` / `selectedNode.label` from the assembly explorer, feeding the Edit menu. */
+  selectionKind?: string
+  selectionLabel?: string
+  /** Whether the selected namespace's module already has an empty namespace to move its types into. */
+  hasEmptyNamespaceSibling: boolean
+  /** Which document the Edit menu's hex groups key off. */
+  activeDocument: ActiveDocument
   canShowCode: boolean
   debugAvailable: boolean
   debugState: 'inactive' | 'starting' | 'running' | 'stopped'
@@ -32,11 +37,15 @@ interface MenuBarProps {
   onClose(): void
   onSave(): void
   onFind(): void
+  onSearchAssemblies(): void
   onUndo(): void
   onRedo(): void
-  onRename(): void
-  onEditMethod(): void
-  onReplaceResource(): void
+  onEditMethodBody(): void
+  onEditResource(): void
+  onDelete(): void
+  onRenameNamespace(): void
+  onMoveTypesToEmptyNamespace(): void
+  onReplaceMethodBodyWithStub(): void
   onShowCode(): void
   onCollapseTreeViewNodes(): void
   onStartDebug(): void
@@ -97,16 +106,6 @@ interface MenuBarProps {
   onShowOptions(category?: 'environment' | 'decompiler' | 'debugger'): void
 }
 
-interface MenuItem {
-  label?: string
-  shortcut?: string
-  disabled?: boolean
-  checked?: boolean
-  separator?: boolean
-  submenu?: MenuItem[]
-  action?: () => void
-}
-
 const languageOptions: { value: LanguagePreference; label: string }[] = [
   { value: 'system', label: 'System Default' },
   { value: 'en', label: 'English' },
@@ -115,9 +114,10 @@ const languageOptions: { value: LanguagePreference; label: string }[] = [
 
 export const MenuBar = ({
   hasWorkspace,
-  canRename,
-  canEditMethod,
-  canReplaceResource,
+  selectionKind,
+  selectionLabel,
+  hasEmptyNamespaceSibling,
+  activeDocument,
   canShowCode,
   debugAvailable,
   debugState,
@@ -133,11 +133,15 @@ export const MenuBar = ({
   onClose,
   onSave,
   onFind,
+  onSearchAssemblies,
   onUndo,
   onRedo,
-  onRename,
-  onEditMethod,
-  onReplaceResource,
+  onEditMethodBody,
+  onEditResource,
+  onDelete,
+  onRenameNamespace,
+  onMoveTypesToEmptyNamespace,
+  onReplaceMethodBodyWithStub,
   onShowCode,
   onCollapseTreeViewNodes,
   onStartDebug,
@@ -218,16 +222,27 @@ export const MenuBar = ({
       { separator: true },
       { label: t('Exit'), shortcut: 'Alt+F4', action: onQuit },
     ],
-    [t('Edit')]: [
-      { label: t('Undo'), shortcut: 'Ctrl+Z', disabled: !canUndo, action: onUndo },
-      { label: t('Redo'), shortcut: 'Ctrl+Y', disabled: !canRedo, action: onRedo },
-      { separator: true },
-      { label: t('Find'), shortcut: 'Ctrl+F', disabled: !hasWorkspace, action: onFind },
-      { separator: true },
-      { label: t('Rename...'), shortcut: 'F2', disabled: !canRename, action: onRename },
-      { label: t('Edit IL Body...'), disabled: !canEditMethod, action: onEditMethod },
-      { label: t('Replace Resource...'), disabled: !canReplaceResource, action: onReplaceResource },
-    ],
+    // dnSpy's Edit menu in full: see edit-menu.ts for the ordering and visibility rules.
+    [t('Edit')]: buildEditMenu({
+      t,
+      hasWorkspace,
+      selectionKind,
+      selectionLabel,
+      hasEmptyNamespaceSibling,
+      activeDocument,
+      canUndo,
+      canRedo,
+      onUndo,
+      onRedo,
+      onFind,
+      onSearchAssemblies,
+      onEditMethodBody,
+      onEditResource,
+      onDelete,
+      onRenameNamespace,
+      onMoveTypesToEmptyNamespace,
+      onReplaceMethodBodyWithStub,
+    }),
     [t('View')]: [
       { label: t('Word Wrap'), shortcut: 'Ctrl+E, Ctrl+W', checked: wordWrap, action: onToggleWordWrap },
       { label: t('Highlight Current Line'), checked: highlightCurrentLine, action: onToggleHighlightCurrentLine },

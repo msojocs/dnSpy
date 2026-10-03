@@ -190,6 +190,13 @@ interface AppState {
   runSearch(query: string, kinds?: string[]): Promise<void>
   analyzeNode(node: TreeNode): Promise<AnalyzeReferencesResponse | undefined>
   renameNode(node: TreeNode, newName: string): Promise<boolean>
+  /** Removes the node from its owner — a type, member, resource, or every type of a namespace. */
+  deleteNode(node: TreeNode): Promise<boolean>
+  /** Renames a namespace; an empty name moves its types to the empty namespace. */
+  renameNamespace(node: TreeNode, newName: string): Promise<boolean>
+  moveTypesToEmptyNamespace(node: TreeNode): Promise<boolean>
+  /** Replaces a method body with the stub the backend derives from the method's signature. */
+  replaceMethodBodyWithStub(node: TreeNode): Promise<boolean>
   replaceResource(node: TreeNode): Promise<boolean>
   saveModuleAs(): Promise<boolean>
   saveCode(documentId: string): Promise<boolean>
@@ -598,6 +605,64 @@ export const useAppStore = create<AppState>((set, get) => ({
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
       get().appendOutput(t('Rename failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  deleteNode: async (node) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId)
+      return false
+    set({ busy: true, error: undefined })
+    let transactionId: string | undefined
+    try {
+      transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+      await window.dnSpy.queueDelete(workspaceId, transactionId, node.id)
+      const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+      await refreshAfterEdit(get, set, committed)
+      // A removed node has no view model left, so refreshAfterEdit leaves the selection as it was;
+      // dropping it here is what stops the shell from acting on a node that is gone.
+      set((state) => ({ selectedNode: state.selectedNode?.id === node.id ? undefined : state.selectedNode }))
+      get().appendOutput(t('Deleted {name}.', { name: node.label }))
+      return true
+    } catch (error) {
+      if (transactionId) {
+        try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Delete failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  renameNamespace: async (node, newName) => setNamespaceEdit(get, set, node, newName.trim()),
+
+  moveTypesToEmptyNamespace: async (node) => setNamespaceEdit(get, set, node, ''),
+
+  replaceMethodBodyWithStub: async (node) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId || node.kind !== 'method')
+      return false
+    set({ busy: true, error: undefined })
+    let transactionId: string | undefined
+    try {
+      transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+      await window.dnSpy.queueMethodBodyStub(workspaceId, transactionId, node.id)
+      const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+      await get().methodBodyChanged(node, committed)
+      return true
+    } catch (error) {
+      if (transactionId) {
+        try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('IL edit failed: {message}', { message }))
       return false
     } finally {
       set({ busy: false })
@@ -1824,6 +1889,45 @@ const applyBreakpointResult = (breakpoint: LineBreakpoint, result: DebugBreakpoi
     modulePath,
     metadataToken: result.metadataToken || breakpoint.metadataToken,
     ilOffset,
+  }
+}
+
+/**
+ * Renames a namespace, or empties its types into the unnamed namespace when `newName` is blank — dnSpy
+ * reaches both through the same backend operation, so the two menu commands share this one path.
+ */
+const setNamespaceEdit = async (get: StoreGet, set: StoreSet, node: TreeNode, newName: string): Promise<boolean> => {
+  const workspaceId = get().workspaceId
+  if (!workspaceId)
+    return false
+  set({ busy: true, error: undefined })
+  let transactionId: string | undefined
+  try {
+    transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+    await window.dnSpy.queueSetNamespace(workspaceId, transactionId, node.id, newName)
+    const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+    await refreshAfterEdit(get, set, committed)
+    // The namespace node is keyed by its name, so the renamed one is a different node from here on and
+    // the stale entry keeps the old label; relabelling keeps the selection pane matching the tree.
+    set((state) => ({
+      selectedNode: state.selectedNode?.id === node.id
+        ? { ...state.selectedNode, label: newName === '' ? '-' : newName }
+        : state.selectedNode,
+    }))
+    get().appendOutput(newName === ''
+      ? t('Moved the types of {name} to the empty namespace.', { name: node.label })
+      : t('Renamed namespace {oldName} to {newName}.', { oldName: node.label, newName }))
+    return true
+  } catch (error) {
+    if (transactionId) {
+      try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    set({ error: message })
+    get().appendOutput(t('Namespace edit failed: {message}', { message }))
+    return false
+  } finally {
+    set({ busy: false })
   }
 }
 

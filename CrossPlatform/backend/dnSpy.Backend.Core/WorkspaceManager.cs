@@ -110,9 +110,27 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			return true;
 		}, cancellationToken);
 
+	public Task QueueDeleteAsync(DeleteEditRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => {
+			w.QueueDelete(request);
+			return true;
+		}, cancellationToken);
+
+	public Task QueueSetNamespaceAsync(SetNamespaceEditRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => {
+			w.QueueSetNamespace(request);
+			return true;
+		}, cancellationToken);
+
 	public Task QueueMethodBodyAsync(ReplaceMethodBodyRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => {
 			w.QueueMethodBody(request);
+			return true;
+		}, cancellationToken);
+
+	public Task QueueMethodBodyStubAsync(ReplaceMethodBodyWithStubRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => {
+			w.QueueMethodBodyStub(request);
 			return true;
 		}, cancellationToken);
 
@@ -825,8 +843,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		IReadOnlyList<NodeEntry> GetNamespaceChildren(NodeEntry node) {
-			var value = (NamespaceValue)node.Value;
-			return value.Types
+			// Derived live from the module rather than from the node's NamespaceValue snapshot: a delete
+			// or a namespace rename mutates the module while this node stays cached, so a snapshot would
+			// keep listing types that no longer belong here.
+			var name = ((NamespaceValue)node.Value).Name;
+			return node.Module.Module.Types
+				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType && (t.Namespace.String ?? string.Empty) == name)
 				.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase)
 				.Select(t => GetMemberNode(t, node.Module))
 				.ToArray();
@@ -1364,6 +1386,213 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			});
 		}
 
+		public void QueueDelete(DeleteEditRequest request) {
+			var transaction = GetTransaction(request.TransactionId);
+			var node = GetNode(request.NodeId);
+			var undo = new List<Action>();
+			transaction.Add(node.Id, node.Module, () => {
+				// Validation happens before any list is touched, so a rejected delete cannot leave the
+				// module half-modified when CommitEdit rolls this operation back.
+				PlanDelete(node, out var remove);
+				foreach (var step in remove)
+					step(undo);
+				return () => {
+					// The steps recorded their undo in removal order; reversing replays them and restores
+					// every list index exactly, including the descending-index bulk delete of a namespace.
+					for (var i = undo.Count - 1; i >= 0; i--)
+						undo[i]();
+				};
+			});
+		}
+
+		/// <summary>
+		/// Works out how to remove <paramref name="node"/> without mutating anything yet. Each step both
+		/// performs the removal when handed the undo list and records how to put the item back.
+		/// </summary>
+		static void PlanDelete(NodeEntry node, out IReadOnlyList<Action<List<Action>>> remove) {
+			switch (node.Value) {
+			case TypeDef type: {
+				var owner = type.DeclaringType is null ? node.Module.Module.Types : type.DeclaringType.NestedTypes;
+				var index = owner.IndexOf(type);
+				if (index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The type no longer belongs to its owner.");
+				var steps = new List<Action<List<Action>>> {
+					undo => {
+						owner.RemoveAt(index);
+						undo.Add(() => owner.Insert(index, type));
+					},
+				};
+				remove = steps;
+				break;
+			}
+			case MethodDef method: {
+				var owner = method.DeclaringType?.Methods;
+				var index = owner?.IndexOf(method) ?? -1;
+				if (owner is null || index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The method no longer belongs to its type.");
+				remove = new List<Action<List<Action>>> {
+					undo => {
+						owner.RemoveAt(index);
+						undo.Add(() => owner.Insert(index, method));
+					},
+				};
+				break;
+			}
+			case FieldDef field: {
+				var owner = field.DeclaringType?.Fields;
+				var index = owner?.IndexOf(field) ?? -1;
+				if (owner is null || index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The field no longer belongs to its type.");
+				remove = new List<Action<List<Action>>> {
+					undo => {
+						owner.RemoveAt(index);
+						undo.Add(() => owner.Insert(index, field));
+					},
+				};
+				break;
+			}
+			case PropertyDef property: {
+				var declaringType = property.DeclaringType
+					?? throw new RpcException(ErrorCodes.EditValidationFailed, "The property no longer belongs to its type.");
+				var index = declaringType.Properties.IndexOf(property);
+				if (index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The property no longer belongs to its type.");
+				remove = PlanDeleteWithAccessors(declaringType, () => {
+					declaringType.Properties.RemoveAt(index);
+					return () => declaringType.Properties.Insert(index, property);
+				}, GetAccessorMethods(property));
+				break;
+			}
+			case EventDef @event: {
+				var declaringType = @event.DeclaringType
+					?? throw new RpcException(ErrorCodes.EditValidationFailed, "The event no longer belongs to its type.");
+				var index = declaringType.Events.IndexOf(@event);
+				if (index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The event no longer belongs to its type.");
+				remove = PlanDeleteWithAccessors(declaringType, () => {
+					declaringType.Events.RemoveAt(index);
+					return () => declaringType.Events.Insert(index, @event);
+				}, GetAccessorMethods(@event));
+				break;
+			}
+			case NamespaceValue ns: {
+				var types = node.Module.Module.Types
+					.Select((type, index) => (Type: type, Index: index))
+					.Where(entry => entry.Type.DeclaringType is null && !entry.Type.IsGlobalModuleType &&
+						(entry.Type.Namespace.String ?? string.Empty) == ns.Name)
+					.OrderByDescending(entry => entry.Index)
+					.ToArray();
+				// Removing every type of the namespace, and removing an empty namespace, are the same
+				// command in dnSpy — the latter just ends up with nothing to remove.
+				remove = types.Select(entry => (Action<List<Action>>)(undo => {
+					node.Module.Module.Types.RemoveAt(entry.Index);
+					undo.Add(() => node.Module.Module.Types.Insert(entry.Index, entry.Type));
+				})).ToArray();
+				break;
+			}
+			case Resource resource: {
+				var owner = node.Module.Module.Resources;
+				var index = owner.IndexOf(resource);
+				if (index < 0)
+					throw new RpcException(ErrorCodes.EditValidationFailed, "The resource no longer belongs to the module.");
+				remove = new List<Action<List<Action>>> {
+					undo => {
+						owner.RemoveAt(index);
+						undo.Add(() => owner.Insert(index, resource));
+					},
+				};
+				break;
+			}
+			default:
+				throw new RpcException(ErrorCodes.EditValidationFailed, "This item cannot be deleted.");
+			}
+		}
+
+		/// <summary>
+		/// Removes a property or an event together with its accessor methods, the way dnSpy does: leaving
+		/// the getter/setter or add/remove methods behind would keep them in the type's method list.
+		/// </summary>
+		static IReadOnlyList<Action<List<Action>>> PlanDeleteWithAccessors(
+			TypeDef declaringType,
+			Func<Action> removeMembers,
+			IEnumerable<MethodDef> accessors) {
+			var methods = declaringType.Methods;
+			var accessorIndexes = accessors
+				.Select(method => (Method: method, Index: methods.IndexOf(method)))
+				.Where(entry => entry.Index >= 0)
+				.OrderByDescending(entry => entry.Index)
+				.ToArray();
+			return new List<Action<List<Action>>> {
+				undo => {
+					foreach (var entry in accessorIndexes) {
+						methods.RemoveAt(entry.Index);
+						undo.Add(() => methods.Insert(entry.Index, entry.Method));
+					}
+					undo.Add(removeMembers());
+				},
+			};
+		}
+
+		static IEnumerable<MethodDef> GetAccessorMethods(PropertyDef property) {
+			foreach (var method in property.GetMethods)
+				yield return method;
+			foreach (var method in property.SetMethods)
+				yield return method;
+			foreach (var method in property.OtherMethods)
+				yield return method;
+		}
+
+		static IEnumerable<MethodDef> GetAccessorMethods(EventDef @event) {
+			if (@event.AddMethod is not null)
+				yield return @event.AddMethod;
+			if (@event.RemoveMethod is not null)
+				yield return @event.RemoveMethod;
+			if (@event.InvokeMethod is not null)
+				yield return @event.InvokeMethod;
+			foreach (var method in @event.OtherMethods)
+				yield return method;
+		}
+
+		public void QueueSetNamespace(SetNamespaceEditRequest request) {
+			if (request.NewName.Contains('\0'))
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The namespace name is invalid.");
+			var transaction = GetTransaction(request.TransactionId);
+			var node = GetNode(request.NodeId);
+			if (node.Value is not NamespaceValue ns)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "Only a namespace can be renamed.");
+
+			var oldName = ns.Name;
+			var newName = request.NewName;
+			var types = node.Module.Module.Types
+				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType && (t.Namespace.String ?? string.Empty) == oldName)
+				.ToArray();
+			if (types.Length == 0)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The namespace has no types to move.");
+
+			// A type moved to another namespace is still named by its TypeRefs, so references in the other
+			// workspace modules have to be rewritten too or the saved assembly would point at a name that
+			// no longer exists. Matching on the full name catches them without resolving, which would load
+			// a second copy of the module from disk and never compare equal to the in-memory type.
+			var movedNames = types.Select(t => t.FullName).ToHashSet(StringComparer.Ordinal);
+			var typeRefs = modules.Values
+				.SelectMany(module => module.Module.GetTypeRefs())
+				.Where(typeRef => movedNames.Contains(typeRef.FullName))
+				.ToArray();
+
+			transaction.Add(node.Id, node.Module, () => {
+				foreach (var typeRef in typeRefs)
+					typeRef.Namespace = newName;
+				foreach (var type in types)
+					type.Namespace = newName;
+				return () => {
+					foreach (var type in types)
+						type.Namespace = oldName;
+					foreach (var typeRef in typeRefs)
+						typeRef.Namespace = oldName;
+				};
+			});
+		}
+
 		public void QueueMethodBody(ReplaceMethodBodyRequest request) {
 			var transaction = GetTransaction(request.TransactionId);
 			var node = GetNode(request.MethodNodeId);
@@ -1377,6 +1606,27 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				var oldBody = method.Body;
 				method.Body = body;
 				return () => method.Body = oldBody;
+			});
+		}
+
+		public void QueueMethodBodyStub(ReplaceMethodBodyWithStubRequest request) {
+			var transaction = GetTransaction(request.TransactionId);
+			var node = GetNode(request.MethodNodeId);
+			if (node.Value is not MethodDef method)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item is not a method.");
+
+			var body = MethodBodyStub.Create(method);
+			transaction.Add(node.Id, node.Module, () => {
+				var oldBody = method.Body;
+				var oldCodeType = method.CodeType;
+				// dnSpy's MethodBodyOptions.CopyTo writes the code type back as IL; a method that was
+				// previously native or runtime would otherwise keep a flag that contradicts its body.
+				method.CodeType = dnlib.DotNet.MethodImplAttributes.IL;
+				method.Body = body;
+				return () => {
+					method.Body = oldBody;
+					method.CodeType = oldCodeType;
+				};
 			});
 		}
 

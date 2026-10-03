@@ -596,6 +596,154 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	[Fact]
+	public async Task DeletesATypeAndUndoHandsBackTheSameNode() {
+		var opened = await OpenContractsAssemblyAsync();
+		var @namespace = await FindNamespaceAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts");
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		await manager.QueueDeleteAsync(
+			new DeleteEditRequest(opened.WorkspaceId, transaction.TransactionId, helloRequest.Id),
+			TestContext.Current.CancellationToken);
+		var committed = await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId),
+			TestContext.Current.CancellationToken);
+		Assert.Contains(helloRequest.Id, committed.ChangedNodeIds);
+
+		var removed = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, @namespace.Id), TestContext.Current.CancellationToken);
+		Assert.DoesNotContain(removed.Nodes, node => node.Label == "dnSpy.Backend.Contracts.HelloRequest");
+
+		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		// The node id is derived from the metadata token, so undo reinserts the very node the tree had.
+		var restored = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, @namespace.Id), TestContext.Current.CancellationToken);
+		Assert.Contains(restored.Nodes, node => node.Id == helloRequest.Id);
+	}
+
+	[Fact]
+	public async Task DeletesAPropertyTogetherWithItsAccessors() {
+		var opened = await OpenContractsAssemblyAsync();
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
+		var code = Assert.Single(members.Nodes, node => node.Kind == "property" && node.Label == "Code");
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		await manager.QueueDeleteAsync(
+			new DeleteEditRequest(opened.WorkspaceId, transaction.TransactionId, code.Id),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId),
+			TestContext.Current.CancellationToken);
+
+		var remaining = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
+		Assert.DoesNotContain(remaining.Nodes, node => node.Label == "Code");
+		// dnSpy drops a property's accessor methods along with it, so the tree must not keep listing them.
+		Assert.DoesNotContain(remaining.Nodes, node => node.Label.StartsWith("get_Code", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task RenamesANamespaceAndUndoPutsTheTypesBack() {
+		var opened = await OpenContractsAssemblyAsync();
+		var module = await FindModuleAsync(opened.WorkspaceId);
+		var @namespace = await FindNamespaceAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts");
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		await manager.QueueSetNamespaceAsync(
+			new SetNamespaceEditRequest(opened.WorkspaceId, transaction.TransactionId, @namespace.Id, "dnSpy.Backend.Renamed"),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId),
+			TestContext.Current.CancellationToken);
+
+		var children = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, module.Id), TestContext.Current.CancellationToken);
+		Assert.DoesNotContain(children.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
+		var renamed = Assert.Single(children.Nodes, node => node.Label == "dnSpy.Backend.Renamed");
+		var types = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, renamed.Id), TestContext.Current.CancellationToken);
+		Assert.Contains(types.Nodes, node => node.Label == "dnSpy.Backend.Renamed.HelloRequest");
+
+		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		var restored = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, module.Id), TestContext.Current.CancellationToken);
+		Assert.DoesNotContain(restored.Nodes, node => node.Label == "dnSpy.Backend.Renamed");
+		var original = Assert.Single(restored.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
+		var originalTypes = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, original.Id), TestContext.Current.CancellationToken);
+		Assert.Contains(originalTypes.Nodes, node => node.Label == "dnSpy.Backend.Contracts.HelloRequest");
+	}
+
+	[Fact]
+	public async Task MovesANamespaceIntoTheEmptyOneAndDeletesItAsANoOp() {
+		var opened = await OpenContractsAssemblyAsync();
+		var module = await FindModuleAsync(opened.WorkspaceId);
+		var @namespace = await FindNamespaceAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts");
+		var first = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		// An empty new name is dnSpy's "Move Types to Empty Namespace".
+		await manager.QueueSetNamespaceAsync(
+			new SetNamespaceEditRequest(opened.WorkspaceId, first.TransactionId, @namespace.Id, string.Empty),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, first.TransactionId),
+			TestContext.Current.CancellationToken);
+
+		var children = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, module.Id), TestContext.Current.CancellationToken);
+		Assert.DoesNotContain(children.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
+		var unnamed = Assert.Single(children.Nodes, node => node.Label == "-");
+		var types = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, unnamed.Id), TestContext.Current.CancellationToken);
+		Assert.Contains(types.Nodes, node => node.Label == "HelloRequest");
+
+		// Deleting the namespace it left behind removes its types, of which there are now none — dnSpy's
+		// delete-namespace command accepts that rather than failing on the empty list.
+		var second = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		await manager.QueueDeleteAsync(
+			new DeleteEditRequest(opened.WorkspaceId, second.TransactionId, @namespace.Id),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, second.TransactionId),
+			TestContext.Current.CancellationToken);
+
+		var afterDelete = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, module.Id), TestContext.Current.CancellationToken);
+		Assert.Contains(afterDelete.Nodes, node => node.Label == "-");
+	}
+
+	[Fact]
+	public async Task ReplacesAMethodBodyWithTheGeneratedStub() {
+		var opened = await OpenContractsAssemblyAsync();
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
+		var getCode = Assert.Single(members.Nodes, node => node.Label == "get_Code()");
+		var before = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.IL),
+			TestContext.Current.CancellationToken);
+		Assert.Contains("ldfld", before.Text, StringComparison.Ordinal);
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		await manager.QueueMethodBodyStubAsync(
+			new ReplaceMethodBodyWithStubRequest(opened.WorkspaceId, transaction.TransactionId, getCode.Id),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(
+			new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId),
+			TestContext.Current.CancellationToken);
+
+		// The stub is built from the method's own signature: for an int getter that is the default value,
+		// so the field read is gone and the body still returns.
+		var after = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.IL),
+			TestContext.Current.CancellationToken);
+		Assert.DoesNotContain("ldfld", after.Text, StringComparison.Ordinal);
+		Assert.Contains("ret", after.Text, StringComparison.Ordinal);
+		var csharp = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+		Assert.Contains("return", csharp.Text, StringComparison.Ordinal);
+
+		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		var undone = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, getCode.Id, DecompilerLanguage.IL),
+			TestContext.Current.CancellationToken);
+		Assert.Contains("ldfld", undone.Text, StringComparison.Ordinal);
+	}
+
+	[Fact]
 	public async Task ExpandsDotResourcesAndDecompilesBamlToXaml() {
 		var target = Path.GetFullPath(Path.Combine(
 			AppContext.BaseDirectory,
@@ -944,10 +1092,17 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		return (path, opened, node, document);
 	}
 
-	async Task<TreeNodeDto> FindTypeAsync(string workspaceId, string namespaceName, string typeName) {
-		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) => Assert.Single(
+		(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+
+	async Task<TreeNodeDto> FindNamespaceAsync(string workspaceId, string namespaceName) {
+		var root = await FindModuleAsync(workspaceId);
 		var rootChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, root.Id), TestContext.Current.CancellationToken);
-		var @namespace = Assert.Single(rootChildren.Nodes, node => node.Label == namespaceName);
+		return Assert.Single(rootChildren.Nodes, node => node.Label == namespaceName);
+	}
+
+	async Task<TreeNodeDto> FindTypeAsync(string workspaceId, string namespaceName, string typeName) {
+		var @namespace = await FindNamespaceAsync(workspaceId, namespaceName);
 		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
 		return Assert.Single(types.Nodes, node => node.Label == typeName);
 	}

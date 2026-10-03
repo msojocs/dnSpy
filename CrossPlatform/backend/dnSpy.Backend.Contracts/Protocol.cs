@@ -26,7 +26,10 @@ public static class RpcMethods {
 	public const string EditBegin = "edit/begin";
 	public const string EditGetMethodBody = "edit/getMethodBody";
 	public const string EditRename = "edit/rename";
+	public const string EditDelete = "edit/delete";
+	public const string EditSetNamespace = "edit/setNamespace";
 	public const string EditReplaceMethodBody = "edit/replaceMethodBody";
+	public const string EditReplaceMethodBodyWithStub = "edit/replaceMethodBodyWithStub";
 	public const string EditReplaceResource = "edit/replaceResource";
 	public const string EditCommit = "edit/commit";
 	public const string EditRollback = "edit/rollback";
@@ -201,6 +204,15 @@ public sealed record BeginEditResponse(string TransactionId, int BaseVersion);
 
 public sealed record RenameEditRequest(string WorkspaceId, string TransactionId, string NodeId, string NewName);
 
+/// <summary>Removes one node from its owner: a type, a member, a resource, or every type of a namespace.</summary>
+public sealed record DeleteEditRequest(string WorkspaceId, string TransactionId, string NodeId);
+
+/// <summary>
+/// Moves every top-level type of a namespace node to <paramref name="NewName"/>. An empty name is dnSpy's
+/// "Move Types to Empty Namespace"; any other name is "Rename Namespace".
+/// </summary>
+public sealed record SetNamespaceEditRequest(string WorkspaceId, string TransactionId, string NodeId, string NewName);
+
 public sealed record IlInstructionDto(
 	string Label,
 	string OpCode,
@@ -225,6 +237,13 @@ public sealed record ReplaceMethodBodyRequest(
 	int? MaxStack = null,
 	bool? InitLocals = null,
 	bool ClearExceptionHandlers = false);
+
+/// <summary>
+/// Replaces a method body with dnSpy's generated stub. The body is built from the method's own
+/// signature — a base-constructor call, defaults for <c>out</c> parameters and the return value — so
+/// it cannot be expressed as a fixed instruction list the client sends.
+/// </summary>
+public sealed record ReplaceMethodBodyWithStubRequest(string WorkspaceId, string TransactionId, string MethodNodeId);
 
 public sealed record ReplaceResourceRequest(
 	string WorkspaceId,

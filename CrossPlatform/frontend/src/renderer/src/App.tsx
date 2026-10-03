@@ -9,7 +9,7 @@ import { MenuBar, type ThemeName } from './components/MenuBar'
 import { ToolBar } from './components/ToolBar'
 import { AnalysisPane, DebugPlaceholder, OutputPane, SearchPane } from './components/ToolWindows'
 import { CSharpInteractive } from './components/CSharpInteractive'
-import { MethodBodyEditor, RenameDialog } from './components/EditDialogs'
+import { MethodBodyEditor, RenameDialog, RenameNamespaceDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
 import { BookmarksPane } from './components/BookmarksPane'
@@ -17,8 +17,9 @@ import { AttachDialog } from './components/AttachDialog'
 import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
 import { OptionsDialog } from './components/OptionsDialog'
-import { cloneDocumentTab, closeDocumentTab, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
-import { focusDocumentEditor } from './editor-registry'
+import { cloneDocumentTab, closeDocumentTab, closeDocumentTabsFor, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
+import type { ActiveDocument } from './components/edit-menu'
+import { findInActiveDocumentEditor, focusDocumentEditor } from './editor-registry'
 import { translate, useLanguage } from './localization'
 
 const DocumentView = lazy(async () => {
@@ -131,6 +132,17 @@ const bookmarkChords: Record<string, () => void> = {
   w: showBookmarksWindow,
 }
 
+// The kinds dnSpy confirms before deleting, with its own wording (`AskDeleteType` and friends). Every
+// other deletable kind — property, event, resource, namespace — is removed without a prompt.
+const DELETE_CONFIRMATIONS: Record<string, string> = {
+  type: 'There could be code in some assembly that references this type. Are you sure you want to delete the type?',
+  method: 'There could be code in some assembly that references this method. Are you sure you want to delete the method?',
+  field: 'There could be code in some assembly that references this field. Are you sure you want to delete the field?',
+}
+
+// The node kinds the Edit menu offers a Delete command for, and which the Del key therefore removes.
+const DELETABLE_KINDS = ['type', 'method', 'field', 'property', 'event', 'namespace', 'resource']
+
 const loadTheme = (): ThemeName => {
   const saved = localStorage.getItem('dnspy.theme')
   return saved === 'light' || saved === 'dark' || saved === 'hc' || saved === 'blue' ? saved : 'dark'
@@ -145,6 +157,7 @@ export const App = (): React.JSX.Element => {
   const setHighlightCurrentLine = useAppStore((state) => state.setHighlightCurrentLine)
   const [fullScreen, setFullScreen] = useState<boolean>(false)
   const [renameNode, setRenameNode] = useState<TreeNode>()
+  const [renameNamespaceNode, setRenameNamespaceNode] = useState<TreeNode>()
   const [editMethodNode, setEditMethodNode] = useState<TreeNode>()
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [debugProgramDialogOpen, setDebugProgramDialogOpen] = useState(false)
@@ -161,10 +174,16 @@ export const App = (): React.JSX.Element => {
     }
     return visible
   }, [model, layoutVersion])
-  const canShowCode = useMemo(() => {
+  // Which document the Edit menu keys off: dnSpy shows its hex and metadata-table groups for the
+  // document kind that has focus, and this port's hex/info views are the same two components.
+  const activeDocument = useMemo<ActiveDocument>(() => {
     const tab = model.getActiveTabset()?.getSelectedNode()
-    return tab instanceof TabNode && tab.getComponent() === 'document'
+    if (!(tab instanceof TabNode))
+      return null
+    const component = tab.getComponent()
+    return component === 'document' ? 'code' : component === 'hex' || component === 'module-info' ? component : null
   }, [model, layoutVersion])
+  const canShowCode = activeDocument === 'code'
   const initialPathsHandled = useRef(false)
   // When a Ctrl+K chord stops waiting for its second key, as a timestamp so it needs no timer.
   const bookmarkChord = useRef(0)
@@ -185,6 +204,12 @@ export const App = (): React.JSX.Element => {
   const saveModuleAs = useAppStore((state) => state.saveModuleAs)
   const saveCode = useAppStore((state) => state.saveCode)
   const replaceResource = useAppStore((state) => state.replaceResource)
+  const deleteNode = useAppStore((state) => state.deleteNode)
+  const renameNamespace = useAppStore((state) => state.renameNamespace)
+  const moveTypesToEmptyNamespace = useAppStore((state) => state.moveTypesToEmptyNamespace)
+  const replaceMethodBodyWithStub = useAppStore((state) => state.replaceMethodBodyWithStub)
+  const treeChildren = useAppStore((state) => state.children)
+  const treeParents = useAppStore((state) => state.parents)
   const openDocument = useAppStore((state) => state.openDocument)
   const setOpenNodeById = useAppStore((state) => state.setOpenNodeById)
   const setOpenToolWindow = useAppStore((state) => state.setOpenToolWindow)
@@ -222,6 +247,31 @@ export const App = (): React.JSX.Element => {
   const deleteAllBreakpoints = (): void => {
     if (window.confirm(t('Do you want to delete all breakpoints?')))
       void deleteAllBreakpointsAction()
+  }
+
+  // dnSpy's "Move Types to Empty Namespace" is offered only when the module already has an empty
+  // namespace node for the types to land in; the module's children are loaded whenever one of its
+  // namespaces is selectable, so the sibling list is the tree the user is looking at.
+  const hasEmptyNamespaceSibling = useMemo(() => {
+    if (selectedNode?.kind !== 'namespace')
+      return false
+    const parentId = treeParents[selectedNode.id]
+    const siblings = parentId ? treeChildren[parentId] : undefined
+    return siblings?.some((sibling) => sibling.kind === 'namespace' && sibling.label === '-') ?? false
+  }, [selectedNode, treeChildren, treeParents])
+
+  const deleteSelected = (): void => {
+    if (!selectedNode)
+      return
+    // dnSpy asks before removing a type, method or field — each of those can be referenced from code
+    // that this edit cannot see. Property, event, resource and namespace removals go through unasked.
+    const question = DELETE_CONFIRMATIONS[selectedNode.kind]
+    if (question && !window.confirm(t(question)))
+      return
+    void deleteNode(selectedNode).then((deleted) => {
+      if (deleted)
+        closeDocumentTabsFor(model, selectedNode.id)
+    })
   }
   const enableAllBreakpoints = (enabled: boolean): void => {
     void setAllLineBreakpointsEnabled(enabled)
@@ -396,9 +446,12 @@ export const App = (): React.JSX.Element => {
       } else if (event.ctrlKey && event.altKey && event.code === 'KeyN') {
         event.preventDefault()
         showBorderTab('csharp-interactive')
-      } else if (event.ctrlKey && event.key.toLowerCase() === 'f' && workspaceId) {
+      } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'k' && workspaceId) {
         event.preventDefault()
         showBorderTab('search')
+      } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'f' && activeDocument === 'code') {
+        event.preventDefault()
+        findInActiveDocumentEditor()
       } else if (event.ctrlKey && event.key.toLowerCase() === 'z' && canUndo && !editingText) {
         event.preventDefault()
         void undoEdit()
@@ -408,6 +461,9 @@ export const App = (): React.JSX.Element => {
       } else if (event.key === 'F2' && selectedNode && !editingText && ['type', 'method', 'field', 'property', 'event'].includes(selectedNode.kind)) {
         event.preventDefault()
         setRenameNode(selectedNode)
+      } else if (event.key === 'Delete' && selectedNode && !editingText && DELETABLE_KINDS.includes(selectedNode.kind)) {
+        event.preventDefault()
+        deleteSelected()
       } else if (event.ctrlKey && event.shiftKey && event.key === 'F9') {
         event.preventDefault()
         deleteAllBreakpoints()
@@ -438,7 +494,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   useEffect(() => {
     if (previousWorkspaceId.current === workspaceId)
@@ -613,9 +669,10 @@ export const App = (): React.JSX.Element => {
     <div className="app-shell">
       <MenuBar
         hasWorkspace={Boolean(workspaceId)}
-        canRename={Boolean(selectedNode && ['type', 'method', 'field', 'property', 'event'].includes(selectedNode.kind))}
-        canEditMethod={selectedNode?.kind === 'method'}
-        canReplaceResource={selectedNode?.kind === 'resource'}
+        selectionKind={selectedNode?.kind}
+        selectionLabel={selectedNode?.label}
+        hasEmptyNamespaceSibling={hasEmptyNamespaceSibling}
+        activeDocument={activeDocument}
         canShowCode={canShowCode}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true}
         debugState={debugState}
@@ -627,12 +684,16 @@ export const App = (): React.JSX.Element => {
         onOpenRecent={(paths) => void openPaths(paths)}
         onClose={closeCurrentWorkspace}
         onSave={() => void saveModuleAs()}
-        onFind={() => showBorderTab('search')}
+        onFind={() => { findInActiveDocumentEditor() }}
+        onSearchAssemblies={() => showBorderTab('search')}
         onUndo={() => void undoEdit()}
         onRedo={() => void redoEdit()}
-        onRename={() => { if (selectedNode) setRenameNode(selectedNode) }}
-        onEditMethod={() => { if (selectedNode?.kind === 'method') setEditMethodNode(selectedNode) }}
-        onReplaceResource={() => { if (selectedNode) void replaceResource(selectedNode) }}
+        onEditMethodBody={() => { if (selectedNode?.kind === 'method') setEditMethodNode(selectedNode) }}
+        onEditResource={() => { if (selectedNode) void replaceResource(selectedNode) }}
+        onDelete={deleteSelected}
+        onRenameNamespace={() => { if (selectedNode?.kind === 'namespace') setRenameNamespaceNode(selectedNode) }}
+        onMoveTypesToEmptyNamespace={() => { if (selectedNode?.kind === 'namespace') void moveTypesToEmptyNamespace(selectedNode) }}
+        onReplaceMethodBodyWithStub={() => { if (selectedNode?.kind === 'method') void replaceMethodBodyWithStub(selectedNode) }}
         onShowCode={() => void showCode()}
         onCollapseTreeViewNodes={collapseTreeViewNodes}
         onStartDebug={() => setDebugProgramDialogOpen(true)}
@@ -750,6 +811,7 @@ export const App = (): React.JSX.Element => {
         {debugState !== 'inactive' && <span>{debugState === 'stopped' ? t('Stopped: {reason}', { reason: t(stoppedReason ?? 'unknown') }) : t(debugState)}</span>}
       </footer>
       {renameNode && <RenameDialog node={renameNode} onClose={() => setRenameNode(undefined)} />}
+      {renameNamespaceNode && <RenameNamespaceDialog node={renameNamespaceNode} onClose={() => setRenameNamespaceNode(undefined)} />}
       {editMethodNode && <MethodBodyEditor node={editMethodNode} onClose={() => setEditMethodNode(undefined)} />}
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
       {debugProgramDialogOpen && <DebugProgramDialog onClose={() => setDebugProgramDialogOpen(false)} />}

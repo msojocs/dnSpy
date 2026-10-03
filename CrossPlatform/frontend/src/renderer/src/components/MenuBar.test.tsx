@@ -8,9 +8,10 @@ type MenuBarProps = ComponentProps<typeof MenuBar>
 
 const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; items?: { name: string; enabled: boolean }[] } = {}): MenuBarProps => ({
   hasWorkspace: true,
-  canRename: true,
-  canEditMethod: false,
-  canReplaceResource: false,
+  selectionKind: undefined,
+  selectionLabel: undefined,
+  hasEmptyNamespaceSibling: false,
+  activeDocument: null,
   canShowCode: false,
   debugAvailable: false,
   debugState: 'inactive',
@@ -26,11 +27,15 @@ const baseProps = (breakpoints: { canToggle?: boolean; onToggle?: () => void; it
   onClose: vi.fn(),
   onSave: vi.fn(),
   onFind: vi.fn(),
+  onSearchAssemblies: vi.fn(),
   onUndo: vi.fn(),
   onRedo: vi.fn(),
-  onRename: vi.fn(),
-  onEditMethod: vi.fn(),
-  onReplaceResource: vi.fn(),
+  onEditMethodBody: vi.fn(),
+  onEditResource: vi.fn(),
+  onDelete: vi.fn(),
+  onRenameNamespace: vi.fn(),
+  onMoveTypesToEmptyNamespace: vi.fn(),
+  onReplaceMethodBodyWithStub: vi.fn(),
   onShowCode: vi.fn(),
   onCollapseTreeViewNodes: vi.fn(),
   onStartDebug: vi.fn(),
@@ -364,9 +369,10 @@ describe('MenuBar', () => {
     const onShowDisassembly = vi.fn()
     render(<MenuBar
       hasWorkspace={true}
-      canRename={false}
-      canEditMethod={false}
-      canReplaceResource={false}
+      selectionKind={undefined}
+      selectionLabel={undefined}
+      hasEmptyNamespaceSibling={false}
+      activeDocument={null}
       canShowCode={true}
       debugAvailable={false}
       debugState="stopped"
@@ -383,11 +389,15 @@ describe('MenuBar', () => {
       onClose={vi.fn()}
       onSave={vi.fn()}
       onFind={vi.fn()}
+      onSearchAssemblies={vi.fn()}
       onUndo={vi.fn()}
       onRedo={vi.fn()}
-      onRename={vi.fn()}
-      onEditMethod={vi.fn()}
-      onReplaceResource={vi.fn()}
+      onEditMethodBody={vi.fn()}
+      onEditResource={vi.fn()}
+      onDelete={vi.fn()}
+      onRenameNamespace={vi.fn()}
+      onMoveTypesToEmptyNamespace={vi.fn()}
+      onReplaceMethodBodyWithStub={vi.fn()}
       onShowCode={vi.fn()}
       onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
@@ -481,9 +491,10 @@ describe('MenuBar', () => {
   it('exposes View toggles in their checked state', () => {
     render(<MenuBar
       hasWorkspace={true}
-      canRename={false}
-      canEditMethod={false}
-      canReplaceResource={false}
+      selectionKind={undefined}
+      selectionLabel={undefined}
+      hasEmptyNamespaceSibling={false}
+      activeDocument={null}
       canShowCode={true}
       debugAvailable={false}
       debugState="inactive"
@@ -499,11 +510,15 @@ describe('MenuBar', () => {
       onClose={vi.fn()}
       onSave={vi.fn()}
       onFind={vi.fn()}
+      onSearchAssemblies={vi.fn()}
       onUndo={vi.fn()}
       onRedo={vi.fn()}
-      onRename={vi.fn()}
-      onEditMethod={vi.fn()}
-      onReplaceResource={vi.fn()}
+      onEditMethodBody={vi.fn()}
+      onEditResource={vi.fn()}
+      onDelete={vi.fn()}
+      onRenameNamespace={vi.fn()}
+      onMoveTypesToEmptyNamespace={vi.fn()}
+      onReplaceMethodBodyWithStub={vi.fn()}
       onShowCode={vi.fn()}
       onCollapseTreeViewNodes={vi.fn()}
       onStartDebug={vi.fn()}
@@ -642,6 +657,147 @@ describe('MenuBar', () => {
     expect(screen.queryByRole('menuitem', { name: /^Delete All Breakpoints/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: /^Enable All Breakpoints/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: /^Disable All Breakpoints/ })).not.toBeInTheDocument()
+  })
+
+  it('mirrors the upstream Edit menu layout for a selected method', () => {
+    renderMenuWith({ selectionKind: 'method', selectionLabel: 'get_Code()' })
+    // Upstream sorts by group prefix then item order and puts one separator between each non-empty
+    // group, so the method commands follow Delete and the Create group drops out entirely.
+    expect(openMenu('Edit')).toEqual([
+      'UndoCtrl+Z',
+      'RedoCtrl+Y',
+      'FindCtrl+F',
+      'Search AssembliesCtrl+Shift+K',
+      'Find String References in Module',
+      'Delete get_Code()Del',
+      'Edit Method...Alt+Enter',
+      'Edit Method (C#)...',
+      'Edit Class (C#)...',
+      'Add Class Members (C#)...',
+      'Add Class (C#)...',
+      'Merge with Assembly...',
+      'Edit Method Body...',
+      'Replace Method Body with stub...',
+      'Load Dependencies',
+      'Load Dependencies Recursively',
+    ])
+    expect(screen.getAllByRole('separator')).toHaveLength(3)
+  })
+
+  it('drops the Edit entries that have nothing to act on', () => {
+    renderMenu()
+    // Nothing selected: only Undo/Redo, the find commands and Create Assembly survive. The Create
+    // group's other entries need a node, so the group still shows but keeps only its first entry.
+    expect(openMenu('Edit')).toEqual([
+      'UndoCtrl+Z',
+      'RedoCtrl+Y',
+      'FindCtrl+F',
+      'Search AssembliesCtrl+Shift+K',
+      'Create Assembly...',
+    ])
+    expect(screen.getAllByRole('separator')).toHaveLength(2)
+  })
+
+  it('lists the Edit commands the port has not implemented yet as disabled', () => {
+    renderMenuWith({ selectionKind: 'type', selectionLabel: 'HelloRequest' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    // Delete is wired up; the create and edit dialogs still have no backend to call.
+    expect(screen.getByRole('menuitem', { name: /^Delete HelloRequest/ })).toBeEnabled()
+    expect(screen.getByRole('menuitem', { name: /^Create Method\.\.\./ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Edit Type\.\.\./ })).toBeDisabled()
+    expect(screen.queryByRole('menuitem', { name: /^Edit Method Body/ })).not.toBeInTheDocument()
+  })
+
+  it('runs Delete and the stub replacement for a selected method', () => {
+    const onDelete = vi.fn()
+    renderMenuWith({ selectionKind: 'method', selectionLabel: 'M()', onDelete })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Delete M\(\)/ }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    const onReplaceMethodBodyWithStub = vi.fn()
+    renderMenuWith({ selectionKind: 'method', onReplaceMethodBodyWithStub })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Replace Method Body with stub\.\.\./ }))
+    expect(onReplaceMethodBodyWithStub).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs the namespace commands for a selected namespace', () => {
+    const onDelete = vi.fn()
+    const onRenameNamespace = vi.fn()
+    const onMoveTypesToEmptyNamespace = vi.fn()
+    renderMenuWith({
+      selectionKind: 'namespace',
+      selectionLabel: 'Ns',
+      hasEmptyNamespaceSibling: true,
+      onDelete,
+      onRenameNamespace,
+      onMoveTypesToEmptyNamespace,
+    })
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Delete Namespace/ }))
+    expect(onDelete).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Rename Namespace' }))
+    expect(onRenameNamespace).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move Types to Empty Namespace' }))
+    expect(onMoveTypesToEmptyNamespace).toHaveBeenCalledTimes(1)
+  })
+
+  it('offers Move Types to Empty Namespace only when there is an empty namespace to move into', () => {
+    renderMenuWith({ selectionKind: 'namespace', selectionLabel: 'Ns', hasEmptyNamespaceSibling: false })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    // The view keeps its WPF shape either way: the entry is gone, not greyed out.
+    expect(screen.queryByRole('menuitem', { name: 'Move Types to Empty Namespace' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Rename Namespace' })).toBeEnabled()
+  })
+
+  it('enables Find only for a code document and runs it', () => {
+    const onFind = vi.fn()
+    renderMenuWith({ activeDocument: 'code', onFind })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    expect(screen.getByRole('menuitem', { name: /^FindCtrl\+F/ })).toBeEnabled()
+    fireEvent.click(screen.getByRole('menuitem', { name: /^FindCtrl\+F/ }))
+    expect(onFind).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    renderMenuWith({ activeDocument: 'hex' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    expect(screen.getByRole('menuitem', { name: /^FindCtrl\+F/ })).toBeDisabled()
+  })
+
+  it('runs Edit Method Body and Edit Resource from the Edit menu', () => {
+    const onEditMethodBody = vi.fn()
+    renderMenuWith({ selectionKind: 'method', onEditMethodBody })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Edit Method Body\.\.\./ }))
+    expect(onEditMethodBody).toHaveBeenCalledTimes(1)
+
+    cleanup()
+    const onEditResource = vi.fn()
+    renderMenuWith({ selectionKind: 'resource', selectionLabel: 'res', onEditResource })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /^Edit Resource\.\.\./ }))
+    expect(onEditResource).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the hex and metadata-table Edit groups only for those documents', () => {
+    renderMenuWith({ activeDocument: 'hex' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    expect(screen.getByRole('menuitem', { name: /^Open Hex Editor/ })).toBeDisabled()
+    expect(screen.queryByRole('menuitem', { name: /^Sort Table/ })).not.toBeInTheDocument()
+
+    cleanup()
+    renderMenuWith({ activeDocument: 'module-info' })
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit' }))
+    expect(screen.getByRole('menuitem', { name: /^Sort Table/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^Copy as Text/ })).toBeDisabled()
+    expect(screen.queryByRole('menuitem', { name: /^Open Hex Editor/ })).not.toBeInTheDocument()
   })
 
   it.each([

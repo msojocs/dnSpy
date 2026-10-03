@@ -855,3 +855,92 @@ describe('bookmarks at startup', () => {
     expect(reloaded.useAppStore.getState().bookmarks).toEqual([])
   })
 })
+
+describe('edit commands', () => {
+  const node = (overrides: Partial<TreeNode> = {}): TreeNode => ({ id: 'n2', label: 'HelloRequest', kind: 'type', hasChildren: false, ...overrides })
+  const beginEdit = vi.fn(async () => ({ transactionId: 't1', baseVersion: 1 }))
+  const commitEdit = vi.fn(async () => ({ version: 2, stateId: 'state-2', changedNodeIds: ['n2'], canUndo: true, canRedo: false }))
+  const rollbackEdit = vi.fn(async () => {})
+  const queueDelete = vi.fn(async () => {})
+  const queueSetNamespace = vi.fn(async () => {})
+  const queueMethodBodyStub = vi.fn(async () => {})
+  const getChildren = vi.fn(async () => ({ nodes: [] }))
+  // The deleted node is gone from the backend, which is how refreshAfterEdit is told to skip it.
+  const getNode = vi.fn(async () => { throw new Error('The node does not exist.') })
+
+  beforeEach(() => {
+    for (const mock of [beginEdit, commitEdit, rollbackEdit, queueDelete, queueSetNamespace, queueMethodBodyStub, getChildren, getNode])
+      mock.mockClear()
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, beginEdit, commitEdit, rollbackEdit, queueDelete, queueSetNamespace, queueMethodBodyStub, getChildren, getNode },
+    })
+    useAppStore.setState({
+      workspaceId: 'w1',
+      savedStateId: 'state-1',
+      workspaceStateId: 'state-1',
+      dirty: false,
+      busy: false,
+      error: undefined,
+      output: [],
+      documents: {},
+      children: { n1: [] },
+      parents: { n2: 'n1' },
+      selectedNode: node(),
+    })
+  })
+
+  it('deletes a node, refreshes its parent and clears the selection it pointed at', async () => {
+    expect(await useAppStore.getState().deleteNode(node())).toBe(true)
+
+    expect(queueDelete).toHaveBeenCalledWith('w1', 't1', 'n2')
+    expect(commitEdit).toHaveBeenCalledWith('w1', 't1')
+    expect(getChildren).toHaveBeenCalledWith('w1', 'n1')
+    expect(useAppStore.getState().selectedNode).toBeUndefined()
+    expect(useAppStore.getState()).toMatchObject({ dirty: true, workspaceStateId: 'state-2', canUndo: true, canRedo: false })
+  })
+
+  it('leaves another node selected when the deleted node was not the current one', async () => {
+    useAppStore.setState({ selectedNode: node({ id: 'n3', label: 'Other' }) })
+
+    await useAppStore.getState().deleteNode(node())
+
+    expect(useAppStore.getState().selectedNode).toMatchObject({ id: 'n3' })
+  })
+
+  it('rolls the transaction back and reports the failure when a delete is rejected', async () => {
+    queueDelete.mockRejectedValueOnce(new Error('The property no longer belongs to its type.'))
+
+    expect(await useAppStore.getState().deleteNode(node({ kind: 'property' }))).toBe(false)
+
+    expect(rollbackEdit).toHaveBeenCalledWith('w1', 't1')
+    expect(useAppStore.getState().error).toBe('The property no longer belongs to its type.')
+    expect(useAppStore.getState().selectedNode).toMatchObject({ id: 'n2' })
+  })
+
+  it('renames a namespace and relabels the selection, which the refreshed tree no longer matches', async () => {
+    useAppStore.setState({ selectedNode: node({ label: 'Old.Ns', kind: 'namespace' }) })
+
+    expect(await useAppStore.getState().renameNamespace(node({ label: 'Old.Ns', kind: 'namespace' }), 'New.Ns')).toBe(true)
+
+    expect(queueSetNamespace).toHaveBeenCalledWith('w1', 't1', 'n2', 'New.Ns')
+    expect(useAppStore.getState().selectedNode).toMatchObject({ label: 'New.Ns' })
+  })
+
+  it('moves a namespace’s types into the empty namespace with an empty new name', async () => {
+    useAppStore.setState({ selectedNode: node({ label: 'Old.Ns', kind: 'namespace' }) })
+
+    await useAppStore.getState().moveTypesToEmptyNamespace(node({ label: 'Old.Ns', kind: 'namespace' }))
+
+    expect(queueSetNamespace).toHaveBeenCalledWith('w1', 't1', 'n2', '')
+    // The empty namespace renders as '-' in the tree, which is what the selection has to say.
+    expect(useAppStore.getState().selectedNode).toMatchObject({ label: '-' })
+  })
+
+  it('replaces a method body with the backend-built stub', async () => {
+    expect(await useAppStore.getState().replaceMethodBodyWithStub(node({ kind: 'method', label: 'M()' }))).toBe(true)
+
+    expect(queueMethodBodyStub).toHaveBeenCalledWith('w1', 't1', 'n2')
+    expect(useAppStore.getState()).toMatchObject({ dirty: true, workspaceStateId: 'state-2', canUndo: true })
+  })
+})

@@ -108,6 +108,14 @@ export const closeDocumentTab = (tab: TabNode): void => {
     tab.getModel().doAction(Actions.deleteTab(tab.getId()))
 }
 
+/** Closes every tab showing `documentId` — what deleting its node does to the documents it had open. */
+export const closeDocumentTabsFor = (model: Model, documentId: string): void => {
+  for (const tab of getDocumentTabSets(model).flatMap(allTabs)) {
+    if (tab.isCloseable() && (tab.getConfig() as { documentId?: string } | undefined)?.documentId === documentId)
+      model.doAction(Actions.deleteTab(tab.getId()))
+  }
+}
+
 export const closeAllDocumentTabs = (model: Model): void => {
   const tabs = getDocumentTabSets(model)
     .flatMap(allTabs)

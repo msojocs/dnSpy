@@ -43,6 +43,19 @@ export const focusDocumentEditor = (viewId: string): void => {
 }
 
 /**
+ * Opens Monaco's find widget in the editor the user last worked in — dnSpy's Edit > Find, which acts
+ * on the focused text view rather than on the assembly search. Returns false when no editor is open.
+ */
+export const findInActiveDocumentEditor = (): boolean => {
+  const entry = activeViewId === undefined ? undefined : editors.get(activeViewId)
+  if (!entry)
+    return false
+  entry.editor.focus()
+  void entry.editor.getAction('actions.find')?.run()
+  return true
+}
+
+/**
  * Where the caret sits in the editor the user last worked in, with the document it shows. Commands
  * issued from a tool window or the menu have no cursor of their own and mean "here".
  */
