@@ -108,6 +108,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 	public Task<NodeOptionsDto> GetOptionsAsync(GetNodeOptionsRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetOptions(request), cancellationToken);
 
+	public Task<EditNodeResponse> QueueCreateAsync(CreateNodeRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.QueueCreate(request), cancellationToken);
+
+	public Task<EditNodeResponse> QueueSetOptionsAsync(SetNodeOptionsRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.QueueSetOptions(request), cancellationToken);
+
 	public Task QueueRenameAsync(RenameEditRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => {
 			w.QueueRename(request);
@@ -1539,9 +1545,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			_ => throw new RpcException(ErrorCodes.EditValidationFailed, "Select a type or one of its members."),
 		};
 
-		/// <summary>A type created from a type node is nested; one created from a namespace or a module is
-		/// not, and takes that namespace's name — a nested type has no namespace of its own.</summary>
-		static bool IsNestedType(NodeEntry? owner) => owner?.Value is TypeDef;
+		/// <summary>A type created from a type node is nested — and so is one created while a member of a
+		/// type is selected, since dnSpy's create command walks up to the nearest type node. One created
+		/// from a namespace or a module is not nested, and takes that namespace's name: a nested type has
+		/// no namespace of its own.</summary>
+		static bool IsNestedType(NodeEntry? owner) => owner?.Value is TypeDef or MethodDef or FieldDef or PropertyDef or EventDef;
 
 		static string NamespaceOf(NodeEntry? owner) => owner?.Value is NamespaceValue value ? value.Name : string.Empty;
 
@@ -1880,6 +1888,124 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				};
 			});
 		}
+
+		/// <summary>
+		/// Queues the creation of a type or a member, which is what one of dnSpy's create commands does once
+		/// its dialog has been accepted.
+		/// </summary>
+		/// <remarks>
+		/// The row is given its id here rather than when the operation is applied, which is the order dnSpy
+		/// uses too — its options classes call <c>UpdateRowId</c> from their constructors. That is what makes
+		/// the new node knowable before the commit: the tree can be told which node to reveal, and applying
+		/// the operation a second time (undo, then redo) puts the same row, with the same token, back.
+		/// </remarks>
+		public EditNodeResponse QueueCreate(CreateNodeRequest request) {
+			var transaction = GetTransaction(request.TransactionId);
+			var owner = GetNode(request.OwnerNodeId);
+			var options = request.Options;
+			// Which list the row goes in is decided by its owner, so say now whether there is one: a rejected
+			// request should not burn a row id on an object nothing will ever hold.
+			TypeDef? ownerType;
+			if (options.Kind == NodeOptionKinds.Type) {
+				if (owner.Value is not (TypeDef or NamespaceValue or ModuleDef))
+					throw new RpcException(ErrorCodes.EditValidationFailed, "Select a type, a namespace or a module.");
+				// From a type or one of its members the type is nested in it; from a namespace or a module it
+				// is top-level and belongs to the module, where its own namespace is what files it.
+				ownerType = owner.Value is NamespaceValue or ModuleDef ? null : OwnerTypeOf(owner);
+			}
+			else
+				ownerType = OwnerTypeOf(owner);
+
+			var created = Create(options, CreateEditContext(owner.Module), ownerType);
+			var node = GetMemberNode(created, owner.Module);
+			var membership = MembershipOf(owner, ownerType, created);
+			transaction.Add(node.Id, owner.Module, () => {
+				membership.Add();
+				return membership.Remove;
+			});
+			return new EditNodeResponse(node.Id, LabelOf(created, ownerType, node), node.Kind.ToString().ToLowerInvariant());
+		}
+
+		/// <summary>
+		/// What the tree will call the row once the operation has run. That is the row's own label, except for
+		/// a nested type: a type says what it is nested in through the list it joins, and it does not join it
+		/// until the commit, so its <c>FullName</c> is still the bare name here and the nested form has to be
+		/// spelled out — which is exactly what <c>FullName</c> will say once the list holds it.
+		/// </summary>
+		static string LabelOf(IMDTokenProvider created, TypeDef? ownerType, NodeEntry node) =>
+			created is TypeDef type && ownerType is not null ? $"{ownerType.FullName}+{type.Name}" : GetLabel(node);
+
+		/// <summary>
+		/// Queues an edit of an existing type or member: the dialog's values are written over the row, and the
+		/// values the row had are what the undo action writes back.
+		/// </summary>
+		/// <remarks>
+		/// Both directions run the same codec over a whole model, so an edit undone and redone lands where it
+		/// started and where it left off. That is why the row's own values are taken as a model up front
+		/// instead of the operation remembering which fields the dialog touched — the codecs rebuild every
+		/// collection they own, and a partial undo would leave the rest of them as the edit left them.
+		/// </remarks>
+		public EditNodeResponse QueueSetOptions(SetNodeOptionsRequest request) {
+			var transaction = GetTransaction(request.TransactionId);
+			var node = GetNode(request.NodeId);
+			if (node.Value is not IMDTokenProvider target)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be edited.");
+			var context = CreateEditContext(node.Module);
+			var before = context.Options.Existing(target);
+			if (before.Kind != request.Options.Kind)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The options are for a different kind of item.");
+			var after = request.Options;
+			transaction.Add(node.Id, node.Module, () => {
+				Apply(context, target, after);
+				return () => Apply(context, target, before);
+			});
+			// The operation has not run yet, so this is the name it still has; the new one is what the tree
+			// shows once the commit lands and the node is read again.
+			return new EditNodeResponse(node.Id, GetLabel(node), node.Kind.ToString().ToLowerInvariant());
+		}
+
+		IMDTokenProvider Create(NodeOptionsDto options, EditContext context, TypeDef? ownerType) => options.Kind switch {
+			NodeOptionKinds.Type => context.TypeDefs.Create(options.Type ?? throw MissingOptions("type")),
+			NodeOptionKinds.Method => context.MethodDefs.Create(options.Method ?? throw MissingOptions("method")),
+			NodeOptionKinds.Field => context.FieldDefs.Create(options.Field ?? throw MissingOptions("field")),
+			NodeOptionKinds.Property => context.PropertyDefs.Create(ownerType!, options.Property ?? throw MissingOptions("property")),
+			NodeOptionKinds.Event => context.EventDefs.Create(ownerType!, options.Event ?? throw MissingOptions("event")),
+			_ => throw new RpcException(ErrorCodes.InvalidParams, $"Unknown item kind '{options.Kind}'."),
+		};
+
+		static RpcException MissingOptions(string kind) =>
+			new(ErrorCodes.EditValidationFailed, $"The {kind} options are missing.");
+
+		/// <summary>Writes a whole model over an existing row. The owner a property or an event needs to find
+		/// its accessors in is the type the row is declared in, which it already knows.</summary>
+		static void Apply(EditContext context, IMDTokenProvider target, NodeOptionsDto options) {
+			switch (options.Kind) {
+				case NodeOptionKinds.Type: context.TypeDefs.CopyTo((TypeDef)target, options.Type!); break;
+				case NodeOptionKinds.Method: context.MethodDefs.CopyTo((MethodDef)target, options.Method!); break;
+				case NodeOptionKinds.Field: context.FieldDefs.CopyTo((FieldDef)target, options.Field!); break;
+				case NodeOptionKinds.Property: context.PropertyDefs.CopyTo((PropertyDef)target, ((PropertyDef)target).DeclaringType, options.Property!); break;
+				case NodeOptionKinds.Event: context.EventDefs.CopyTo((EventDef)target, ((EventDef)target).DeclaringType, options.Event!); break;
+				default: throw new RpcException(ErrorCodes.InvalidParams, $"Unknown item kind '{options.Kind}'.");
+			}
+		}
+
+		/// <summary>
+		/// The list a created row belongs in, and the two closures that put it there and take it back out.
+		/// A member goes into the type that owns it; a type goes into the type it is nested in, or into the
+		/// module itself when it was created from a namespace or a module node.
+		/// </summary>
+		static (Action Add, Action Remove) MembershipOf(NodeEntry owner, TypeDef? ownerType, IMDTokenProvider created) => created switch {
+			TypeDef type when owner.Value is ModuleDef or NamespaceValue => Pair(owner.Module.Module.Types, type),
+			TypeDef type => Pair(ownerType!.NestedTypes, type),
+			MethodDef method => Pair(ownerType!.Methods, method),
+			FieldDef field => Pair(ownerType!.Fields, field),
+			PropertyDef property => Pair(ownerType!.Properties, property),
+			EventDef @event => Pair(ownerType!.Events, @event),
+			_ => throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be created."),
+		};
+
+		static (Action Add, Action Remove) Pair<T>(IList<T> list, T value) =>
+			(() => list.Add(value), () => list.Remove(value));
 
 		public EditCommitResponse CommitEdit(string transactionId) {
 			var transaction = GetTransaction(transactionId);
