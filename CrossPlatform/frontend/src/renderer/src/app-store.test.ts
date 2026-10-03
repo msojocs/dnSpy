@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodeStatement, DebugBreakpoint, TreeNode } from '../../shared/protocol'
-import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, codeStatementAt, filterBookmarks, lineBreakpointMarkers, methodBreakpointName, parseBookmarkEntries, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
+import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, codeStatementAt, filterBookmarks, lineBreakpointMarkers, methodBreakpointName, ownerTypeIdOf, parseBookmarkEntries, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
 import type { Bookmark, LineBreakpoint } from './app-store'
 import { translate } from './localization'
 
@@ -262,6 +262,31 @@ describe('collapseTreeViewNodes', () => {
     seed({ expanded: { method: true }, parents: { type: 'ns', method: 'type' }, children: { type: [node('method')] } })
     useAppStore.getState().collapseTreeViewNodes()
     expect(useAppStore.getState().expanded).toEqual({ type: true, method: true })
+  })
+})
+
+describe('ownerTypeIdOf', () => {
+  const node = (id: string, kind: string): TreeNode => ({ id, label: id, kind, hasChildren: false })
+  const parents = { ns: 'module', type: 'ns', method: 'type', field: 'type', property: 'type', event: 'type' }
+
+  it('is the node itself for a selected type', () => {
+    expect(ownerTypeIdOf(parents, node('type', 'type'))).toBe('type')
+  })
+
+  it.each(['method', 'field', 'property', 'event'])('is the parent type for a selected %s', (kind) => {
+    expect(ownerTypeIdOf(parents, node(kind, kind))).toBe('type')
+  })
+
+  it.each(['namespace', 'module', 'referencesgroup', 'resource'])('has no owner for a %s', (kind) => {
+    expect(ownerTypeIdOf(parents, node('other', kind))).toBeUndefined()
+  })
+
+  it('has no owner with nothing selected', () => {
+    expect(ownerTypeIdOf(parents, undefined)).toBeUndefined()
+  })
+
+  it('has no owner for a member the tree never linked to a parent', () => {
+    expect(ownerTypeIdOf({}, node('method', 'method'))).toBeUndefined()
   })
 })
 

@@ -1931,6 +1931,24 @@ const setNamespaceEdit = async (get: StoreGet, set: StoreSet, node: TreeNode, ne
   }
 }
 
+/** Node kinds that can only live inside a type. */
+const MEMBER_KINDS = new Set(['method', 'field', 'property', 'event'])
+
+/**
+ * The type a create-member command acts on. dnSpy offers those commands for a selected type *or* any
+ * member of one (the CanExecute is "the node is a TypeNode or its parent is"), so the owner is the
+ * node itself when it is a type and its parent otherwise. Undefined for anything else — a namespace,
+ * a reference, or no selection at all.
+ */
+export const ownerTypeIdOf = (parents: Record<string, string>, node: TreeNode | undefined): string | undefined => {
+  if (!node)
+    return undefined
+  if (node.kind === 'type')
+    return node.id
+  const parentId = parents[node.id]
+  return parentId !== undefined && MEMBER_KINDS.has(node.kind) ? parentId : undefined
+}
+
 const refreshAfterEdit = async (get: StoreGet, set: StoreSet, result: EditCommitResponse): Promise<void> => {
   const { workspaceId, savedStateId } = get()
   if (!workspaceId) return

@@ -662,7 +662,9 @@ describe('MenuBar', () => {
   it('mirrors the upstream Edit menu layout for a selected method', () => {
     renderMenuWith({ selectionKind: 'method', selectionLabel: 'get_Code()' })
     // Upstream sorts by group prefix then item order and puts one separator between each non-empty
-    // group, so the method commands follow Delete and the Create group drops out entirely.
+    // group, so the method commands follow Delete. The Create group keeps its member entries — dnSpy
+    // offers those for a member of a type as well — but drops Create Type, which needs a type,
+    // namespace or module.
     expect(openMenu('Edit')).toEqual([
       'UndoCtrl+Z',
       'RedoCtrl+Y',
@@ -670,6 +672,11 @@ describe('MenuBar', () => {
       'Search AssembliesCtrl+Shift+K',
       'Find String References in Module',
       'Delete get_Code()Del',
+      'Create Nested Type...',
+      'Create Method...',
+      'Create Field...',
+      'Create Property...',
+      'Create Event...',
       'Edit Method...Alt+Enter',
       'Edit Method (C#)...',
       'Edit Class (C#)...',
@@ -681,7 +688,34 @@ describe('MenuBar', () => {
       'Load Dependencies',
       'Load Dependencies Recursively',
     ])
-    expect(screen.getAllByRole('separator')).toHaveLength(3)
+    expect(screen.getAllByRole('separator')).toHaveLength(4)
+  })
+
+  it('offers the member-creating commands for a type and for each kind of member', () => {
+    // dnSpy's CanExecute for all five is "the selection is a type or its parent is one", and every
+    // member in this port's tree hangs off a type, so all five show up for each of these kinds.
+    for (const kind of ['type', 'method', 'field', 'property', 'event']) {
+      cleanup()
+      renderMenuWith({ selectionKind: kind, selectionLabel: 'Target' })
+      const items = openMenu('Edit')
+      for (const label of ['Create Nested Type...', 'Create Method...', 'Create Field...', 'Create Property...', 'Create Event...'])
+        expect(items, `for a selected ${kind}`).toContain(label)
+    }
+  })
+
+  it('hides the member-creating commands away from a type', () => {
+    // Create Type is the only one a namespace or module gets; a reference gets none of them.
+    cleanup()
+    renderMenuWith({ selectionKind: 'namespace', selectionLabel: 'Ns' })
+    const namespaceItems = openMenu('Edit')
+    expect(namespaceItems).toContain('Create Type...')
+    expect(namespaceItems).not.toContain('Create Nested Type...')
+
+    cleanup()
+    renderMenuWith({ selectionKind: 'assemblyreference', selectionLabel: 'System.Runtime' })
+    const items = openMenu('Edit')
+    for (const label of ['Create Type...', 'Create Nested Type...', 'Create Method...'])
+      expect(items).not.toContain(label)
   })
 
   it('drops the Edit entries that have nothing to act on', () => {

@@ -78,7 +78,13 @@ const documentIs = (document: ActiveDocument) => (ctx: EditMenuContext): boolean
 /** Node kinds that live inside a module — dnSpy's `GetModuleNode(node) is not null`. */
 const inModule = kindIs('module', 'namespace', 'type', 'method', 'field', 'property', 'event', 'resource', 'resourceentry')
 
-/** Node kinds whose reference is an `IMemberDef` (type or member), as the C# class commands require. */
+/**
+ * Node kinds whose reference is an `IMemberDef` (type or member). The C# class commands need it, and
+ * so do dnSpy's five member-creating commands: their CanExecute is "the selected node is a TypeNode,
+ * or its parent is one" (MethodDefCommands.cs:339, FieldDefCommands.cs:229, PropertyDefCommands.cs:247,
+ * EventDefCommands.cs:252, TypeDefCommands.cs:339 for Create Nested Type). A member in this port's
+ * tree always hangs off a type, so the node kinds alone express that rule exactly.
+ */
 const isMember = kindIs('type', 'method', 'field', 'property', 'event')
 
 /** The header of dnSpy's "Delete X" commands: one node shows its name, several show a count. */
@@ -124,11 +130,11 @@ const EDIT_ENTRIES: EditEntry[] = [
   { group: GROUP_NEW, order: 20, label: (ctx) => ctx.t('Add Existing NetModule to Assembly...'), visible: never },
   { group: GROUP_NEW, order: 30, label: (ctx) => ctx.t('Create NetModule...'), visible: never },
   { group: GROUP_NEW, order: 40, label: (ctx) => ctx.t('Create Type...'), visible: kindIs('type', 'namespace', 'module') },
-  { group: GROUP_NEW, order: 50, label: (ctx) => ctx.t('Create Nested Type...'), visible: kindIs('type') },
-  { group: GROUP_NEW, order: 60, label: (ctx) => ctx.t('Create Method...'), visible: kindIs('type') },
-  { group: GROUP_NEW, order: 70, label: (ctx) => ctx.t('Create Field...'), visible: kindIs('type') },
-  { group: GROUP_NEW, order: 80, label: (ctx) => ctx.t('Create Property...'), visible: kindIs('type') },
-  { group: GROUP_NEW, order: 90, label: (ctx) => ctx.t('Create Event...'), visible: kindIs('type') },
+  { group: GROUP_NEW, order: 50, label: (ctx) => ctx.t('Create Nested Type...'), visible: isMember },
+  { group: GROUP_NEW, order: 60, label: (ctx) => ctx.t('Create Method...'), visible: isMember },
+  { group: GROUP_NEW, order: 70, label: (ctx) => ctx.t('Create Field...'), visible: isMember },
+  { group: GROUP_NEW, order: 80, label: (ctx) => ctx.t('Create Property...'), visible: isMember },
+  { group: GROUP_NEW, order: 90, label: (ctx) => ctx.t('Create Event...'), visible: isMember },
   { group: GROUP_NEW, order: 100, label: (ctx) => ctx.t('Create File Resource...'), visible: kindIs('resource', 'resourceentry') },
   { group: GROUP_NEW, order: 110, label: (ctx) => ctx.t('Create Multi File Resource...'), visible: kindIs('resource', 'resourceentry') },
   { group: GROUP_NEW, order: 120, label: (ctx) => ctx.t('Create Assembly Linked Resource...'), visible: kindIs('resource', 'resourceentry') },

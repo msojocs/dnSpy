@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, RotateCcw, Search, X } from 'lucide-react'
 import { useLanguage } from '../localization'
+import { trapTabKey } from './modal-stack'
 import { loadAppOptions, resetAppOptions, saveAppOptions, type AppOptions } from './app-options'
 import {
   OPTION_PAGES,
@@ -342,24 +343,6 @@ export const OptionsDialog = ({ onClose, initialCategory }: OptionsDialogProps):
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [onClose])
 
-  const keepFocusInDialog = (event: React.KeyboardEvent): void => {
-    if (event.key !== 'Tab' || !dialog.current)
-      return
-    const focusable = [...dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')]
-    if (focusable.length === 0)
-      return
-    const first = focusable[0]
-    const last = focusable.at(-1)!
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last.focus()
-    }
-    else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first.focus()
-    }
-  }
-
   const handleChange = (path: string, value: unknown): void => {
     const parts = path.split('.')
     setOptions((current) => {
@@ -406,7 +389,7 @@ export const OptionsDialog = ({ onClose, initialCategory }: OptionsDialogProps):
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-      <div ref={dialog} className="modal options-dialog" role="dialog" aria-modal="true" aria-labelledby="options-title" onKeyDown={keepFocusInDialog}>
+      <div ref={dialog} className="modal options-dialog" role="dialog" aria-modal="true" aria-labelledby="options-title" onKeyDown={(event) => trapTabKey(event, dialog.current)}>
         <div className="modal-title">
           <span id="options-title">{t('Options')}</span>
           <button type="button" className="icon-button" aria-label={t('Close')} title={t('Close')} onClick={onClose}><X size={14} /></button>
