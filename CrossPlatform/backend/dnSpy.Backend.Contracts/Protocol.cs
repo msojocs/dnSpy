@@ -488,8 +488,12 @@ public sealed record MarshalTypeDto(
 	int? IidParamIndex = null,
 	string Display = "");
 
+/// <summary>
+/// A <c>MethodImpl</c> row. The body may be left out: a dialog that adds one only knows which method is
+/// being overridden, and the row's body is by construction the method being edited.
+/// </summary>
 public sealed record MethodOverrideDto(
-	MethodRefDto MethodBody,
+	MethodRefDto? MethodBody,
 	MethodRefDto MethodDeclaration,
 	string Display = "");
 

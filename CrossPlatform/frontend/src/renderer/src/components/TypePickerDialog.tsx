@@ -10,13 +10,20 @@ import { isTopModal, trapTabKey, useModalLayer } from './modal-stack'
  * the assembly explorer's own, with everything the caller did not ask for hidden — a picker opened for
  * a type shows types and the containers that hold them, and nothing else.
  */
-export type PickerMode = 'type' | 'member' | 'field' | 'method'
+export type PickerMode = 'type' | 'member' | 'field' | 'method' | 'constructor'
 
-const SELECTABLE: Record<PickerMode, string[]> = {
-  type: ['type'],
-  member: ['type', 'method', 'field', 'property', 'event'],
-  field: ['field'],
-  method: ['method'],
+/**
+ * Whether a node is one of the answers this mode is looking for. A mode that only wants part of a kind
+ * tells them apart by name, since that is all the tree carries: an instance constructor is a method
+ * called `.ctor`, which is the name ECMA-335 §II.10.5.1 requires it to have — `.cctor` is the static one
+ * and is not a custom attribute's constructor.
+ */
+const SELECTABLE: Record<PickerMode, (node: TreeNode) => boolean> = {
+  type: (node) => node.kind === 'type',
+  member: (node) => ['type', 'method', 'field', 'property', 'event'].includes(node.kind),
+  field: (node) => node.kind === 'field',
+  method: (node) => node.kind === 'method',
+  constructor: (node) => node.kind === 'method' && node.label.startsWith('.ctor('),
 }
 
 /**
@@ -32,6 +39,7 @@ const PICKER_TITLES: Record<PickerMode, string> = {
   member: 'Pick Member',
   field: 'Pick a Field',
   method: 'Pick a Method',
+  constructor: 'Pick a Constructor',
 }
 
 interface PickerRowProps {
@@ -50,7 +58,7 @@ interface PickerRowProps {
 
 const PickerRow = ({ node, parents, mode, children, expanded, loading, selectedId, onSelect, onToggle, onPick }: PickerRowProps): React.JSX.Element | null => {
   const { t } = useLanguage()
-  const selectable = SELECTABLE[mode].includes(node.kind)
+  const selectable = SELECTABLE[mode](node)
   if (!selectable && !CONTAINERS.includes(node.kind))
     return null
   const open = expanded[node.id] ?? false
@@ -114,6 +122,10 @@ interface TypePickerDialogProps {
   mode: PickerMode
   /** Overrides the mode's default title, the way an option dialog names the thing it is picking. */
   title?: string
+  /** The only roots to show, for a picker whose answer has to come out of one assembly. dnSpy's own way
+   * of saying that is wrapping it in a `SameModuleDocumentTreeNodeFilter`, which hides every other
+   * module; nothing under a module can be from anywhere else, so hiding the roots is the same tree. */
+  rootNodeIds?: string[]
   /** Called with the picked node and its ancestor chain, outermost first and including the node
    * itself — the chain is what tells a caller which assembly and namespace the node came from. */
   onPick(node: TreeNode, trail: TreeNode[]): void
@@ -130,7 +142,7 @@ interface TypePickerDialogProps {
  * that means knowing the whole subtree, and this tree is read a level at a time. An empty namespace is
  * a smaller price than a picker that has to load every assembly before it can show anything.
  */
-export const TypePickerDialog = ({ workspaceId, mode, title, onPick, onClose }: TypePickerDialogProps): React.JSX.Element => {
+export const TypePickerDialog = ({ workspaceId, mode, title, rootNodeIds, onPick, onClose }: TypePickerDialogProps): React.JSX.Element => {
   const dialog = useRef<HTMLDivElement>(null)
   const depth = useModalLayer()
   const { t } = useLanguage()
@@ -177,24 +189,30 @@ export const TypePickerDialog = ({ workspaceId, mode, title, onPick, onClose }: 
     }
   }
 
+  // The ids are read through a key so that a caller writing the array inline does not reload the tree on
+  // every render — an array is a different value each time, its contents are not.
+  const rootKey = rootNodeIds === undefined ? undefined : rootNodeIds.join('\n')
+
   useEffect(() => {
     void (async () => {
       try {
+        const allowed = rootKey === undefined ? undefined : new Set(rootKey.split('\n'))
         const response = await window.dnSpy.getRoots(workspaceId)
         if (!alive.current)
           return
-        setRoots(response.nodes)
+        const shown = allowed === undefined ? response.nodes : response.nodes.filter((node) => allowed.has(node.id))
+        setRoots(shown)
         // A module's own children are its namespaces, so opening it is what makes the tree usable;
         // nothing below that is opened for the user, since which namespace holds the type is their call.
-        setExpanded(Object.fromEntries(response.nodes.map((node) => [node.id, true])))
-        await Promise.all(response.nodes.filter((node) => node.hasChildren).map(loadChildren))
+        setExpanded(Object.fromEntries(shown.map((node) => [node.id, true])))
+        await Promise.all(shown.filter((node) => node.hasChildren).map(loadChildren))
       }
       catch (cause) {
         if (alive.current)
           setError(cause instanceof Error ? cause.message : String(cause))
       }
     })()
-  }, [workspaceId])
+  }, [workspaceId, rootKey])
 
   const toggle = (node: TreeNode, parents: TreeNode[]): void => {
     setTrail([...parents, node])
@@ -205,7 +223,7 @@ export const TypePickerDialog = ({ workspaceId, mode, title, onPick, onClose }: 
   }
 
   const selected = trail.at(-1)
-  const canPick = selected !== undefined && SELECTABLE[mode].includes(selected.kind)
+  const canPick = selected !== undefined && SELECTABLE[mode](selected)
 
   return (
     <div

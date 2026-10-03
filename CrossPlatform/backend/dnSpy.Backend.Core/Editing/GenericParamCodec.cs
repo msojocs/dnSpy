@@ -52,5 +52,8 @@ public sealed class GenericParamCodec {
 		return constraint;
 	}
 
-	static string Display(GenericParam parameter) => parameter.FullName;
+	static string Display(GenericParam parameter) {
+		var name = parameter.Name is { Length: > 0 } value ? value.String : "<<no-name>>";
+		return $"gparam({parameter.Number}) {name}";
+	}
 }

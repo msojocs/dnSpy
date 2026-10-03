@@ -19,9 +19,15 @@ const getRoots = vi.fn(async () => ({ nodes: [node('n1', 'Sample', 'module', tru
 const getChildren = vi.fn(async (_workspaceId: string, nodeId: string) => ({ nodes: TREE[`ws:${nodeId}`] ?? [] }))
 // Only a generic type answers with parameters, which is what tells the editor how many arguments an
 // instance of it takes.
-const getNodeOptions = vi.fn(async (_workspaceId: string, _kind: string, nodeId: string) => ({
+const getNodeOptions = vi.fn(async (_workspaceId: string, _kind: string, request: { nodeId?: string }) => ({
   kind: 'type',
-  type: { namespace: 'Alpha', name: 'Widget', genericParameters: nodeId === 'n7' ? [{ number: 0 }, { number: 1 }] : [] },
+  type: {
+    namespace: 'Alpha',
+    name: 'Widget',
+    genericParameters: request.nodeId === 'n7'
+      ? [{ number: 0, flags: 0, name: 'T', constraints: [], customAttributes: [] }, { number: 1, flags: 0, name: 'U', constraints: [], customAttributes: [] }]
+      : [],
+  },
 }))
 
 beforeEach(() => {

@@ -61,7 +61,7 @@ public sealed class MethodDefEditor {
 		foreach (var parameter in context.GenericParams.FromDtoList(dto.GenericParameters))
 			method.GenericParameters.Add(parameter);
 		method.Overrides.Clear();
-		foreach (var @override in context.MethodOverrides.FromDtoList(dto.Overrides))
+		foreach (var @override in context.MethodOverrides.FromDtoList(dto.Overrides, method))
 			method.Overrides.Add(@override);
 
 		method.Parameters.UpdateParameterTypes();

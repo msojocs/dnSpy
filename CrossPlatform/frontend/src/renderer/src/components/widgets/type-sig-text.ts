@@ -1,7 +1,23 @@
-import type { MethodSigDto, TypeRefDto, TypeSigDto } from '../../../../shared/protocol'
+import type { MethodSigDto, TreeNode, TypeRefDto, TypeSigDto } from '../../../../shared/protocol'
 
 /** What a slot shows before anything has been picked for it. */
 export const NOT_SET = '(not set)'
+
+/**
+ * The type of a node the picker returned: the node id it was picked by, since the workspace has already
+ * resolved it, plus the name a lookup would need if that no longer holds. A type's label is its full
+ * name, so the namespace in front of it is what a nested name has to lose.
+ */
+export const referenceOf = (node: TreeNode, trail: TreeNode[]): TypeRefDto => {
+  const namespace = trail.find((entry) => entry.kind === 'namespace')?.label ?? ''
+  const prefix = namespace.length === 0 ? '' : `${namespace}.`
+  return {
+    scope: trail.find((entry) => entry.kind === 'assemblyreference')?.label ?? '',
+    namespace,
+    name: node.label.startsWith(prefix) ? node.label.slice(prefix.length) : node.label,
+    nodeId: node.id,
+  }
+}
 
 /**
  * How dnlib writes a type reference: the namespace, then the name — which for a nested type is its path

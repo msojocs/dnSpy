@@ -47,6 +47,12 @@ public sealed class ParamDefCodec {
 	public IList<ParamDef> FromDtoList(IEnumerable<ParamDefDto>? parameters) =>
 		[.. (parameters ?? []).Select(FromDto)];
 
-	static string Display(ParamDef parameter) =>
-		parameter.Name is { Length: > 0 } name ? name.String : $"param #{parameter.Sequence}";
+	// The row's text, which is dnSpy's `ParamDefVM.FullName`: the sequence as it names a parameter — 0 is
+	// the return value and 1 is the first of them — then the name, or the placeholder for one that has
+	// none. The frontend's `paramDefLabel` composes the same text from a row that is still being typed.
+	static string Display(ParamDef parameter) {
+		var position = parameter.Sequence == 0 ? "param(return)" : $"param({parameter.Sequence})";
+		var name = parameter.Name is { Length: > 0 } value ? value.String : "<<no-name>>";
+		return $"{position} {name}";
+	}
 }

@@ -141,6 +141,11 @@ public sealed class SignatureCodec {
 		// and what keeps a rebuilt signature identical to the one that was read.
 		if (reference.Namespace == "System" && CorLibElementType(reference.Name) is { } element && !context.Types.IsDefinedLocally(reference))
 			return CorLibSig(element);
+		// `System.Type` is not one of the primitives `CorLibTypes` exposes as a signature, so a dialog
+		// that names it by hand — which is what a type-valued custom attribute argument is — is answered
+		// with the corlib's own reference, the same one dnSpy's `CANamedArgumentVM` builds for it.
+		if (reference.Namespace == "System" && reference.Name == "Type" && !context.Types.IsDefinedLocally(reference))
+			return new ClassSig(context.Module.CorLibTypes.GetTypeRef("System", "Type"));
 		var definition = context.Types.Resolve(reference);
 		return IsValueType(dto, definition) ? new ValueTypeSig(definition) : new ClassSig(definition);
 	}

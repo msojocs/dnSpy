@@ -3,7 +3,7 @@ import type { MethodSigDto, TreeNode, TypeRefDto, TypeSigDto } from '../../../..
 import { useLanguage } from '../../localization'
 import { TypePickerDialog } from '../TypePickerDialog'
 import { MethodSigEditor } from './MethodSigEditor'
-import { describeTypeRef, describeTypeSig } from './type-sig-text'
+import { describeTypeRef, describeTypeSig, referenceOf } from './type-sig-text'
 
 /**
  * What a signature being edited can hold, mirroring dnSpy's `TypeSigCreatorOptions` together with the
@@ -74,22 +74,6 @@ const emptyFunctionPointer = (): MethodSigDto => ({
 })
 
 /**
- * The type of a node the picker returned: the node id it was picked by, since the workspace has already
- * resolved it, plus the name a lookup would need if that no longer holds. A type's label is its full
- * name, so the namespace in front of it is what a nested name has to lose.
- */
-const referenceOf = (node: TreeNode, trail: TreeNode[]): TypeRefDto => {
-  const namespace = trail.find((entry) => entry.kind === 'namespace')?.label ?? ''
-  const prefix = namespace.length === 0 ? '' : `${namespace}.`
-  return {
-    scope: trail.find((entry) => entry.kind === 'assemblyreference')?.label ?? '',
-    namespace,
-    name: node.label.startsWith(prefix) ? node.label.slice(prefix.length) : node.label,
-    nodeId: node.id,
-  }
-}
-
-/**
  * The type-signature editor: dnSpy's `TypeSigCreatorControl`. A signature is built by picking a type and
  * then wrapping it — in a pointer, an array, a generic instance — so the buttons it offers depend on
  * whether anything has been added yet, and the value that is being edited is exactly the tree those
@@ -127,7 +111,7 @@ export const TypeSigEditor = ({ workspaceId, value, onChange, options = {}, disa
     try {
       // A generic instance takes one argument per parameter the type declares, and the type is what
       // knows how many that is. dnSpy asks the same question of the resolved definition.
-      const response = await window.dnSpy.getNodeOptions(workspaceId, 'type', node.id)
+      const response = await window.dnSpy.getNodeOptions(workspaceId, 'type', { nodeId: node.id })
       const count = response.type?.genericParameters.length ?? 0
       if (count === 0) {
         setWarning(t('{name} is not a generic type', { name: describeTypeRef(reference) }))

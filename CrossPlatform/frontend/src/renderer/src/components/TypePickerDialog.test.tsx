@@ -141,6 +141,17 @@ describe('TypePickerDialog', () => {
     await waitFor(() => expect(screen.getByText('The workspace no longer exists.')).toBeTruthy())
   })
 
+  it('shows only the roots it was given, which is how a picker is held to one assembly', async () => {
+    getRoots.mockResolvedValueOnce({
+      nodes: [node('n1', 'Sample', 'module', true, 'assembly'), node('n9', 'Elsewhere', 'module', true, 'assembly')],
+    })
+    const onPick = vi.fn()
+    render(<TypePickerDialog workspaceId="ws" mode="method" rootNodeIds={['n9']} onPick={onPick} onClose={vi.fn()} />)
+
+    expect(await screen.findByText('Elsewhere')).toBeTruthy()
+    expect(screen.queryByText('Sample')).toBeNull()
+  })
+
   it('picks a member when it was opened for one, not just the type that holds it', async () => {
     const { onPick } = renderPicker('member')
     await screen.findByText('Alpha')

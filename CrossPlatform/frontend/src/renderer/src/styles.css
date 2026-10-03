@@ -1791,6 +1791,394 @@ fieldset.options-group {
   column-gap: 12px;
 }
 
+/* The window every asm-editor dialog is drawn in: title, tab strip, the page itself, an error strip and
+   the button row. The page is the only row that grows, so a long list scrolls instead of the dialog. */
+.options-shell {
+  grid-template-rows: 33px auto minmax(0, 1fr) auto 43px;
+  width: min(96vw, 780px);
+  height: min(90vh, 640px);
+}
+
+/* A dialog whose page is the whole window, with no tab strip between the title and it. */
+.options-shell.no-tabs {
+  grid-template-rows: 33px minmax(0, 1fr) auto 43px;
+}
+
+/* The custom attribute dialog is a page rather than a set of tabs, and narrower than the rest. */
+.ca-shell {
+  width: min(96vw, 560px);
+}
+
+.options-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  padding: 3px 6px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.options-tabs button {
+  height: 25px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.options-tabs button:not(:disabled):hover {
+  background: var(--selection);
+}
+
+.options-tabs button.selected {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.options-tabpanel {
+  min-height: 0;
+  padding: 9px;
+  overflow: auto;
+}
+
+/* `ListVMControl`: the list, then its Move Up / Move Down / Edit... / Add... / Remove row. */
+.list-editor {
+  display: grid;
+  gap: 5px;
+}
+
+.list-editor-list {
+  min-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.list-editor-row {
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
+.list-editor-row.selected {
+  background: var(--selection);
+}
+
+.list-editor-buttons {
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.list-editor-buttons button {
+  min-width: 0;
+  height: 25px;
+  padding: 0 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.list-editor-buttons button:not(:disabled):hover {
+  background: var(--selection);
+}
+
+.list-editor-buttons button:disabled {
+  opacity: 0.45;
+}
+
+/* A row that is its own editor — dnSpy's `ListVM` built with `inlineEditing`. It is a small form rather
+   than a line of text, so it is separated from the row below rather than run together with it. */
+.list-editor-row.inline {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* dnSpy's `ConstantControl`: the Constant checkbox over the combo and value box it enables. */
+.constant-editor {
+  display: grid;
+  gap: 4px;
+}
+
+.constant-value {
+  display: grid;
+  grid-template-columns: 90px minmax(60px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.constant-value-label {
+  color: var(--text-muted);
+}
+
+/* dnSpy's `CustomAttributeControl`: the constructor to pick, then its arguments, then the named ones. */
+.ca-dialog {
+  display: grid;
+  gap: 7px;
+}
+
+.ca-constructor {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px;
+}
+
+/* One custom attribute argument: `CAArgumentVM`, a combo of the kinds over the box for the kind. */
+.ca-argument {
+  display: grid;
+  gap: 3px;
+  margin: 2px 0;
+}
+
+.ca-argument-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.ca-argument-null,
+.ca-argument-type {
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+/* An array's elements as one comma-separated box, with the captionless null checkbox beside it. */
+.ca-array-text {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+/* An array whose elements are picked rather than typed: the rows, then Add. */
+.ca-array {
+  display: grid;
+  gap: 3px;
+}
+
+.ca-array-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px;
+}
+
+.ca-array input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* One named argument: the Field/Property combo and the name over the value editor. */
+.ca-named-argument {
+  display: grid;
+  gap: 3px;
+}
+
+.ca-named-argument-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.ca-named-argument-name {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+}
+
+.ca-named-argument select,
+.ca-named-argument input,
+.ca-array input,
+.ca-argument input,
+.ca-constructor input,
+.constant-value select,
+.constant-value input,
+.marshal-type input,
+.marshal-type select,
+.implmap input,
+.implmap select,
+.param-def input,
+.param-def select,
+.security-attribute-picker input,
+.decl-security select {
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+/* The picker button beside a box: dnSpy's ellipsis button, the same as the type-signature editor's. */
+.ca-constructor button,
+.ca-argument button {
+  min-width: 25px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.ca-constructor button:not(:disabled):hover,
+.ca-argument button:not(:disabled):hover {
+  background: var(--selection);
+}
+
+/* The groupboxes the arguments sit in, drawn the way the option dialogs' own groupboxes are. */
+.ca-group {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.ca-group legend {
+  padding-inline: 4px;
+  color: var(--text-muted);
+}
+
+.ca-group-empty {
+  color: var(--text-muted);
+}
+
+/* The marshal-type control: a stack of label/box rows, the same shape as the argument rows. */
+.marshal-type {
+  display: grid;
+  gap: 5px;
+}
+
+.marshal-field {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+}
+
+.marshal-label {
+  color: var(--text-muted);
+}
+
+/* A row of checkboxes beside a label column: the safe array's variant flags start after the column,
+   the parameter flags are a groupbox of their own and start at the edge. */
+.marshal-flags,
+.param-flags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.marshal-flags {
+  padding-inline-start: 90px;
+}
+
+.marshal-flags label,
+.param-flags label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The signature the safe-array and custom-marshaller fields embed, which is a control of its own. */
+.marshal-type-sig {
+  padding-inline-start: 90px;
+}
+
+/* The P/Invoke row and the parameter's first row: dnSpy lays both out four columns wide, which is two
+   label/box pairs per line. */
+.implmap-grid,
+.param-def-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 10px;
+}
+
+/* The parameter pages: the name and the two boxes under it, the same stack the marshal type uses. */
+.param-def {
+  display: grid;
+  gap: 5px;
+}
+
+/* The security-attribute page: dnSpy's picker button with the read-only box it fills beside it, and the
+   named arguments under both. The box is transparent because it is an output, not an input. */
+.security-attribute {
+  display: grid;
+  gap: 5px;
+}
+
+.security-attribute-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px;
+}
+
+.security-attribute-picker input[readonly] {
+  background: transparent;
+}
+
+/* A declarative security row: the action and the version beside each other, then whichever of the two
+   payloads the version picks. dnSpy's version combo is thirty pixels wide, which a two-letter label no
+   longer fits in; it is kept as the narrow one of the pair. */
+.decl-security {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+
+.decl-security-head {
+  display: flex;
+  gap: 5px;
+}
+
+.decl-security-head select:first-child {
+  width: 120px;
+}
+
+.decl-security-head select:last-child {
+  width: 56px;
+}
+
+.decl-security-xml {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  color: var(--text-muted);
+}
+
+.decl-security-xml textarea {
+  min-height: 180px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.implmap .options-row {
+  align-self: end;
+}
+
+.options-error {
+  color: var(--danger);
+}
+
 .options-row {
   display: flex;
   align-items: center;

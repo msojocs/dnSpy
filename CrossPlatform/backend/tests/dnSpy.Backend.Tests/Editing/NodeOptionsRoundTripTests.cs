@@ -41,6 +41,8 @@ public sealed class NodeOptionsRoundTripTests {
 		Assert.Single(dto.DeclSecurities[0].SecurityAttributes);
 		Assert.Single(dto.DeclSecurities[0].SecurityAttributes[0].NamedArguments);
 		Assert.Single(dto.GenericParameters);
+		// The row's text is dnSpy's `FullName`, which the frontend composes the same way.
+		Assert.Equal("gparam(0) T", dto.GenericParameters[0].Display);
 		Assert.Single(dto.Interfaces);
 
 		var created = context.TypeDefs.Create(dto);
@@ -103,6 +105,8 @@ public sealed class NodeOptionsRoundTripTests {
 		Assert.Single(dto.Overrides);
 		Assert.Single(dto.GenericParameters);
 		Assert.Single(dto.ParamDefs);
+		// The row's text is dnSpy's `FullName`, which the frontend composes the same way.
+		Assert.Equal("param(1) count", dto.ParamDefs[0].Display);
 		Assert.Single(dto.CustomAttributes);
 		Assert.Single(dto.DeclSecurities);
 
@@ -123,6 +127,30 @@ public sealed class NodeOptionsRoundTripTests {
 		Assert.Single(created.GenericParameters);
 		Assert.Single(created.CustomAttributes);
 		Assert.Single(created.DeclSecurities);
+	}
+
+	[Fact]
+	public void AnOverrideWithNoBodyBecomesAnOverrideByTheMethodItself() {
+		var (module, type) = EditTestModule.Create();
+		var method = EditTestModule.AddMethod(type, "Run", MethodSig.CreateInstance(module.CorLibTypes.Void));
+		var declaration = EditTestModule.AddMethod(type, "RunBase", MethodSig.CreateInstance(module.CorLibTypes.Void));
+		var context = EditTestModule.Context(module, type);
+
+		var dto = context.MethodDefs.ToDto(method);
+		var written = context.MethodDefs.CopyTo(method, dto with {
+			Overrides = [new MethodOverrideDto(null, context.MethodRefs.ToDto(declaration))],
+		});
+
+		var @override = Assert.Single(written.Overrides);
+		// The row's body is the method under edit, which is what a dialog that only knows the declaration
+		// ends up with — dnSpy's `MethodDefOptions.CopyTo` fills it in the same way.
+		Assert.Same(method, @override.MethodBody);
+		Assert.Same(declaration, @override.MethodDeclaration);
+
+		// And reading it back gives a body, so what the dialog wrote is what it will open with next time.
+		var read = Assert.Single(context.MethodDefs.ToDto(written).Overrides);
+		Assert.NotNull(read.MethodBody);
+		Assert.Equal(method.Name, read.MethodBody.Name);
 	}
 
 	[Fact]
@@ -345,6 +373,32 @@ public sealed class NodeOptionsRoundTripTests {
 		Assert.NotEqual(0u, first.MDToken.Rid);
 		Assert.NotEqual(0u, second.MDToken.Rid);
 		Assert.NotEqual(first.MDToken.Raw, second.MDToken.Raw);
+	}
+
+	/// <summary>
+	/// The two forms of a security declaration are one field in the metadata, so a row that still holds
+	/// the .NET 1.x XML has to be written back from it: rebuilding the row from the attribute list — which
+	/// such a row does not have — would drop the permission set and save an empty demand.
+	/// </summary>
+	[Fact]
+	public void AnOlderSecurityDeclarationKeepsItsXml() {
+		var (module, _) = EditTestModule.Create();
+		// What a .NET 1.x compiler wrote into the blob, which is the XML itself and nothing else.
+		const string xml = "<PermissionSet class=\"System.Security.PermissionSet\" version=\"1\"/>";
+		var type = EditTestModule.AddType(module, "Ns", "Secured");
+		type.DeclSecurities.Add(module.UpdateRowId(new DeclSecurityUser(
+			SecurityAction.RequestMinimum,
+			[SecurityAttribute.CreateFromXml(module, xml)])));
+
+		var context = EditTestModule.Context(module, type);
+		var dto = context.TypeDefs.ToDto(type);
+		// dnlib reads such a blob as the XML and keeps the parse of it beside it, so both fields come
+		// back; which form the row is in is the XML being there, as it is in dnSpy's own options.
+		Assert.Equal(xml, dto.DeclSecurities[0].V1XmlString);
+
+		var written = context.TypeDefs.ToDto(context.TypeDefs.Create(dto)).DeclSecurities[0];
+		Assert.Equal(xml, written.V1XmlString);
+		Assert.Single(written.SecurityAttributes);
 	}
 
 	/// <summary>

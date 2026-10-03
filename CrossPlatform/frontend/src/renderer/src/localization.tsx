@@ -200,7 +200,9 @@ const zhCN: Record<string, string> = {
   'Path': '路径',
   'Runtime': '运行时',
   'Architecture': '架构',
-  'Kind': '类型',
+  // "Kind" is one word with one meaning here: dnSpy's `GP_Kind` page, the module's kind, and the kind
+  // an IL operand is — 类别 for all three, which is the translation dnSpy gives the first of them.
+  'Kind': '类别',
   'Entry point': '入口点',
   'Types': '类型',
   'Resources': '资源',
@@ -252,6 +254,118 @@ const zhCN: Record<string, string> = {
   'Module': '模块',
   'Go To': '转到',
   'Remove': '移除',
+  // dnSpy.AsmEditor.Resources: Button_Edit (_Edit...), Button_Add2 (_Add...), MoveUp/MoveDown_ToolTip.
+  'Edit...': '编辑(_E)...',
+  'Add...': '添加(_A)...',
+  'Move Up': '上移',
+  'Move Down': '下移',
+  // The asm-editor dialogs' shared furniture: `ConstantDlg_Constant`, `Value`, `ValueType_ToolTip`.
+  // `Value` is already in the dictionary above, where a table column asked for it.
+  'Constant': '常量',
+  'Value type': '值类型',
+  // `DataFieldVM` reports the value it could not read rather than a message of its own.
+  "'{text}' is not a valid {name}": "“{text}”不是有效的 {name}",
+  // The dialogs a signature is built in, which pick their parts from the same tree the explorer shows.
+  '(not set)': '(未设置)',
+  'Clear type': '清除类型',
+  'Remove last added type': '移除最后添加的类型',
+  'Add a type': '添加类型',
+  'Pick a Type': '选择类型',
+  'Pick a Field': '选择一个字段',
+  'Pick a Method': '选择一个方法',
+  'Pick a Constructor': '选择一个构造函数',
+  'Pick a Generic Type': '选择泛型类型',
+  'Pick an Enum Type': '选择枚举类型',
+  'Pick a type': '选择类型',
+  // dnSpy.AsmEditor.Resources: CustomAttributeControl and the dialog that hosts it.
+  'Edit Custom Attribute': '编辑自定义特性',
+  'Constructor Arguments': '构造器参数',
+  'Named Arguments': '命名参数',
+  'Custom Attributes': '自定义特性',
+  'Constructor': '构造函数',
+  'Field': '字段',
+  'Property': '属性',
+  'Property/Field type': '属性/字段类型',
+  'The selected method cannot be used as a constructor.': '所选方法不能用作构造函数。',
+  // dnSpy.AsmEditor.Resources: MethodOverrideVM / the dialog that only holds the method picker.
+  'Method Overrides': '方法重写',
+  'Method Override': '方法重写',
+  'Edit Method Override': '编辑方法重写',
+  'The selected method cannot be used as an override.': '所选方法不能用作重写。',
+  // dnSpy.AsmEditor.Resources: MarshalTypeVM / MarshalTypeControl (the access keys are dropped).
+  'Marshal Type': '封送类型',
+  'Data': '数据',
+  'VT': 'VT',
+  'ElemType': '元素类型',
+  'ParamNum': '参数号',
+  'NumElems': '元素数量',
+  'Flags': '标志',
+  'GUID': 'GUID',
+  'NativeType': '本机类型',
+  'Cookie': 'Cookie',
+  'ParamIndex': '参数索引',
+  '<Not Initialized>': '<未初始化>',
+  'Vector': '向量',
+  'Array': '数组',
+  'ByRef': '按引用',
+  'Reserved': '保留',
+  'A type is required': '需要一个类型',
+  // dnSpy.AsmEditor.Resources: ImplMapVM / ImplMapControl. The four combo labels are the literal XAML
+  // text, so only the two labels dnSpy keeps in resources are translated.
+  'ImplMap': 'P/Invoke 映射',
+  'A P/Invoke method needs the name of the native library it calls into.': 'P/Invoke 方法需要它所调用本机库的名称。',
+  // dnSpy.AsmEditor.Resources: ParamDefVM / ParamDefControl / ParamDefDlg, and the SimpleTypeConverter
+  // messages a number box can report (the access keys are dropped).
+  'Sequence': '序列',
+  'Sequence 0 is return parameter, sequence 1 is first parameter, etc': '序列 0 是返回参数，序列 1 是第一个参数，以此类推。',
+  'In': '传入',
+  'Out': '传出',
+  'Lcid': 'Lcid',
+  'Retval': '返回值',
+  'Optional': '可选的',
+  'Default value for this parameter': '参数默认值',
+  'Create Parameter': '创建参数',
+  'Edit Parameter': '编辑参数',
+  'Parameters': '参数',
+  'Main': '常规',
+  'Custom Attrs': '自定义特性',
+  'Only non-negative integers are allowed': '允许只非负整数',
+  'The value is not an unsigned hexadecimal or decimal integer': '值不是无符号的十六进制或十进制整数',
+  'Value must be between {min} and {max} (0x{maxHex}) inclusive': '值必须介于 {min} 和 {max} (0x{maxHex}) 之间',
+  // dnSpy.AsmEditor.Resources: GenericParamVM / GenericParamControl / GenericParamDlg. The three
+  // variance names are the fields of dnSpy's own GPVariance enum, which its EnumVM shows as they are
+  // spelled there, so they are not translated. GP_Constraints and GP_GenericParamConstraints are two
+  // entries with the same text upstream.
+  'Create Generic Parameter': '创建泛型参数',
+  'Edit Generic Parameter': '编辑泛型参数',
+  'Create Generic Parameter Constraint': '创建泛型参数约束',
+  'Edit Generic Parameter Constraint': '编辑泛型参数约束',
+  'Generic Parameters': '泛型参数',
+  'Constraints': '约束',
+  'Class': '类',
+  'Struct': '结构体',
+  'Default ctor': '默认构造函数',
+  'Allows ByRefLike': '允许 ByRefLike',
+  'Variance': '方差',
+  'Only used if MD header version is 1.1 (0x0101). It\'s never 1.1 so ignore Kind': '只有当元数据的头版本为 1.1 (0x0101) 时才会被使用，但它永远不可能是 1.1 所以忽略',
+  // dnSpy.AsmEditor.Resources: DeclSecurityVM / DeclSecurityControl / DeclSecurityDlg and
+  // SecurityAttributeVM / SecurityAttributeControl / SecurityAttributeDlg. The sixteen action names are
+  // the fields of dnSpy's own SecAc enum, which its combo shows as they are spelled there, and the two
+  // version labels are the fields of DeclSecVer — none of them are translated. The two combo labels are
+  // this port's own: dnSpy's boxes are unlabelled.
+  'Create Security Declaration': '创建安全声明',
+  'Edit Security Declaration': '编辑安全声明',
+  'Create Security Attribute': '创建安全特性',
+  'Edit Security Attribute': '编辑安全特性',
+  'Security Declarations': '安全声明',
+  'Security Attributes': '安全特性',
+  'XML': 'XML',
+  'Action': '操作',
+  'Version': '版本',
+  // `CANamedArgumentVM.HasError` only reports what the value editor reports, so an empty name is legal
+  // and there is no message for one.
+  'null': 'null',
+  '(none)': '(无)',
   'Edit Labels': '编辑标签',
   'Enable': '启用',
   'Disable': '禁用',

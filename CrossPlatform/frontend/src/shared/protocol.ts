@@ -249,22 +249,209 @@ export interface GenericParamDto {
   number: number
   flags: number
   name: string
+  kind?: TypeSigDto
+  constraints: GenericParamConstraintDto[]
+  customAttributes: CustomAttributeDto[]
   display?: string
 }
 
-/** A type's dialog model. Only the generic parameters are read so far — they say how many arguments
- * an instance of the type takes. The attributes, base type, interfaces, custom attributes and
- * security declarations travel with it too and are declared with the type dialog. */
+export interface GenericParamConstraintDto {
+  constraint: TypeSigDto
+  customAttributes: CustomAttributeDto[]
+  display?: string
+}
+
+/** A type and the attributes on it, which is what an implemented interface is — the same row a generic
+ * parameter's constraint is, under the field name dnSpy's `TypeDefOrRefAndCAOptions` uses. */
+export interface TypeDefOrRefAndCaDto {
+  typeDefOrRef: TypeSigDto
+  customAttributes: CustomAttributeDto[]
+  display?: string
+}
+
+/** A call target: the declaring type, the name, and the signature, which together identify it. */
+export interface MethodRefDto {
+  declaringType: TypeSigDto
+  name: string
+  signature: MethodSigDto
+  display?: string
+}
+
+/**
+ * A custom-attribute argument value, typed by the argument's own declared type. A primitive carries
+ * its digits as invariant text — which keeps every numeric width intact through JSON — and
+ * `elementType` says which of the boxes those digits are in, since an enum argument is declared as
+ * its enum but holds an integer.
+ */
+export interface CaValueDto {
+  kind: 'null' | 'primitive' | 'string' | 'type' | 'array' | 'struct'
+  primitive?: string
+  text?: string
+  referencedType?: TypeSigDto
+  elements?: CaArgumentDto[]
+  elementType?: number
+}
+
+export interface CaArgumentDto {
+  type: TypeSigDto
+  value: CaValueDto
+}
+
+export interface CaNamedArgumentDto {
+  isField: boolean
+  name: string
+  argument: CaArgumentDto
+}
+
+/** A custom attribute. The constructor's signature decides how many constructor arguments there are
+ * and what type each one is, so the values are what is carried. */
+export interface CustomAttributeDto {
+  constructor: MethodRefDto
+  constructorArguments: CaArgumentDto[]
+  namedArguments: CaNamedArgumentDto[]
+  display?: string
+}
+
+/** A Constant row; `elementType` is dnlib's `ElementType` as an int. */
+export interface ConstantDto {
+  elementType: number
+  value?: string
+  display?: string
+}
+
+/** A security attribute, which unlike a custom attribute has no constructor: the type is the
+ * attribute itself and every value is a named field or property. */
+export interface SecurityAttributeDto {
+  attributeType: TypeSigDto
+  namedArguments: CaNamedArgumentDto[]
+  display?: string
+}
+
+export interface DeclSecurityDto {
+  action: number
+  customAttributes: CustomAttributeDto[]
+  securityAttributes: SecurityAttributeDto[]
+  v1XmlString?: string
+  display?: string
+}
+
+export interface ImplMapDto {
+  attributes: number
+  name: string
+  moduleName?: string
+  display?: string
+}
+
+/** A MarshalType. `nativeType` picks which of the payload fields apply; a field left out is that
+ * payload's own "not present" state. */
+export interface MarshalTypeDto {
+  nativeType: number
+  rawData?: string
+  size?: number
+  variantType?: number
+  userDefinedSubType?: TypeSigDto
+  elementType?: number
+  paramNumber?: number
+  numberOfElements?: number
+  flags?: number
+  guid?: string
+  nativeTypeName?: string
+  customMarshaler?: TypeSigDto
+  cookie?: string
+  iidParamIndex?: number
+  display?: string
+}
+
+export interface MethodOverrideDto {
+  /** Left out while a dialog is drafting a new override — the row's body is then the method being
+   * edited, which the backend fills in. */
+  methodBody?: MethodRefDto
+  methodDeclaration: MethodRefDto
+  display?: string
+}
+
+export interface ParamDefDto {
+  name: string
+  sequence: number
+  attributes: number
+  constant?: ConstantDto
+  marshalType?: MarshalTypeDto
+  customAttributes: CustomAttributeDto[]
+  display?: string
+}
+
+/**
+ * A method's dialog model, which is dnSpy's `MethodDefOptions` field for field. `rva` is not edited
+ * by any tab, but it travels with the model: the dialog sends the whole of it back, and the codec
+ * writes every field it is given.
+ */
+export interface MethodOptionsDto {
+  implAttributes: number
+  attributes: number
+  semanticsAttributes: number
+  name: string
+  methodSig?: MethodSigDto
+  implMap?: ImplMapDto
+  customAttributes: CustomAttributeDto[]
+  declSecurities: DeclSecurityDto[]
+  paramDefs: ParamDefDto[]
+  genericParameters: GenericParamDto[]
+  overrides: MethodOverrideDto[]
+  rva?: number
+}
+
+/** A field's dialog model. Declared here because the new-member defaults for other kinds are read
+ * against it; the field dialog fills it in. */
+export interface FieldOptionsDto {
+  attributes: number
+  name: string
+  fieldSig?: TypeSigDto
+  fieldOffset?: number
+  marshalType?: MarshalTypeDto
+  initialValue?: string
+  implMap?: ImplMapDto
+  constant?: ConstantDto
+  customAttributes: CustomAttributeDto[]
+  rva?: number
+}
+
+export interface PropertySigDto {
+  hasThis: boolean
+  propertyType: TypeSigDto
+  parameters: TypeSigDto[]
+  display?: string
+}
+
+/** A type's dialog model. Only the generic parameters are read by the signature editor — they say how
+ * many arguments an instance of the type takes. The rest travels with it and is declared with the
+ * type dialog. */
 export interface TypeOptionsDto {
   namespace: string
   name: string
   genericParameters: GenericParamDto[]
 }
 
-/** What a create or edit dialog opens with, for the kind it was opened for. */
-export interface NodeOptionsResponse {
+/** What a create or edit dialog opens with, discriminated by the kind it was opened for: only the
+ * member matching `kind` is set. */
+export interface NodeOptionsDto {
   kind: string
   type?: TypeOptionsDto
+  method?: MethodOptionsDto
+  field?: FieldOptionsDto
+}
+
+/** Which node a dialog's model is read for: an existing one, or a new one belonging to `ownerNodeId`. */
+export interface NodeOptionsRequest {
+  nodeId?: string
+  ownerNodeId?: string
+  isNew?: boolean
+}
+
+/** The node a create or edit was queued for, and the name it will have once committed. */
+export interface EditNodeResponse {
+  nodeId: string
+  label: string
+  kind: string
 }
 
 export interface DebugProcess {
@@ -401,9 +588,16 @@ export interface DnSpyApi {
   getModuleInfo(workspaceId: string, moduleId: string): Promise<ModuleInfoResponse>
   beginEdit(workspaceId: string): Promise<BeginEditResponse>
   getMethodBody(workspaceId: string, methodNodeId: string): Promise<MethodBodyResponse>
-  /** The dialog model behind a node, which is what an Edit dialog opens with. Read-only: nothing about
-   * it is queued until the dialog is accepted. */
-  getNodeOptions(workspaceId: string, kind: string, nodeId: string): Promise<NodeOptionsResponse>
+  /** The dialog model behind a node, which is what an Edit dialog opens with, or the defaults a create
+   * dialog starts from when `isNew` is set. Read-only: nothing about it is queued until the dialog is
+   * accepted. `ownerNodeId` is what tells the backend where a new member would go — which type it
+   * belongs to, and with it whether a new type is nested or top-level. */
+  getNodeOptions(workspaceId: string, kind: string, request: NodeOptionsRequest): Promise<NodeOptionsDto>
+  /** Adds a type or a member to the node that owns it. The response names the row that was created,
+   * which is the node the client reveals once the transaction is committed. */
+  createNode(workspaceId: string, transactionId: string, ownerNodeId: string, options: NodeOptionsDto): Promise<EditNodeResponse>
+  /** Writes a dialog's model over an existing type or member. */
+  setNodeOptions(workspaceId: string, transactionId: string, nodeId: string, options: NodeOptionsDto): Promise<EditNodeResponse>
   queueRename(workspaceId: string, transactionId: string, nodeId: string, newName: string): Promise<void>
   /** Removes a type, member, resource, or every type of a namespace from its owner. */
   queueDelete(workspaceId: string, transactionId: string, nodeId: string): Promise<void>

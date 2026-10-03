@@ -22,18 +22,26 @@ public sealed class MethodOverrideCodec {
 		context.MethodRefs.ToDto(value.MethodDeclaration),
 		Display(value));
 
-	public MethodOverride FromDto(MethodOverrideDto? dto) => dto is null
+	/// <summary>
+	/// An override with no body of its own belongs to <paramref name="method"/>: dnSpy's
+	/// <c>MethodDefOptions.CopyTo</c> fills a body-less override in with the method being edited, which is
+	/// what lets a dialog add an override without knowing the token the method will end up with.
+	/// </summary>
+	public MethodOverride FromDto(MethodOverrideDto? dto, MethodDef method) => dto is null
 		? throw SignatureCodec.Invalid("A method override is required.")
 		: new MethodOverride(
-			context.MethodRefs.FromDtoMethod(dto.MethodBody),
+			dto.MethodBody is null ? method : context.MethodRefs.FromDtoMethod(dto.MethodBody),
 			context.MethodRefs.FromDtoMethod(dto.MethodDeclaration));
 
 	public IReadOnlyList<MethodOverrideDto> ToDtoList(IEnumerable<MethodOverride>? overrides) =>
 		[.. (overrides ?? []).Select(ToDto)];
 
-	public IList<MethodOverride> FromDtoList(IEnumerable<MethodOverrideDto>? overrides) =>
-		[.. (overrides ?? []).Select(FromDto)];
+	public IList<MethodOverride> FromDtoList(IEnumerable<MethodOverrideDto>? overrides, MethodDef method) =>
+		[.. (overrides ?? []).Select(dto => FromDto(dto, method))];
 
-	static string Display(MethodOverride value) =>
-		$"{value.MethodBody.FullName} overrides {value.MethodDeclaration.FullName}";
+	/// <summary>
+	/// What the row shows, which is the declaration and nothing else: dnSpy's `MethodOverrideVM.FullName`
+	/// is `MethodDeclaration.ToString()`, so an override whose body changed reads the same.
+	/// </summary>
+	static string Display(MethodOverride value) => value.MethodDeclaration.FullName;
 }

@@ -31,7 +31,12 @@ public sealed class DeclSecurityCodec {
 			throw SignatureCodec.Invalid("A security declaration is required.");
 		var security = context.Module.UpdateRowId(new DeclSecurityUser(
 			(SecurityAction)dto.Action,
-			[.. (dto.SecurityAttributes ?? []).Select(FromDto)]));
+			// The two forms are one field in the metadata, so a row that still has the .NET 1.x XML is
+			// written from it and the attributes the other form holds are not written at all — which is
+			// `DeclSecurityOptions.CopyTo`, and what keeps an old row from being rewritten as a new one.
+			dto.V1XmlString is { } xml
+				? [SecurityAttribute.CreateFromXml(context.Module, xml)]
+				: [.. (dto.SecurityAttributes ?? []).Select(FromDto)]));
 		foreach (var attribute in context.Attributes.FromDtoList(dto.CustomAttributes))
 			security.CustomAttributes.Add(attribute);
 		return security;

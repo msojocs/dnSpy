@@ -13,6 +13,7 @@ import type {
   DebugThread,
   DebugVariable,
   EditCommitResponse,
+  NodeOptionsDto,
   OpenedModule,
   ReferenceResult,
   ScriptOutputEntry,
@@ -190,6 +191,13 @@ interface AppState {
   runSearch(query: string, kinds?: string[]): Promise<void>
   analyzeNode(node: TreeNode): Promise<AnalyzeReferencesResponse | undefined>
   renameNode(node: TreeNode, newName: string): Promise<boolean>
+  /** Adds the type or member a create dialog assembled to the node that owns it, and selects the new
+   * node. Returns the created node, or undefined when the edit was refused. */
+  createNode(ownerNodeId: string, options: NodeOptionsDto): Promise<TreeNode | undefined>
+  /** Writes an edit dialog's model over the node it was opened for. */
+  applyNodeOptions(nodeId: string, options: NodeOptionsDto): Promise<boolean>
+  /** Opens the tree down to a node and selects it, which is what makes a new node visible. */
+  revealNode(nodeId: string): Promise<void>
   /** Removes the node from its owner — a type, member, resource, or every type of a namespace. */
   deleteNode(node: TreeNode): Promise<boolean>
   /** Renames a namespace; an empty name moves its types to the empty namespace. */
@@ -608,6 +616,92 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     } finally {
       set({ busy: false })
+    }
+  },
+
+  createNode: async (ownerNodeId, options) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId)
+      return undefined
+    set({ busy: true, error: undefined })
+    let transactionId: string | undefined
+    try {
+      transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+      const created = await window.dnSpy.createNode(workspaceId, transactionId, ownerNodeId, options)
+      const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+      // The created node is already in the commit's changed list, so its owner — the node it was added
+      // to — is refreshed by the same pass that refreshes everything else.
+      await refreshAfterEdit(get, set, committed)
+      await get().revealNode(created.nodeId)
+      get().appendOutput(t('Created {name}.', { name: created.label }))
+      const node = get().selectedNode
+      return node?.id === created.nodeId ? node : undefined
+    } catch (error) {
+      if (transactionId) {
+        try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Create failed: {message}', { message }))
+      return undefined
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  applyNodeOptions: async (nodeId, options) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId)
+      return false
+    set({ busy: true, error: undefined })
+    let transactionId: string | undefined
+    try {
+      transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+      await window.dnSpy.setNodeOptions(workspaceId, transactionId, nodeId, options)
+      const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+      await refreshAfterEdit(get, set, committed)
+      get().appendOutput(t('Edited {name}.', { name: options.method?.name ?? options.field?.name ?? options.type?.name ?? '' }))
+      return true
+    } catch (error) {
+      if (transactionId) {
+        try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Edit failed: {message}', { message }))
+      return false
+    } finally {
+      set({ busy: false })
+    }
+  },
+
+  revealNode: async (nodeId) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId)
+      return
+    // Every ancestor has to be open for the node to be on screen, and its children have to be loaded for
+    // the tree to have a row to select — a created member's own row is in the list its owner loads.
+    const ancestors: string[] = []
+    for (let id = get().parents[nodeId]; id !== undefined; id = get().parents[id])
+      ancestors.unshift(id)
+    set((state) => ({ expanded: { ...state.expanded, ...Object.fromEntries(ancestors.map((id) => [id, true])) } }))
+    for (const ancestorId of ancestors) {
+      if (get().children[ancestorId])
+        continue
+      try {
+        const response = await window.dnSpy.getChildren(workspaceId, ancestorId)
+        set((state) => ({
+          children: { ...state.children, [ancestorId]: response.nodes },
+          parents: { ...state.parents, ...Object.fromEntries(response.nodes.map((child) => [child.id, ancestorId])) },
+        }))
+      } catch {
+        // The ancestor is gone; there is nothing left to reveal the node in.
+      }
+    }
+    try {
+      set({ selectedNode: await window.dnSpy.getNode(workspaceId, nodeId) })
+    } catch {
+      // A node the backend would not describe stays unselected rather than selected-and-blank.
     }
   },
 
