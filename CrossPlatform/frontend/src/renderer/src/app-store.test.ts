@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodeStatement, DebugBreakpoint, TreeNode } from '../../shared/protocol'
-import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, codeStatementAt, filterBookmarks, lineBreakpointMarkers, methodBreakpointName, ownerTypeIdOf, parseBookmarkEntries, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
+import type { CodeStatement, DebugBreakpoint, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
+import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, bytesToHex, codeStatementAt, filterBookmarks, lineBreakpointMarkers, methodBreakpointName, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
 import type { Bookmark, LineBreakpoint } from './app-store'
 import { translate } from './localization'
 
@@ -967,5 +967,240 @@ describe('edit commands', () => {
 
     expect(queueMethodBodyStub).toHaveBeenCalledWith('w1', 't1', 'n2')
     expect(useAppStore.getState()).toMatchObject({ dirty: true, workspaceStateId: 'state-2', canUndo: true })
+  })
+})
+
+describe('hexadecimal text', () => {
+  it('writes two uppercase digits per byte and nothing in between', () => {
+    expect(bytesToHex(new Uint8Array([0x00, 0x0a, 0x2a, 0xff]))).toBe('000A2AFF')
+  })
+
+  it('reads that text back', () => {
+    expect(Array.from(parseHexText('000A2AFF')!)).toEqual([0x00, 0x0a, 0x2a, 0xff])
+  })
+
+  it('treats a question mark as a zero nibble, as dnSpy does', () => {
+    expect(Array.from(parseHexText('?A??')!)).toEqual([0x0a, 0x00])
+  })
+
+  it('refuses anything that is not an even run of hexadecimal digits', () => {
+    // dnSpy's paste takes no separators and no whitespace, and an odd length has no meaning.
+    expect(parseHexText('')).toBeUndefined()
+    expect(parseHexText('ABC')).toBeUndefined()
+    expect(parseHexText('0A 2A')).toBeUndefined()
+    expect(parseHexText('0G')).toBeUndefined()
+  })
+})
+
+describe('hex editor commands', () => {
+  const base64 = (bytes: number[]): string => btoa(String.fromCharCode(...bytes))
+  const returnTrue = base64([0x0a, 0x17, 0x2a])
+  const returnFalse = base64([0x0a, 0x16, 0x2a])
+
+  const methodNode: TreeNode = { id: 'm1', label: 'Run()', kind: 'method', hasChildren: false }
+  // The parts a node has no target for arrive as nulls, the way System.Text.Json writes them.
+  const methodTarget = (overrides: Partial<HexMethodTarget> = {}): HexTargetResponse => ({
+    moduleId: 'mod1',
+    fileLength: 4096,
+    method: { bodyOffset: 0x200, bodySize: 3, codeOffset: 0x201, codeSize: 2, returnTrueBody: returnTrue, returnFalseBody: returnFalse, emptyBody: null, ...overrides },
+    fieldInitialValue: null,
+    resource: null,
+  })
+
+  const beginEdit = vi.fn(async () => ({ transactionId: 't1', baseVersion: 1 }))
+  const commitEdit = vi.fn(async () => ({ version: 2, stateId: 'state-2', changedNodeIds: ['m1'], canUndo: true, canRedo: false }))
+  const rollbackEdit = vi.fn(async () => {})
+  const patchHex = vi.fn(async () => ({ queued: true }))
+  const resolveHexTarget = vi.fn()
+  const resolveHexStatement = vi.fn()
+  const readHex = vi.fn()
+  const getNode = vi.fn(async () => methodNode)
+  const getChildren = vi.fn(async () => ({ nodes: [] }))
+  const writeText = vi.fn(async () => undefined)
+  const readText = vi.fn(async () => '')
+
+  beforeEach(() => {
+    for (const mock of [beginEdit, commitEdit, rollbackEdit, patchHex, resolveHexTarget, resolveHexStatement, readHex, getNode, getChildren, writeText, readText])
+      mock.mockReset()
+    beginEdit.mockResolvedValue({ transactionId: 't1', baseVersion: 1 })
+    commitEdit.mockResolvedValue({ version: 2, stateId: 'state-2', changedNodeIds: ['m1'], canUndo: true, canRedo: false })
+    rollbackEdit.mockResolvedValue(undefined)
+    patchHex.mockResolvedValue({ queued: true })
+    getNode.mockResolvedValue(methodNode)
+    getChildren.mockResolvedValue({ nodes: [] })
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, beginEdit, commitEdit, rollbackEdit, patchHex, resolveHexTarget, resolveHexStatement, readHex, getNode, getChildren },
+    })
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText, readText } })
+    useAppStore.setState({
+      workspaceId: 'w1',
+      savedStateId: 'state-1',
+      workspaceStateId: 'state-1',
+      dirty: false,
+      busy: false,
+      error: undefined,
+      output: [],
+      documents: {},
+      children: { n1: [] },
+      parents: { m1: 'n1' },
+      selectedNode: methodNode,
+      hexTarget: undefined,
+      hexStatement: undefined,
+      hexNavigation: undefined,
+    })
+  })
+
+  it('resolves the hex target of the selected node and drops an answer that arrived too late', async () => {
+    resolveHexTarget.mockResolvedValue(methodTarget())
+    await useAppStore.getState().resolveHexTarget(methodNode)
+    expect(resolveHexTarget).toHaveBeenCalledWith('w1', 'm1')
+    expect(useAppStore.getState().hexTarget?.method?.bodyOffset).toBe(0x200)
+
+    // The selection can move while the round trip is in flight, and the late answer must not drive the
+    // menu for a node that is no longer selected.
+    let release: (target: HexTargetResponse) => void = () => undefined
+    resolveHexTarget.mockImplementation(() => new Promise<HexTargetResponse>((resolve) => { release = resolve }))
+    const pending = useAppStore.getState().resolveHexTarget(methodNode)
+    useAppStore.setState({ selectedNode: { id: 'other', label: 'X', kind: 'type', hasChildren: false } })
+    release(methodTarget({ bodyOffset: 0x300 }))
+    await pending
+
+    expect(useAppStore.getState().hexTarget?.method?.bodyOffset).toBe(0x200)
+  })
+
+  it('clears the target when the selection is cleared or the backend refuses', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+
+    await useAppStore.getState().resolveHexTarget(undefined)
+    expect(useAppStore.getState().hexTarget).toBeUndefined()
+
+    useAppStore.setState({ hexTarget: methodTarget() })
+    resolveHexTarget.mockRejectedValue(new Error('nope'))
+    await useAppStore.getState().resolveHexTarget(methodNode)
+    expect(useAppStore.getState().hexTarget).toBeUndefined()
+  })
+
+  it('resolves the statement under the caret into a file range', async () => {
+    resolveHexStatement.mockResolvedValue({ moduleId: 'mod1', range: { offset: 0x201, length: 2 } })
+    useAppStore.setState({
+      documents: { d1: { nodeId: 'm1', title: 'M', language: 'csharp', text: '', spans: [], diagnostics: [], loading: false, requestedLanguage: 'cSharp', codeStatements: [statement(5, 7, { ilOffset: 4, ilEndOffset: 9, modulePath: '/app/A.dll', metadataToken: 0x06000003 })] } as never },
+    })
+
+    await useAppStore.getState().setCodeCaret({ documentId: 'd1', line: 6 })
+
+    expect(resolveHexStatement).toHaveBeenCalledWith('w1', '/app/A.dll', 0x06000003, 4, 9)
+    expect(useAppStore.getState().hexStatement).toEqual({ moduleId: 'mod1', range: { offset: 0x201, length: 2 } })
+  })
+
+  it('has no statement to offer when the caret leaves the code or the backend refuses', async () => {
+    useAppStore.setState({ hexStatement: { moduleId: 'mod1', range: { offset: 1, length: 1 } } })
+    await useAppStore.getState().setCodeCaret(undefined)
+    expect(useAppStore.getState().hexStatement).toBeUndefined()
+
+    // A document with no statement table (an IL view) has nothing to snap to, so no call is made.
+    useAppStore.setState({ documents: { d1: { codeStatements: undefined } as never } })
+    await useAppStore.getState().setCodeCaret({ documentId: 'd1', line: 3 })
+    expect(resolveHexStatement).not.toHaveBeenCalled()
+
+    resolveHexStatement.mockRejectedValue(new Error('nope'))
+    useAppStore.setState({ documents: { d1: { codeStatements: [statement(1, 9, { ilOffset: 0, ilEndOffset: 4 })] } as never } })
+    await useAppStore.getState().setCodeCaret({ documentId: 'd1', line: 3 })
+    expect(useAppStore.getState().hexStatement).toBeUndefined()
+  })
+
+  it('writes a canned body over the method body and commits it as an edit', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+
+    expect(await useAppStore.getState().hexWriteMethodBody('returnTrue')).toBe(true)
+
+    // The offset is the body's, not the code's: dnSpy's templates carry the method header's byte.
+    expect(patchHex).toHaveBeenCalledWith('w1', 't1', 'm1', 0x200, returnTrue)
+    expect(commitEdit).toHaveBeenCalledWith('w1', 't1')
+    expect(useAppStore.getState()).toMatchObject({ dirty: true, workspaceStateId: 'state-2', canUndo: true, busy: false })
+    expect(useAppStore.getState().output.at(-1)).toContain('Updated method body bytes for Run().')
+  })
+
+  it('does nothing when the backend resolved no such template', async () => {
+    // The backend spells "no such template" as null, so that is what the store is given here.
+    useAppStore.setState({ hexTarget: methodTarget({ emptyBody: null }) })
+
+    expect(await useAppStore.getState().hexWriteMethodBody('empty')).toBe(false)
+    expect(beginEdit).not.toHaveBeenCalled()
+  })
+
+  it('rolls the transaction back and says so when the patch is rejected', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    patchHex.mockRejectedValue(new Error('The patch does not fit in the file.'))
+
+    expect(await useAppStore.getState().hexWriteMethodBody('returnFalse')).toBe(false)
+
+    expect(rollbackEdit).toHaveBeenCalledWith('w1', 't1')
+    expect(useAppStore.getState().error).toBe('The patch does not fit in the file.')
+    expect(useAppStore.getState().output.at(-1)).toContain('Hex edit failed: The patch does not fit in the file.')
+  })
+
+  it('copies the method body to the clipboard as hexadecimal text', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readHex.mockResolvedValue({ base64Data: base64([0x0a, 0x17, 0x2a]) })
+
+    expect(await useAppStore.getState().hexCopyMethodBody()).toBe(true)
+
+    expect(readHex).toHaveBeenCalledWith('w1', 'mod1', 0x200, 3)
+    expect(writeText).toHaveBeenCalledWith('0A172A')
+  })
+
+  it('reports a copy that the backend refused', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readHex.mockRejectedValue(new Error('gone'))
+
+    expect(await useAppStore.getState().hexCopyMethodBody()).toBe(false)
+    expect(useAppStore.getState().output.at(-1)).toContain('Copy failed: gone')
+  })
+
+  it('pastes the clipboard over the method body', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readText.mockResolvedValue('0A162A')
+
+    expect(await useAppStore.getState().hexPasteMethodBody()).toBe(true)
+
+    expect(patchHex).toHaveBeenCalledWith('w1', 't1', 'm1', 0x200, returnFalse)
+  })
+
+  it('refuses a clipboard that is not hexadecimal bytes', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readText.mockResolvedValue('0A 16')
+
+    expect(await useAppStore.getState().hexPasteMethodBody()).toBe(false)
+    expect(useAppStore.getState().error).toBe('The clipboard does not hold hexadecimal bytes.')
+    expect(useAppStore.getState().output.at(-1)).toContain('Paste failed: the clipboard does not hold hexadecimal bytes.')
+    expect(beginEdit).not.toHaveBeenCalled()
+  })
+
+  it('refuses bytes that do not fit in the method body', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readText.mockResolvedValue('0A162A2A')
+
+    expect(await useAppStore.getState().hexPasteMethodBody()).toBe(false)
+    expect(useAppStore.getState().error).toBe('The pasted bytes do not fit in the method body.')
+    expect(beginEdit).not.toHaveBeenCalled()
+  })
+
+  it('reports a clipboard that could not be read', async () => {
+    useAppStore.setState({ hexTarget: methodTarget() })
+    readText.mockRejectedValue(new Error('denied'))
+
+    expect(await useAppStore.getState().hexPasteMethodBody()).toBe(false)
+    expect(useAppStore.getState().output.at(-1)).toContain('Paste failed: denied')
+  })
+
+  it('bumps the navigation token so the same range can be asked for twice', () => {
+    useAppStore.getState().showHexAt('mod1', 0x200, 3)
+    const first = useAppStore.getState().hexNavigation
+
+    useAppStore.getState().showHexAt('mod1', 0x200, 3)
+
+    expect(useAppStore.getState().hexNavigation).toMatchObject({ moduleId: 'mod1', offset: 0x200, length: 3 })
+    expect(useAppStore.getState().hexNavigation!.nonce).not.toBe(first!.nonce)
   })
 })

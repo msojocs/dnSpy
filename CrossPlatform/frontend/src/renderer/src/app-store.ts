@@ -13,6 +13,8 @@ import type {
   DebugThread,
   DebugVariable,
   EditCommitResponse,
+  HexRange,
+  HexTargetResponse,
   NodeOptionsDto,
   OpenedModule,
   ReferenceResult,
@@ -173,6 +175,17 @@ interface AppState {
   scriptHistory: string[]
   /** Set once the session has been built, so reopening the window does not rebuild it. */
   scriptStarted: boolean
+  /**
+   * Where the hex commands point for the selected node: a method's body and code, a field's initial
+   * value, a resource's data. Resolved when the selection changes, since the Edit menu has to know
+   * what it can offer before it is opened.
+   */
+  hexTarget?: HexTargetResponse
+  /** The statement under the caret of the focused code document, resolved to its bytes in the file. */
+  hexStatement?: { moduleId: string; range: HexRange }
+  /** A hex command asking a hex tab to show a range. The tab watches it, jumps to the page holding
+   * the range and highlights it; `nonce` makes asking for the same range twice work. */
+  hexNavigation?: { moduleId: string; offset: number; length: number; nonce: number }
   error?: string
   wordWrap: boolean
   highlightCurrentLine: boolean
@@ -205,6 +218,20 @@ interface AppState {
   moveTypesToEmptyNamespace(node: TreeNode): Promise<boolean>
   /** Replaces a method body with the stub the backend derives from the method's signature. */
   replaceMethodBodyWithStub(node: TreeNode): Promise<boolean>
+  /** Resolves where the hex commands point for a node, which is what decides the Edit menu's hex
+   * entries. Passing nothing clears it. */
+  resolveHexTarget(node?: TreeNode): Promise<void>
+  /** Records the statement under a code document's caret, which is what "Show Instructions in Hex
+   * Editor" acts on. Passing nothing clears it. */
+  setCodeCaret(position?: CaretPosition): Promise<void>
+  /** Asks the hex tab showing `moduleId` to jump to a range. */
+  showHexAt(moduleId: string, offset: number, length: number): void
+  /** Writes one of dnSpy's canned method bodies over the selected method's body bytes. */
+  hexWriteMethodBody(kind: HexBodyKind): Promise<boolean>
+  /** Puts the selected method's body bytes on the clipboard as hexadecimal text. */
+  hexCopyMethodBody(): Promise<boolean>
+  /** Writes the clipboard's hexadecimal text over the selected method's body. */
+  hexPasteMethodBody(): Promise<boolean>
   replaceResource(node: TreeNode): Promise<boolean>
   saveModuleAs(): Promise<boolean>
   saveCode(documentId: string): Promise<boolean>
@@ -763,6 +790,105 @@ export const useAppStore = create<AppState>((set, get) => ({
     } finally {
       set({ busy: false })
     }
+  },
+
+  resolveHexTarget: async (node) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId || !node) {
+      set({ hexTarget: undefined })
+      return
+    }
+    try {
+      const target = await window.dnSpy.resolveHexTarget(workspaceId, node.id)
+      // A selection can change faster than the round trip, so a stale answer is dropped rather than
+      // left to drive the menu for a node that is no longer selected.
+      if (get().selectedNode?.id === node.id)
+        set({ hexTarget: target })
+    } catch {
+      if (get().selectedNode?.id === node.id)
+        set({ hexTarget: undefined })
+    }
+  },
+
+  setCodeCaret: async (position) => {
+    const workspaceId = get().workspaceId
+    if (!workspaceId || !position) {
+      set({ hexStatement: undefined })
+      return
+    }
+    const statements = get().documents[position.documentId]?.codeStatements
+    const statement = codeStatementAt(statements, position.line, position.column)
+    if (!statement) {
+      set({ hexStatement: undefined })
+      return
+    }
+    try {
+      const resolved = await window.dnSpy.resolveHexStatement(workspaceId, statement.modulePath, statement.metadataToken, statement.ilOffset, statement.ilEndOffset)
+      set({ hexStatement: resolved.moduleId && resolved.range ? { moduleId: resolved.moduleId, range: resolved.range } : undefined })
+    } catch {
+      set({ hexStatement: undefined })
+    }
+  },
+
+  showHexAt: (moduleId, offset, length) => {
+    set({ hexNavigation: { moduleId, offset, length, nonce: ++hexNavigationToken } })
+  },
+
+  hexWriteMethodBody: async (kind) => {
+    const { hexTarget, selectedNode } = get()
+    const method = hexTarget?.method
+    const encoded = kind === 'returnTrue' ? method?.returnTrueBody : kind === 'returnFalse' ? method?.returnFalseBody : method?.emptyBody
+    if (!selectedNode || !method || !encoded)
+      return false
+    return writeHexPatch(get, set, selectedNode.id, method.bodyOffset, encoded, t('Updated method body bytes for {name}.', { name: selectedNode.label }))
+  },
+
+  hexCopyMethodBody: async () => {
+    const { workspaceId, hexTarget, selectedNode } = get()
+    const method = hexTarget?.method
+    if (!workspaceId || !selectedNode || !method)
+      return false
+    try {
+      const response = await window.dnSpy.readHex(workspaceId, hexTarget.moduleId, method.bodyOffset, method.bodySize)
+      await navigator.clipboard.writeText(bytesToHex(decodeBase64(response.base64Data)))
+      get().appendOutput(t('Copied the method body of {name}.', { name: selectedNode.label }))
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Copy failed: {message}', { message }))
+      return false
+    }
+  },
+
+  hexPasteMethodBody: async () => {
+    const { hexTarget, selectedNode } = get()
+    const method = hexTarget?.method
+    if (!selectedNode || !method)
+      return false
+    let text: string
+    try {
+      text = await navigator.clipboard.readText()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      set({ error: message })
+      get().appendOutput(t('Paste failed: {message}', { message }))
+      return false
+    }
+    const data = parseHexText(text)
+    if (!data) {
+      set({ error: t('The clipboard does not hold hexadecimal bytes.') })
+      get().appendOutput(t('Paste failed: the clipboard does not hold hexadecimal bytes.'))
+      return false
+    }
+    // dnSpy writes the pasted bytes over the body only when they fit in it, which is the same test its
+    // canned bodies pass.
+    if (data.length > method.bodySize) {
+      set({ error: t('The pasted bytes do not fit in the method body.') })
+      get().appendOutput(t('Paste failed: the pasted bytes do not fit in the method body.'))
+      return false
+    }
+    return writeHexPatch(get, set, selectedNode.id, method.bodyOffset, bytesToBase64(data), t('Updated method body bytes for {name}.', { name: selectedNode.label }))
   },
 
   replaceResource: async (node) => {
@@ -1887,6 +2013,87 @@ const scriptHelpEntries = (): ScriptOutputEntry[] => [
 
 type StoreGet = () => AppState
 type StoreSet = (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void
+
+/** The canned bodies dnSpy's three hex write commands install. */
+export type HexBodyKind = 'returnTrue' | 'returnFalse' | 'empty'
+
+/** Bumped for every jump request, so asking for the same range twice still moves the caret. */
+let hexNavigationToken = 0
+
+const decodeBase64 = (data: string): Uint8Array => {
+  const binary = atob(data)
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+const bytesToBase64 = (data: Uint8Array): string => {
+  let binary = ''
+  for (const byte of data)
+    binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+/** dnSpy's hexadecimal text: two uppercase digits per byte and nothing in between. */
+export const bytesToHex = (data: Uint8Array): string =>
+  Array.from(data, (value) => value.toString(16).toUpperCase().padStart(2, '0')).join('')
+
+/**
+ * Parses dnSpy's hexadecimal text back into bytes. `?` is a zero nibble, as in dnSpy's own parser, and
+ * anything that is not an even run of hexadecimal digits is refused — the same rules its paste applies.
+ */
+export const parseHexText = (text: string): Uint8Array | undefined => {
+  if (text.length === 0 || text.length % 2 !== 0)
+    return undefined
+  const data = new Uint8Array(text.length / 2)
+  for (let index = 0; index < text.length; index += 2) {
+    const high = parseNibble(text[index])
+    const low = parseNibble(text[index + 1])
+    if (high < 0 || low < 0)
+      return undefined
+    data[index / 2] = (high << 4) | low
+  }
+  return data
+}
+
+const parseNibble = (character: string): number => {
+  if (character === '?')
+    return 0
+  const value = Number.parseInt(character, 16)
+  return Number.isFinite(value) && value >= 0 && value <= 15 ? value : -1
+}
+
+/** Queues one byte patch and commits it, which is how every hex write command lands. */
+const writeHexPatch = async (
+  get: StoreGet,
+  set: StoreSet,
+  nodeId: string,
+  offset: number,
+  base64Data: string,
+  message: string,
+): Promise<boolean> => {
+  const workspaceId = get().workspaceId
+  if (!workspaceId)
+    return false
+  set({ busy: true, error: undefined })
+  let transactionId: string | undefined
+  try {
+    transactionId = (await window.dnSpy.beginEdit(workspaceId)).transactionId
+    await window.dnSpy.patchHex(workspaceId, transactionId, nodeId, offset, base64Data)
+    const committed = await window.dnSpy.commitEdit(workspaceId, transactionId)
+    await refreshAfterEdit(get, set, committed)
+    get().appendOutput(message)
+    return true
+  } catch (error) {
+    if (transactionId) {
+      try { await window.dnSpy.rollbackEdit(workspaceId, transactionId) } catch { /* already committed or invalidated */ }
+    }
+    const reason = error instanceof Error ? error.message : String(error)
+    set({ error: reason })
+    get().appendOutput(t('Hex edit failed: {message}', { message: reason }))
+    return false
+  } finally {
+    set({ busy: false })
+  }
+}
 
 // Ids only have to be unique within a session's table, and only stable across re-renders, so a counter is enough.
 let lineBreakpointSequence = 0

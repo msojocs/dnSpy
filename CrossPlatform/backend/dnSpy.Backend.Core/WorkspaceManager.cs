@@ -96,6 +96,18 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			cancellationToken).ConfigureAwait(false);
 	}
 
+	public Task<HexTargetResponse> ResolveHexTargetAsync(HexTargetRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.ResolveHexTarget(request.NodeId), cancellationToken);
+
+	public Task<HexStatementResponse> ResolveHexStatementAsync(HexStatementRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.ResolveHexStatement(request), cancellationToken);
+
+	public Task QueueHexPatchAsync(HexPatchRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => {
+			w.QueueHexPatch(request);
+			return true;
+		}, cancellationToken);
+
 	public Task<ModuleInfoResponse> GetModuleInfoAsync(ModuleInfoRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetModuleInfo(request.ModuleId), cancellationToken);
 
@@ -1262,6 +1274,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var snapshotStream = new MemoryStream();
 			try {
 				module.Module.Write(snapshotStream);
+				// The decompiler reads this snapshot, so the hex patches have to be in it, or a body the
+				// user rewrote byte-wise would still decompile as it was. The snapshot's layout is the
+				// serializer's and not the file's, so the patches are resolved against a copy of it.
+				if (module.HexPatches.Count > 0) {
+					var copy = new MemoryStream(snapshotStream.ToArray(), writable: false);
+					using (var snapshotModule = ModuleDefMD.Load(copy))
+						WriteHexPatches(snapshotStream, module.ResolveHexPatchOffsets(snapshotModule));
+				}
 				snapshotStream.Position = 0;
 				var snapshotFile = new ICSharpCode.Decompiler.Metadata.PEFile(
 					module.Path,
@@ -1456,7 +1476,110 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			await using var stream = new FileStream(module.Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.Asynchronous | FileOptions.RandomAccess);
 			stream.Position = offset;
 			await stream.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
+			// The file on disk never holds a patch; the hex tab reads the patched image, like every other
+			// reader of the module does.
+			module.OverlayHexPatches(offset, buffer);
 			return new HexReadResponse(offset, Convert.ToBase64String(buffer), offset + actualCount >= module.FileLength);
+		}
+
+		/// <summary>
+		/// Where the hex commands for a tree node point. Only the node kinds dnSpy has an address for
+		/// produce one, so a type or a resource entry resolves to nothing but its module.
+		/// </summary>
+		public HexTargetResponse ResolveHexTarget(string nodeId) {
+			var node = GetNode(nodeId);
+			HexMethodTargetDto? method = null;
+			HexRangeDto? fieldInitialValue = null;
+			HexRangeDto? resource = null;
+			switch (node.Value) {
+			case MethodDef value:
+				method = ResolveMethodTarget(value);
+				break;
+			case FieldDef value:
+				fieldInitialValue = ResolveFieldInitialValue(value);
+				break;
+			case EmbeddedResource value:
+				resource = ResolveResourceTarget(value);
+				break;
+			}
+			return new HexTargetResponse(node.Module.Id, node.Module.FileLength, method, fieldInitialValue, resource);
+		}
+
+		static HexMethodTargetDto? ResolveMethodTarget(MethodDef method) {
+			if (!HexTargets.TryGetMethodBody(method, out var bodyOffset, out var bodySize, out var codeOffset, out var codeSize))
+				return null;
+			// The write commands only appear when their bytes fit the body they would overwrite, which is
+			// dnSpy's own test (LengthAndOffset.Size >= data.Length).
+			return new HexMethodTargetDto(
+				bodyOffset,
+				bodySize,
+				codeOffset,
+				codeSize,
+				EncodeTemplate(HexTargets.GetReturnTrueBody(method), bodySize),
+				EncodeTemplate(HexTargets.GetReturnFalseBody(method), bodySize),
+				EncodeTemplate(HexTargets.GetEmptyBody(method), bodySize));
+		}
+
+		static string? EncodeTemplate(byte[]? data, long bodySize) =>
+			data is not null && data.LongLength <= bodySize ? Convert.ToBase64String(data) : null;
+
+		static HexRangeDto? ResolveFieldInitialValue(FieldDef field) {
+			if (field.RVA == 0 || field.InitialValue is not { Length: > 0 } initialValue)
+				return null;
+			return HexTargets.GetMemberFileOffset(field) is { } offset ? new HexRangeDto(offset, initialValue.Length) : null;
+		}
+
+		static HexRangeDto? ResolveResourceTarget(EmbeddedResource resource) {
+			var reader = resource.CreateReader();
+			return reader.Length == 0 ? null : new HexRangeDto(reader.StartOffset, reader.Length);
+		}
+
+		/// <summary>
+		/// The bytes one statement of a code document covers, for the "Show Instructions in Hex Editor"
+		/// command. The IL offsets are relative to the method's code, so they are shifted by where that
+		/// code starts in the file.
+		/// </summary>
+		public HexStatementResponse ResolveHexStatement(HexStatementRequest request) {
+			var module = FindModuleEntry(request.ModulePath);
+			if (module is null || request.MetadataToken == 0)
+				return new HexStatementResponse(null, null);
+			if (module.Module.ResolveToken(unchecked((uint)request.MetadataToken)) is not MethodDef method)
+				return new HexStatementResponse(null, null);
+			if (!HexTargets.TryGetMethodBody(method, out _, out _, out var codeOffset, out var codeSize))
+				return new HexStatementResponse(null, null);
+			var start = (long)request.IlOffset;
+			var end = Math.Max((long)request.IlEndOffset, start);
+			if (start < 0 || start > codeSize)
+				return new HexStatementResponse(null, null);
+			// A statement covering several sequence points, or one running past the code, is clipped to
+			// what the method actually holds.
+			return new HexStatementResponse(module.Id, new HexRangeDto(codeOffset + start, Math.Min(end, codeSize) - start));
+		}
+
+		/// <summary>
+		/// Queues a byte patch over the module's file image. The patch is held in memory and overlaid on
+		/// every read and every write, so it survives a save without ever touching the file it came from.
+		/// </summary>
+		public void QueueHexPatch(HexPatchRequest request) {
+			var transaction = GetTransaction(request.TransactionId);
+			var node = GetNode(request.NodeId);
+			byte[] data;
+			try {
+				data = Convert.FromBase64String(request.Base64Data);
+			}
+			catch (FormatException ex) {
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch is not valid base64.", null, ex);
+			}
+			if (data.Length == 0)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch is empty.");
+			if (request.Offset < 0 || request.Offset + data.Length > node.Module.FileLength)
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch does not fit inside the file.");
+			// A patch over a member may only cover that member, so the write commands can never spill into
+			// whatever the serializer put next to the body they were aimed at.
+			if (HexTargets.GetPatchRegion(node.Value) is { } region &&
+				(request.Offset < region.Offset || request.Offset + data.Length > region.Offset + region.Size))
+				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch is larger than what it is writing over.");
+			transaction.Add(node.Id, node.Module, () => node.Module.ApplyHexPatch(node.Id, node.Value, request.Offset, data));
 		}
 
 		public ModuleInfoResponse GetModuleInfo(string moduleId) {
@@ -2100,10 +2223,19 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			try {
 				await Task.Run(() => module.Module.Write(temporaryPath), cancellationToken).ConfigureAwait(false);
 				cancellationToken.ThrowIfCancellationRequested();
+				// The reload is what the patches are resolved against: the file dnlib just wrote has a
+				// layout of its own, so where a patch belongs is found through the member it aimed at.
+				IReadOnlyList<(long Offset, byte[] Data)> hexPatches;
 				using (var verificationModule = ModuleDefMD.Load(temporaryPath)) {
 					_ = verificationModule.Mvid;
 					_ = verificationModule.Types.Count;
+					hexPatches = module.ResolveHexPatchOffsets(verificationModule);
 				}
+				// dnlib knows nothing about the hex patches, so they go on last — over the bytes it wrote.
+				await Task.Run(() => {
+					using var stream = new FileStream(temporaryPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+					WriteHexPatches(stream, hexPatches);
+				}, cancellationToken).ConfigureAwait(false);
 				File.Move(temporaryPath, destination, request.Overwrite);
 				await using var savedFile = new FileStream(destination, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
 				var hash = await SHA256.HashDataAsync(savedFile, cancellationToken).ConfigureAwait(false);
@@ -2122,6 +2254,19 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				}
 				catch (IOException) {
 				}
+			}
+		}
+
+		/// <summary>
+		/// Writes resolved patches over a serialized module. A patch only ever replaces bytes in place, so
+		/// one that would reach past the end of the file is refused rather than allowed to grow it.
+		/// </summary>
+		static void WriteHexPatches(Stream stream, IReadOnlyList<(long Offset, byte[] Data)> patches) {
+			foreach (var (offset, data) in patches) {
+				if (offset < 0 || offset + data.Length > stream.Length)
+					throw new RpcException(ErrorCodes.SaveFailed, "A hex patch no longer fits where it was aimed, so the module cannot be written.");
+				stream.Position = offset;
+				stream.Write(data);
 			}
 		}
 
@@ -2677,6 +2822,105 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			/// the client can show a frame's file and line but cannot navigate to it.
 			/// </summary>
 			public bool IsExternal { get; init; }
+
+			/// <summary>
+			/// The byte patches the hex editor wrote, in the order they were applied. They are kept apart
+			/// from the dnlib model, which knows nothing of them: the file image a reader sees is the file
+			/// plus these, and a save replays them onto what dnlib writes.
+			/// </summary>
+			public List<HexPatch> HexPatches { get; } = [];
+
+			/// <summary>
+			/// Records a patch and hands back the undo. The offset is the one the reader saw, measured in
+			/// the file as it is on disk; what the patch is measured from is kept too, so a module that is
+			/// written back out can be patched in the place the same member ended up.
+			/// </summary>
+			public Action ApplyHexPatch(string nodeId, object value, long offset, byte[] data) {
+				var patch = new HexPatch(nodeId, offset, data, DescribePatchTarget(value, offset));
+				HexPatches.Add(patch);
+				return () => HexPatches.Remove(patch);
+			}
+
+			/// <summary>
+			/// Where a patch belongs, said in terms of the member it was aimed at rather than a file offset:
+			/// the offset itself only means anything against the layout the module was read with.
+			/// </summary>
+			static HexPatchTarget DescribePatchTarget(object value, long offset) => value switch {
+				MethodDef method when HexTargets.TryGetMethodBody(method, out var bodyOffset, out _, out _, out _) =>
+					new HexPatchTarget.MethodBody(method.MDToken.Raw, offset - bodyOffset),
+				FieldDef field when HexTargets.GetMemberFileOffset(field) is { } fieldOffset =>
+					new HexPatchTarget.FieldInitialValue(field.MDToken.Raw, offset - fieldOffset),
+				EmbeddedResource resource =>
+					new HexPatchTarget.Resource(resource.Name, offset - (long)resource.CreateReader().StartOffset),
+				_ => HexPatchTarget.Raw,
+			};
+
+			/// <summary>Copies the patches that fall inside the range into <paramref name="buffer"/>.</summary>
+			public void OverlayHexPatches(long offset, byte[] buffer) {
+				foreach (var patch in HexPatches) {
+					var start = Math.Max(patch.Offset, offset);
+					var end = Math.Min(patch.Offset + patch.After.Length, offset + buffer.Length);
+					for (var i = start; i < end; i++)
+						buffer[i - offset] = patch.After[i - patch.Offset];
+				}
+			}
+
+			/// <summary>
+			/// Where each patch belongs in a module that has just been serialized. The offsets are resolved
+			/// against <paramref name="serialized"/> rather than reused: dnlib lays the file out from
+			/// scratch, so a body sits at a different offset in its output than it did in the file it read,
+			/// and the member the patch was aimed at is what still identifies it. A method the user wrote
+			/// over twice leaves two patches on one body, which is an ordinary undo step here, so they are
+			/// returned in the order they were applied.
+			/// </summary>
+			public IReadOnlyList<(long Offset, byte[] Data)> ResolveHexPatchOffsets(ModuleDefMD serialized) {
+				var resolved = new List<(long, byte[])>(HexPatches.Count);
+				foreach (var patch in HexPatches) {
+					long? offset = patch.Target switch {
+						HexPatchTarget.MethodBody target when serialized.ResolveToken(target.Token) is MethodDef method && HexTargets.TryGetMethodBody(method, out var bodyOffset, out _, out _, out _) =>
+							bodyOffset + target.Delta,
+						HexPatchTarget.FieldInitialValue target when serialized.ResolveToken(target.Token) is FieldDef field && HexTargets.GetMemberFileOffset(field) is { } fieldOffset =>
+							fieldOffset + target.Delta,
+						HexPatchTarget.Resource target when serialized.Resources.FirstOrDefault(r => r.Name == target.Name) is EmbeddedResource resource =>
+							(long)resource.CreateReader().StartOffset + target.Delta,
+						HexPatchTarget.RawTarget => patch.Offset,
+						_ => null,
+					};
+					if (offset is null)
+						throw new RpcException(ErrorCodes.SaveFailed,
+							"What a hex patch was written over is no longer in the module, so it cannot be applied.");
+					resolved.Add((offset.Value, patch.After));
+				}
+				return resolved;
+			}
+		}
+
+		/// <summary>
+		/// One in-place byte patch: the bytes written at <paramref name="Offset"/> in the file the reader
+		/// saw, and what that offset is measured from. It never changes the file's length.
+		/// </summary>
+		internal sealed record HexPatch(string NodeId, long Offset, byte[] After, HexPatchTarget Target);
+
+		/// <summary>
+		/// What a hex patch is aimed at. dnSpy keeps a hex-edited file in a document of its own, so its
+		/// patches never have to survive a rewrite of the module that produced it; here the two share a
+		/// document, and keeping the member alongside the offset is what lets a patch be written to the
+		/// right place in a file dnlib laid out afresh.
+		/// </summary>
+		internal abstract record HexPatchTarget {
+			public static readonly HexPatchTarget Raw = new RawTarget();
+
+			/// <summary>A patch on nothing in particular, whose offset only means anything against the layout it was read with.</summary>
+			public sealed record RawTarget : HexPatchTarget;
+
+			/// <summary>Relative to the start of a method's body, header included.</summary>
+			public sealed record MethodBody(uint Token, long Delta) : HexPatchTarget;
+
+			/// <summary>Relative to the start of a field's initial value.</summary>
+			public sealed record FieldInitialValue(uint Token, long Delta) : HexPatchTarget;
+
+			/// <summary>Relative to the start of an embedded resource's data.</summary>
+			public sealed record Resource(string Name, long Delta) : HexPatchTarget;
 		}
 
 		/// <summary>

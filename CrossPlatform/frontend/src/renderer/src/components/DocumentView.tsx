@@ -7,7 +7,7 @@ import type { CodeStatement, DecompilerLanguage } from '../../../shared/protocol
 import { bookmarkMarkers, codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
 import { clearBookmarks, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from '../bookmark-commands'
 import type { Bookmark, LineBreakpoint } from '../app-store'
-import { registerDocumentEditor, unregisterDocumentEditor } from '../editor-registry'
+import { isActiveDocumentEditor, registerDocumentEditor, unregisterDocumentEditor } from '../editor-registry'
 import { useLanguage } from '../localization'
 
 // One decoration per breakpoint that has a line in this document. A disabled breakpoint keeps its dot but draws it
@@ -232,6 +232,16 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
                 if (span?.targetNodeId) onNavigate(span.targetNodeId)
               }
               editor.addCommand(monaco.KeyCode.F12, navigateAtCursor)
+              // The caret decides which statement "Show Instructions in Hex Editor" acts on, so the store
+              // is told where it is — but only while this editor is the one the user is working in; a
+              // background tab moving its own caret is not a change of the current position.
+              const reportCaret = (): void => {
+                if (!isActiveDocumentEditor(viewId)) return
+                const position = editor.getPosition()
+                void useAppStore.getState().setCodeCaret(position ? { documentId, line: position.lineNumber, column: position.column } : undefined)
+              }
+              editor.onDidChangeCursorPosition(reportCaret)
+              editor.onDidFocusEditorText(reportCaret)
               // F9 in the editor sets a line breakpoint at the cursor; the window-level handler in App.tsx only sees
               // F9 when the focus is outside the editor, so the two never both fire.
               editor.addCommand(monaco.KeyCode.F9, () => {

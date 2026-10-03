@@ -419,6 +419,215 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	[Fact]
+	public async Task ResolvesAMethodsHexTargetToItsBodyAndToTheStatementsInsideIt() {
+		var path = typeof(HelloRequest).Assembly.Location;
+		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+		var moduleId = Assert.Single(opened.Modules).Id;
+		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, type.Id), TestContext.Current.CancellationToken);
+		var methodNode = Assert.Single(members.Nodes, node => node.Kind == "method" && node.Label == "get_Code()");
+
+		var target = await manager.ResolveHexTargetAsync(
+			new HexTargetRequest(opened.WorkspaceId, methodNode.Id),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(moduleId, target.ModuleId);
+		var method = Assert.IsType<HexMethodTargetDto>(target.Method);
+		Assert.Null(target.FieldInitialValue);
+		Assert.Null(target.Resource);
+		Assert.True(method.BodySize > 0);
+
+		// dnSpy's write templates carry the method header's own first byte, so the body offset is the one
+		// they are written at. Read the file back and check that a header really is what sits there and
+		// that it states exactly the code size the response does.
+		var body = Convert.FromBase64String((await manager.ReadHexAsync(
+			new HexReadRequest(opened.WorkspaceId, moduleId, method.BodyOffset, checked((int)method.BodySize)),
+			TestContext.Current.CancellationToken)).Base64Data);
+		Assert.Equal(method.BodySize, body.Length);
+		switch (body[0] & 7) {
+		case 2: case 6: // A tiny header is one byte: the code size is packed into it.
+			Assert.Equal(1, method.CodeOffset - method.BodyOffset);
+			Assert.Equal(body[0] >> 2, (int)method.CodeSize);
+			break;
+		case 3: // A fat header states its own size in the high nibble of its second byte.
+			Assert.Equal((body[1] >> 4) * 4, (int)(method.CodeOffset - method.BodyOffset));
+			Assert.Equal((int)BitConverter.ToUInt32(body, 4), (int)method.CodeSize);
+			break;
+		default:
+			Assert.Fail($"The bytes at the reported body offset do not start with a method header: 0x{body[0]:X2}.");
+			break;
+		}
+		Assert.True(method.CodeOffset - method.BodyOffset + method.CodeSize <= method.BodySize);
+
+		// The same method's statements have to land inside that code, which ties the two offsets together:
+		// a statement's file offset is the code offset plus the IL offset the decompiler reported.
+		var document = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, methodNode.Id, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+		var statement = Assert.Single(document.CodeStatements!, s => !s.IsHidden);
+		var resolved = await manager.ResolveHexStatementAsync(
+			new HexStatementRequest(opened.WorkspaceId, path, statement.MetadataToken, statement.IlOffset, statement.IlEndOffset),
+			TestContext.Current.CancellationToken);
+		Assert.Equal(moduleId, resolved.ModuleId);
+		var range = Assert.IsType<HexRangeDto>(resolved.Range);
+		Assert.Equal(method.CodeOffset + statement.IlOffset, range.Offset);
+		Assert.True(range.Offset + range.Length <= method.CodeOffset + method.CodeSize);
+	}
+
+	[Fact]
+	public async Task ResolvesAFieldsInitialValueAndAResourcesBytes() {
+		var opened = await manager.OpenAsync(
+			new OpenWorkspaceRequest([typeof(WorkspaceManagerTests).Assembly.Location]),
+			TestContext.Current.CancellationToken);
+		var moduleId = Assert.Single(opened.Modules).Id;
+
+		// The compiler's own static data lives in the global namespace, and its field is the one kind of
+		// field with an RVA and an initial value to point a hex editor at.
+		var globalTypes = await manager.GetChildrenAsync(
+			new NodeRequest(opened.WorkspaceId, (await FindNamespaceAsync(opened.WorkspaceId, "-")).Id),
+			TestContext.Current.CancellationToken);
+		var implementationDetails = Assert.Single(globalTypes.Nodes, node => node.Label.Contains("PrivateImplementationDetails", StringComparison.Ordinal));
+		var fields = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, implementationDetails.Id), TestContext.Current.CancellationToken);
+		var initialValue = (await Task.WhenAll(fields.Nodes.Where(node => node.Kind == "field").Select(async field =>
+			await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, field.Id), TestContext.Current.CancellationToken))))
+			.Select(target => target.FieldInitialValue)
+			.OfType<HexRangeDto>()
+			.FirstOrDefault();
+		var value = Assert.IsType<HexRangeDto>(initialValue);
+		Assert.True(value.Length > 0);
+		Assert.Null(Assert.IsType<HexTargetResponse>(
+			await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, implementationDetails.Id), TestContext.Current.CancellationToken)).FieldInitialValue);
+		// The offsets point at the data section, which is inside the file the module was read from.
+		Assert.InRange(value.Offset, 1, (await manager.GetHexLengthAsync(new HexLengthRequest(opened.WorkspaceId, moduleId), TestContext.Current.CancellationToken)).Length - value.Length);
+
+		var resources = Assert.Single(
+			(await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, moduleId), TestContext.Current.CancellationToken)).Nodes,
+			node => node.Kind == "resourcesgroup");
+		var resource = Assert.Single(
+			(await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, resources.Id), TestContext.Current.CancellationToken)).Nodes,
+			node => node.Label.EndsWith("sample-resource.txt", StringComparison.Ordinal));
+
+		var resourceTarget = await manager.ResolveHexTargetAsync(
+			new HexTargetRequest(opened.WorkspaceId, resource.Id),
+			TestContext.Current.CancellationToken);
+		var resourceRange = Assert.IsType<HexRangeDto>(resourceTarget.Resource);
+		Assert.Equal(new FileInfo(typeof(WorkspaceManagerTests).Assembly.Location).Length > resourceRange.Offset, resourceRange.Length > 0);
+		// What the range points at is the resource's own bytes.
+		var bytes = Convert.FromBase64String((await manager.ReadHexAsync(
+			new HexReadRequest(opened.WorkspaceId, moduleId, resourceRange.Offset, checked((int)resourceRange.Length)),
+			TestContext.Current.CancellationToken)).Base64Data);
+		Assert.Equal(resourceRange.Length, bytes.Length);
+	}
+
+	[Fact]
+	public async Task APatchShowsUpInTheHexReadAndUndoPutsTheOriginalBytesBack() {
+		var opened = await OpenContractsAssemblyAsync();
+		var moduleId = Assert.Single(opened.Modules).Id;
+		var before = Convert.FromBase64String((await manager.ReadHexAsync(
+			new HexReadRequest(opened.WorkspaceId, moduleId, 0x200, 4),
+			TestContext.Current.CancellationToken)).Base64Data);
+
+		var patch = await CommitHexPatchAsync(opened.WorkspaceId, moduleId, 0x200, [0xDE, 0xAD, 0xBE, 0xEF]);
+
+		var after = Convert.FromBase64String((await manager.ReadHexAsync(
+			new HexReadRequest(opened.WorkspaceId, moduleId, 0x200, 4),
+			TestContext.Current.CancellationToken)).Base64Data);
+		Assert.Equal(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF }, after);
+		Assert.True(patch.CanUndo);
+
+		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+
+		var restored = Convert.FromBase64String((await manager.ReadHexAsync(
+			new HexReadRequest(opened.WorkspaceId, moduleId, 0x200, 4),
+			TestContext.Current.CancellationToken)).Base64Data);
+		Assert.Equal(before, restored);
+	}
+
+	[Fact]
+	public async Task ASavedModuleCarriesThePatchedBytes() {
+		var opened = await OpenContractsAssemblyAsync();
+		var moduleId = Assert.Single(opened.Modules).Id;
+		var method = await FindRpcExceptionGetterAsync(opened.WorkspaceId);
+		var target = await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, method.Id), TestContext.Current.CancellationToken);
+		var body = Assert.IsType<HexMethodTargetDto>(target.Method);
+
+		// What "Hex Write 'return true' Body" posts: a tiny header and the two instructions after it.
+		await CommitHexPatchAsync(opened.WorkspaceId, method.Id, body.BodyOffset, [0x0A, 0x17, 0x2A]);
+
+		var destination = Path.Combine(Path.GetTempPath(), $"dnspy-hex-{Guid.NewGuid():N}.dll");
+		try {
+			await manager.SaveModuleAsync(new SaveModuleRequest(opened.WorkspaceId, moduleId, destination), TestContext.Current.CancellationToken);
+
+			// The serializer lays the file out its own way, so the saved copy is asked where the method's
+			// body landed rather than being read at the offset the patch was written at.
+			var reopened = await manager.OpenAsync(new OpenWorkspaceRequest([destination]), TestContext.Current.CancellationToken);
+			var savedMethod = await FindRpcExceptionGetterAsync(reopened.WorkspaceId);
+			var savedTarget = await manager.ResolveHexTargetAsync(new HexTargetRequest(reopened.WorkspaceId, savedMethod.Id), TestContext.Current.CancellationToken);
+			var savedBody = Assert.IsType<HexMethodTargetDto>(savedTarget.Method);
+			var saved = Convert.FromBase64String((await manager.ReadHexAsync(
+				new HexReadRequest(reopened.WorkspaceId, savedTarget.ModuleId, savedBody.BodyOffset, 3),
+				TestContext.Current.CancellationToken)).Base64Data);
+			Assert.Equal(new byte[] { 0x0A, 0x17, 0x2A }, saved);
+		}
+		finally {
+			File.Delete(destination);
+		}
+	}
+
+	[Fact]
+	public async Task AHexPatchFollowsTheMethodBodyAStructuralEditMoved() {
+		var opened = await OpenContractsAssemblyAsync();
+		var moduleId = Assert.Single(opened.Modules).Id;
+		var method = await FindRpcExceptionGetterAsync(opened.WorkspaceId);
+		var target = await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, method.Id), TestContext.Current.CancellationToken);
+		var body = Assert.IsType<HexMethodTargetDto>(target.Method);
+
+		// Not any stub's own bytes, so the file can only hold them if the patch put them there.
+		await CommitHexPatchAsync(opened.WorkspaceId, method.Id, body.BodyOffset, [0x0A, 0x18, 0x2A]);
+
+		// A structural edit gives the method a new body, and the serializer then lays the whole file out
+		// afresh, so the offset the patch was written at means nothing in the file this save writes. The
+		// patch was aimed at the method, so it lands on whatever body that method has now.
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		await manager.QueueMethodBodyStubAsync(
+			new ReplaceMethodBodyWithStubRequest(opened.WorkspaceId, transaction.TransactionId, method.Id),
+			TestContext.Current.CancellationToken);
+		await manager.CommitEditAsync(new EditTransactionRequest(opened.WorkspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
+
+		var destination = Path.Combine(Path.GetTempPath(), $"dnspy-hex-{Guid.NewGuid():N}.dll");
+		try {
+			await manager.SaveModuleAsync(new SaveModuleRequest(opened.WorkspaceId, moduleId, destination), TestContext.Current.CancellationToken);
+
+			var reopened = await manager.OpenAsync(new OpenWorkspaceRequest([destination]), TestContext.Current.CancellationToken);
+			var savedMethod = await FindRpcExceptionGetterAsync(reopened.WorkspaceId);
+			var savedTarget = await manager.ResolveHexTargetAsync(new HexTargetRequest(reopened.WorkspaceId, savedMethod.Id), TestContext.Current.CancellationToken);
+			var savedBody = Assert.IsType<HexMethodTargetDto>(savedTarget.Method);
+			var saved = Convert.FromBase64String((await manager.ReadHexAsync(
+				new HexReadRequest(reopened.WorkspaceId, savedTarget.ModuleId, savedBody.BodyOffset, 3),
+				TestContext.Current.CancellationToken)).Base64Data);
+			Assert.Equal(new byte[] { 0x0A, 0x18, 0x2A }, saved);
+		}
+		finally {
+			File.Delete(destination);
+		}
+	}
+
+	[Fact]
+	public async Task RefusesAPatchLargerThanWhatItIsWritingOver() {
+		var opened = await OpenContractsAssemblyAsync();
+		var method = await FindRpcExceptionGetterAsync(opened.WorkspaceId);
+		var target = await manager.ResolveHexTargetAsync(new HexTargetRequest(opened.WorkspaceId, method.Id), TestContext.Current.CancellationToken);
+		var body = Assert.IsType<HexMethodTargetDto>(target.Method);
+
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		var exception = await Assert.ThrowsAsync<RpcException>(() => manager.QueueHexPatchAsync(
+			new HexPatchRequest(opened.WorkspaceId, transaction.TransactionId, method.Id, body.BodyOffset,
+				Convert.ToBase64String(new byte[(int)body.BodySize + 1])),
+			TestContext.Current.CancellationToken));
+		Assert.Equal(ErrorCodes.EditValidationFailed, exception.Code);
+	}
+
+	[Fact]
 	public async Task ClosingWorkspaceReleasesItsPublicIdentity() {
 		var opened = await OpenContractsAssemblyAsync();
 		manager.Close(new WorkspaceRequest(opened.WorkspaceId));
@@ -1105,6 +1314,22 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var @namespace = await FindNamespaceAsync(workspaceId, namespaceName);
 		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
 		return Assert.Single(types.Nodes, node => node.Label == typeName);
+	}
+
+	/// <summary>The one-liner getter the hex write commands are pointed at: <c>RpcException.get_Code()</c>.</summary>
+	async Task<TreeNodeDto> FindRpcExceptionGetterAsync(string workspaceId) {
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var members = await manager.GetChildrenAsync(new NodeRequest(workspaceId, type.Id), TestContext.Current.CancellationToken);
+		return Assert.Single(members.Nodes, node => node.Kind == "method" && node.Label == "get_Code()");
+	}
+
+	/// <summary>Writes one byte patch the way the hex commands do: in its own transaction, then committed.</summary>
+	async Task<EditCommitResponse> CommitHexPatchAsync(string workspaceId, string nodeId, long offset, byte[] data) {
+		var transaction = await manager.BeginEditAsync(new BeginEditRequest(workspaceId), TestContext.Current.CancellationToken);
+		await manager.QueueHexPatchAsync(
+			new HexPatchRequest(workspaceId, transaction.TransactionId, nodeId, offset, Convert.ToBase64String(data)),
+			TestContext.Current.CancellationToken);
+		return await manager.CommitEditAsync(new EditTransactionRequest(workspaceId, transaction.TransactionId), TestContext.Current.CancellationToken);
 	}
 
 	async Task<OpenWorkspaceResponse> OpenContractsAssemblyAsync() => await manager.OpenAsync(

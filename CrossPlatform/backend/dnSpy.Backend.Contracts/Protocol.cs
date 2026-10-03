@@ -22,6 +22,9 @@ public static class RpcMethods {
 	public const string AnalyzeReferences = "analyze/references";
 	public const string HexGetLength = "hex/getLength";
 	public const string HexReadRange = "hex/readRange";
+	public const string HexResolveTarget = "hex/resolveTarget";
+	public const string HexResolveStatement = "hex/resolveStatement";
+	public const string EditHexPatch = "edit/hexPatch";
 	public const string ModuleGetInfo = "module/getInfo";
 	public const string EditBegin = "edit/begin";
 	public const string EditGetMethodBody = "edit/getMethodBody";
@@ -184,6 +187,54 @@ public sealed record HexLengthResponse(long Length);
 public sealed record HexReadRequest(string WorkspaceId, string ModuleId, long Offset, int Count);
 
 public sealed record HexReadResponse(long Offset, string Base64Data, bool EndOfFile);
+
+public sealed record HexTargetRequest(string WorkspaceId, string NodeId);
+
+/// <summary>A byte range of the module's file, as the hex editor addresses it.</summary>
+public sealed record HexRangeDto(long Offset, long Length);
+
+/// <summary>
+/// The parts of a method the hex commands jump to: the whole body (header included, what "Show Method
+/// Body" and the write commands overwrite) and the IL code that follows the header ("Show Instructions").
+/// The three template fields are the exact bytes dnSpy's write commands install, base64 encoded; each is
+/// null when that command does not apply to this method, which is what its menu entry keys off.
+/// </summary>
+public sealed record HexMethodTargetDto(
+	long BodyOffset,
+	long BodySize,
+	long CodeOffset,
+	long CodeSize,
+	string? ReturnTrueBody = null,
+	string? ReturnFalseBody = null,
+	string? EmptyBody = null);
+
+/// <summary>
+/// Where the hex commands for one node point. Everything but <paramref name="ModuleId"/> and
+/// <paramref name="FileLength"/> is null when the node has no such target.
+/// </summary>
+public sealed record HexTargetResponse(
+	string ModuleId,
+	long FileLength,
+	HexMethodTargetDto? Method = null,
+	HexRangeDto? FieldInitialValue = null,
+	HexRangeDto? Resource = null);
+
+/// <summary>
+/// A statement under the caret of a code document, named the way a bookmark names its target: the IL
+/// offsets are relative to the method's code, so the range the hex editor shows is the code offset of
+/// the statement's own method plus these.
+/// </summary>
+public sealed record HexStatementRequest(string WorkspaceId, string ModulePath, int MetadataToken, int IlOffset, int IlEndOffset);
+
+/// <summary>The statement's bytes in the file, or null when it has none (a method with no body, say).
+/// The module is named too, since a code document only knows the path it was decompiled from.</summary>
+public sealed record HexStatementResponse(string? ModuleId, HexRangeDto? Range);
+
+/// <summary>
+/// One in-place byte patch, written over the module's file image. The client queues this in an edit
+/// transaction like any other edit, so it undoes and redoes with the rest of them.
+/// </summary>
+public sealed record HexPatchRequest(string WorkspaceId, string TransactionId, string NodeId, long Offset, string Base64Data);
 
 public sealed record ModuleInfoRequest(string WorkspaceId, string ModuleId);
 

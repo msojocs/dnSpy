@@ -19,7 +19,7 @@ import { AboutDialog } from './components/AboutDialog'
 import { NodeOptionsDialog } from './components/NodeOptionsDialog'
 import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, closeDocumentTabsFor, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
-import type { ActiveDocument, CreatedKind } from './components/edit-menu'
+import type { ActiveDocument, CreatedKind, HexShowKind } from './components/edit-menu'
 import { findInActiveDocumentEditor, focusDocumentEditor } from './editor-registry'
 import { translate, useLanguage } from './localization'
 
@@ -217,6 +217,14 @@ export const App = (): React.JSX.Element => {
   const renameNamespace = useAppStore((state) => state.renameNamespace)
   const moveTypesToEmptyNamespace = useAppStore((state) => state.moveTypesToEmptyNamespace)
   const replaceMethodBodyWithStub = useAppStore((state) => state.replaceMethodBodyWithStub)
+  const hexTarget = useAppStore((state) => state.hexTarget)
+  const hexStatement = useAppStore((state) => state.hexStatement)
+  const resolveHexTarget = useAppStore((state) => state.resolveHexTarget)
+  const showHexAt = useAppStore((state) => state.showHexAt)
+  const hexWriteMethodBody = useAppStore((state) => state.hexWriteMethodBody)
+  const hexCopyMethodBody = useAppStore((state) => state.hexCopyMethodBody)
+  const hexPasteMethodBody = useAppStore((state) => state.hexPasteMethodBody)
+  const roots = useAppStore((state) => state.roots)
   const treeChildren = useAppStore((state) => state.children)
   const treeParents = useAppStore((state) => state.parents)
   const openDocument = useAppStore((state) => state.openDocument)
@@ -288,6 +296,12 @@ export const App = (): React.JSX.Element => {
   }
   const anyBreakpointEnabled = lineBreakpoints.some((breakpoint) => breakpoint.enabled) || functionBreakpoints.some((breakpoint) => breakpoint.enabled)
   const anyBreakpointDisabled = lineBreakpoints.some((breakpoint) => !breakpoint.enabled) || functionBreakpoints.some((breakpoint) => !breakpoint.enabled)
+
+  // The Edit menu's hex entries are built from where the selection points, so the answer is refreshed
+  // whenever the selection changes rather than being asked for when the menu opens.
+  useEffect(() => {
+    void resolveHexTarget(selectedNode)
+  }, [selectedNode, resolveHexTarget])
 
   useEffect(() => {
     const unsubscribe = window.dnSpy.onBackendStatus(setBackendStatus)
@@ -649,7 +663,9 @@ export const App = (): React.JSX.Element => {
     showBorderTab('analysis')
   }
 
-  const addSpecialTab = (component: 'hex' | 'module-info', module: TreeNode): void => {
+  // A module node and the module a hex command names are the same node id, but a command only has the
+  // id, so the tab builder takes the two fields it needs rather than the whole tree node.
+  const addSpecialTab = (component: 'hex' | 'module-info', module: { id: string; label: string }): void => {
     const tabId = `${component}:${module.id}`
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
@@ -666,6 +682,39 @@ export const App = (): React.JSX.Element => {
       if (model.getNodeById('start')) model.doAction(Actions.deleteTab('start'))
     }
     forceLayoutUpdate((value) => value + 1)
+  }
+
+  // The hex commands name their module by node id, and the tab needs a label with it.
+  const moduleTabTarget = (moduleId: string): { id: string; label: string } | undefined => {
+    const node = roots.find((root) => root.id === moduleId)
+    return node ? { id: node.id, label: node.label } : undefined
+  }
+
+  const openHex = (): void => {
+    const target = hexTarget ? moduleTabTarget(hexTarget.moduleId) : undefined
+    if (target)
+      addSpecialTab('hex', target)
+  }
+
+  /** Opens the hex tab on the bytes one of the "Show ... in Hex Editor" commands names. */
+  const showSelectionInHex = (kind: HexShowKind): void => {
+    if (kind === 'statement') {
+      const statement = hexStatement
+      const target = statement ? moduleTabTarget(statement.moduleId) : undefined
+      if (!statement || !target) return
+      showHexAt(statement.moduleId, statement.range.offset, statement.range.length)
+      addSpecialTab('hex', target)
+      return
+    }
+    const range = !hexTarget ? undefined
+      : kind === 'instructions' ? hexTarget.method && { offset: hexTarget.method.codeOffset, length: hexTarget.method.codeSize }
+      : kind === 'body' ? hexTarget.method && { offset: hexTarget.method.bodyOffset, length: hexTarget.method.bodySize }
+      : kind === 'fieldInitialValue' ? hexTarget.fieldInitialValue
+      : hexTarget.resource
+    const target = hexTarget ? moduleTabTarget(hexTarget.moduleId) : undefined
+    if (!hexTarget || !target || !range) return
+    showHexAt(hexTarget.moduleId, range.offset, range.length)
+    addSpecialTab('hex', target)
   }
 
   const closeCurrentWorkspace = (): void => {
@@ -730,6 +779,13 @@ export const App = (): React.JSX.Element => {
         onRenameNamespace={() => { if (selectedNode?.kind === 'namespace') setRenameNamespaceNode(selectedNode) }}
         onMoveTypesToEmptyNamespace={() => { if (selectedNode?.kind === 'namespace') void moveTypesToEmptyNamespace(selectedNode) }}
         onReplaceMethodBodyWithStub={() => { if (selectedNode?.kind === 'method') void replaceMethodBodyWithStub(selectedNode) }}
+        hexTarget={hexTarget}
+        hexStatement={hexStatement}
+        onOpenHex={openHex}
+        onShowHexAt={showSelectionInHex}
+        onHexWriteBody={(kind) => void hexWriteMethodBody(kind)}
+        onHexCopyBody={() => void hexCopyMethodBody()}
+        onHexPasteBody={() => void hexPasteMethodBody()}
         onCreateMember={createMember}
         onEditNode={openEditNode}
         onShowCode={() => void showCode()}

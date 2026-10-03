@@ -179,6 +179,10 @@ internal sealed class JsonRpcServer {
 				return await workspaces.GetHexLengthAsync(DeserializeParams<HexLengthRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.HexReadRange:
 				return await workspaces.ReadHexAsync(DeserializeParams<HexReadRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.HexResolveTarget:
+				return await workspaces.ResolveHexTargetAsync(DeserializeParams<HexTargetRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.HexResolveStatement:
+				return await workspaces.ResolveHexStatementAsync(DeserializeParams<HexStatementRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.ModuleGetInfo:
 				return await workspaces.GetModuleInfoAsync(DeserializeParams<ModuleInfoRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.EditBegin:
@@ -208,6 +212,9 @@ internal sealed class JsonRpcServer {
 				return new { queued = true };
 			case RpcMethods.EditReplaceResource:
 				await workspaces.QueueResourceAsync(DeserializeParams<ReplaceResourceRequest>(request), cancellationToken).ConfigureAwait(false);
+				return new { queued = true };
+			case RpcMethods.EditHexPatch:
+				await workspaces.QueueHexPatchAsync(DeserializeParams<HexPatchRequest>(request), cancellationToken).ConfigureAwait(false);
 				return new { queued = true };
 			case RpcMethods.EditCommit:
 				return await workspaces.CommitEditAsync(DeserializeParams<EditTransactionRequest>(request), cancellationToken).ConfigureAwait(false);
@@ -261,6 +268,7 @@ internal sealed class JsonRpcServer {
 				["search"] = true,
 				["analyze.references"] = true,
 				["hex.read"] = true,
+				["hex.write"] = true,
 				["assembly.edit"] = true,
 				["assembly.edit.il"] = true,
 				["assembly.edit.resources"] = true,

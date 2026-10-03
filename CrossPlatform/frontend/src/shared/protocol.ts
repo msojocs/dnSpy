@@ -132,6 +132,48 @@ export interface HexReadResponse {
   endOfFile: boolean
 }
 
+/** A byte range of the module's file, as the hex editor addresses it. */
+export interface HexRange {
+  offset: number
+  length: number
+}
+
+/**
+ * The parts of a method the hex commands jump to: the whole body (header included, what "Show Method
+ * Body" and the write commands overwrite) and the IL code that follows the header ("Show Instructions").
+ * Each template is the exact bytes one of the write commands installs, base64 encoded; it is null when
+ * that command does not apply to this method, which is what its menu entry keys off.
+ */
+export interface HexMethodTarget {
+  bodyOffset: number
+  bodySize: number
+  codeOffset: number
+  codeSize: number
+  returnTrueBody: string | null
+  returnFalseBody: string | null
+  emptyBody: string | null
+}
+
+/**
+ * Where the hex commands for one node point. Everything but the module and its length is null when the
+ * node has no such target — spelled out on the wire rather than left off, so "no target" reads as null
+ * here and never as a missing property.
+ */
+export interface HexTargetResponse {
+  moduleId: string
+  fileLength: number
+  method: HexMethodTarget | null
+  fieldInitialValue: HexRange | null
+  resource: HexRange | null
+}
+
+/** The bytes one statement of a code document covers, or null when it has none. The module is named
+ * too, since a code document only knows the path it was decompiled from. */
+export interface HexStatementResponse {
+  moduleId: string | null
+  range: HexRange | null
+}
+
 export interface ModuleInfoResponse {
   name: string
   path: string
@@ -655,6 +697,14 @@ export interface DnSpyApi {
   analyzeReferences(workspaceId: string, nodeId: string): Promise<AnalyzeReferencesResponse>
   getHexLength(workspaceId: string, moduleId: string): Promise<HexLengthResponse>
   readHex(workspaceId: string, moduleId: string, offset: number, count: number): Promise<HexReadResponse>
+  /** Where the hex commands point for a selected node: a method's body and code, a field's initial
+   * value, a resource's data. */
+  resolveHexTarget(workspaceId: string, nodeId: string): Promise<HexTargetResponse>
+  /** Where a statement under the caret of a code document lives in the file. */
+  resolveHexStatement(workspaceId: string, modulePath: string, metadataToken: number, ilOffset: number, ilEndOffset: number): Promise<HexStatementResponse>
+  /** Queues a raw byte patch over the module's file image, undone and redone with the rest of the
+   * transaction's edits. */
+  patchHex(workspaceId: string, transactionId: string, nodeId: string, offset: number, base64Data: string): Promise<void>
   getModuleInfo(workspaceId: string, moduleId: string): Promise<ModuleInfoResponse>
   beginEdit(workspaceId: string): Promise<BeginEditResponse>
   getMethodBody(workspaceId: string, methodNodeId: string): Promise<MethodBodyResponse>

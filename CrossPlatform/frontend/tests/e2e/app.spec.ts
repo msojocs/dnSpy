@@ -308,6 +308,57 @@ test.describe('the workspace shell', () => {
     expect(existsSync(savePath)).toBe(true)
   })
 
+  test('writes a method body from the hex editor and undoes the bytes', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.locator('.tree-expander').click()
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\)$/ })
+    await getCode.click()
+
+    // The hex group is listed in dnSpy's order, and only the entries that have something to point at are
+    // in it: an int getter gets no 'return true'/'return false' body, whose commands belong to bool methods.
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    // The shortcut rides along with the label in the item's own text, so it is trimmed off to compare order.
+    const labels = (await page.getByRole('menu').last().getByRole('menuitem').allTextContents())
+      .map((text) => text.replace(/(Ctrl|Shift|Alt)\+.*$/, '').trim())
+    const start = labels.indexOf('Open Hex Editor')
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(labels.slice(start, start + 6)).toEqual([
+      'Open Hex Editor',
+      'Show Instructions in Hex Editor',
+      'Show Method Body in Hex Editor',
+      'Hex Write Empty Body',
+      'Hex Copy Method Body',
+      'Hex Paste Method Body',
+    ])
+
+    await page.getByRole('menuitem', { name: 'Show Method Body in Hex Editor' }).click()
+
+    // The command marks the bytes it names, so the getter's own body is read off the dump before anything
+    // is written over it.
+    const marked = page.locator('.hex-byte-marked')
+    // The separator between bytes rides along with its own cell, and the last column of a row has none,
+    // so the bytes are compared without it.
+    const markedBytes = async (): Promise<string[]> => (await marked.allTextContents()).map((text) => text.trim())
+    await expect(marked.first()).toBeVisible()
+    const original = await markedBytes()
+
+    // The write posts dnSpy's empty-body bytes: a tiny header whose two code bytes return the default. The
+    // getter's real body is longer, so its remaining bytes stay where they are under the patch.
+    await getCode.click()
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: 'Hex Write Empty Body' }).click()
+    await expect(page.getByText('Updated method body bytes for get_Code().')).toBeVisible()
+    await expect(page.getByText('Modified', { exact: true })).toBeVisible()
+    await expect.poll(async () => (await markedBytes()).slice(0, 3)).toEqual(['0A', '16', '2A'])
+
+    // A byte patch is an edit like any other, so undo puts the file's own bytes back under it.
+    await page.getByRole('menuitem', { name: 'Edit' }).click()
+    await page.getByRole('menuitem', { name: /^Undo/ }).click()
+    await expect.poll(markedBytes).toEqual(original)
+    await expect(page.getByText('Modified', { exact: true })).not.toBeVisible()
+  })
+
   test('deletes a type, renames the namespace and restores both with undo', async () => {
     await openAssemblyAndNamespace()
     const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })

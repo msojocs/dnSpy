@@ -724,7 +724,7 @@ select:focus-visible,
 
 .hex-content {
   min-width: max-content;
-  min-height: 100%;
+  min-height: 0;
   margin: 0;
   padding: 8px 12px;
   overflow: auto;
@@ -732,6 +732,23 @@ select:focus-visible,
   background: var(--bg);
   color: var(--text);
   font: 13px/20px "Cascadia Mono", "JetBrains Mono", monospace;
+  white-space: pre;
+}
+
+/* One row of the dump. Rendering it a row at a time is what lets a single byte be marked, which a
+   whole-dump text node could not do. */
+.hex-line {
+  min-height: 20px;
+}
+
+.hex-address {
+  color: var(--text-muted, var(--text));
+  opacity: 0.75;
+}
+
+/* Marked with the same colour the menus and selection use, so it reads as the current selection. */
+.hex-byte-marked {
+  background: var(--selection);
 }
 
 .module-info-view {

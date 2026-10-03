@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight } from 'lucide-react'
 import { useLanguage, type LanguagePreference } from '../localization'
-import { buildEditMenu, type ActiveDocument, type CreatedKind, type MenuItem } from './edit-menu'
+import { buildEditMenu, type ActiveDocument, type CreatedKind, type HexShowKind, type MenuItem } from './edit-menu'
+import type { HexBodyKind } from '../app-store'
+import type { HexRange, HexTargetResponse } from '../../../shared/protocol'
 import { WindowControls } from './WindowControls'
 
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
@@ -46,6 +48,14 @@ interface MenuBarProps {
   onRenameNamespace(): void
   onMoveTypesToEmptyNamespace(): void
   onReplaceMethodBodyWithStub(): void
+  /** Where the hex commands point for the selection, and for the code document's caret. */
+  hexTarget?: HexTargetResponse
+  hexStatement?: { moduleId: string; range: HexRange }
+  onOpenHex(): void
+  onShowHexAt(kind: HexShowKind): void
+  onHexWriteBody(kind: HexBodyKind): void
+  onHexCopyBody(): void
+  onHexPasteBody(): void
   onCreateMember(kind: CreatedKind): void
   onEditNode(): void
   onShowCode(): void
@@ -144,6 +154,13 @@ export const MenuBar = ({
   onRenameNamespace,
   onMoveTypesToEmptyNamespace,
   onReplaceMethodBodyWithStub,
+  hexTarget,
+  hexStatement,
+  onOpenHex,
+  onShowHexAt,
+  onHexWriteBody,
+  onHexCopyBody,
+  onHexPasteBody,
   onCreateMember,
   onEditNode,
   onShowCode,
@@ -246,6 +263,13 @@ export const MenuBar = ({
       onRenameNamespace,
       onMoveTypesToEmptyNamespace,
       onReplaceMethodBodyWithStub,
+      hexTarget,
+      hexStatement,
+      onOpenHex,
+      onShowHexAt,
+      onHexWriteBody,
+      onHexCopyBody,
+      onHexPasteBody,
       onCreateMember,
       onEditNode,
     }),

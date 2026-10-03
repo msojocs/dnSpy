@@ -8,9 +8,15 @@ const pageSize = 4096
 
 export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element => {
   const workspaceId = useAppStore((state) => state.workspaceId)
+  // Every edit bumps the state id, and a byte patch is an edit like any other, so the page is read
+  // again after one — which is what makes an undo show up here.
+  const workspaceStateId = useAppStore((state) => state.workspaceStateId)
+  const navigation = useAppStore((state) => state.hexNavigation)
   const [length, setLength] = useState(0)
   const [offset, setOffset] = useState(0)
   const [bytes, setBytes] = useState<Uint8Array>(new Uint8Array())
+  /** The bytes a "Show ... in Hex Editor" command pointed at, marked wherever they are on screen. */
+  const [highlight, setHighlight] = useState<{ start: number; end: number }>()
   const [loading, setLoading] = useState(false)
   const { locale, t } = useLanguage()
 
@@ -18,6 +24,14 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
     if (!workspaceId) return
     void window.dnSpy.getHexLength(workspaceId, moduleId).then((response) => setLength(response.length))
   }, [workspaceId, moduleId])
+
+  // A hex command names the module it wants, and this tab is only the one to answer when the names
+  // match — another module's tab stays where it was.
+  useEffect(() => {
+    if (!navigation || navigation.moduleId !== moduleId) return
+    setOffset(Math.floor(navigation.offset / pageSize) * pageSize)
+    setHighlight({ start: navigation.offset, end: navigation.offset + Math.max(navigation.length, 1) })
+  }, [navigation, moduleId])
 
   useEffect(() => {
     if (!workspaceId) return
@@ -29,19 +43,26 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
       setBytes(Uint8Array.from(binary, (character) => character.charCodeAt(0)))
     }).finally(() => { if (!canceled) setLoading(false) })
     return () => { canceled = true }
-  }, [workspaceId, moduleId, offset])
+  }, [workspaceId, moduleId, offset, workspaceStateId])
 
-  const lines = useMemo(() => {
-    const result: string[] = []
+  const rows = useMemo(() => {
+    const result: { address: string; cells: { text: string; marked: boolean }[]; ascii: string }[] = []
     for (let row = 0; row < bytes.length; row += 16) {
-      const slice = bytes.slice(row, row + 16)
-      const address = (offset + row).toString(16).toUpperCase().padStart(8, '0')
-      const hex = Array.from(slice, (value) => value.toString(16).toUpperCase().padStart(2, '0')).join(' ').padEnd(47, ' ')
-      const ascii = Array.from(slice, (value) => value >= 32 && value <= 126 ? String.fromCharCode(value) : '.').join('')
-      result.push(`${address}  ${hex}  |${ascii.padEnd(16, ' ')}|`)
+      const cells = []
+      let ascii = ''
+      for (let column = 0; column < 16; column++) {
+        const index = row + column
+        if (index >= bytes.length)
+          break
+        const value = bytes[index]
+        // The separator lives with its byte so marking one byte leaves the dump's spacing intact.
+        cells.push({ text: value.toString(16).toUpperCase().padStart(2, '0') + (column === 15 ? '' : ' '), marked: highlight !== undefined && offset + index >= highlight.start && offset + index < highlight.end })
+        ascii += value >= 32 && value <= 126 ? String.fromCharCode(value) : '.'
+      }
+      result.push({ address: (offset + row).toString(16).toUpperCase().padStart(8, '0'), cells, ascii: ascii.padEnd(16, ' ') })
     }
-    return result.join('\n')
-  }, [bytes, offset])
+    return result
+  }, [bytes, offset, highlight])
 
   return (
     <div className="special-document">
@@ -56,7 +77,15 @@ export const HexView = ({ moduleId }: { moduleId: string }): React.JSX.Element =
         <span>{offset.toLocaleString(locale)} / {length.toLocaleString(locale)}</span>
         {loading && <RefreshCw className="spin" size={14} />}
       </div>
-      <pre className="hex-content">{lines}</pre>
+      <div className="hex-content">
+        {rows.map((row) => (
+          <div className="hex-line" key={row.address}>
+            <span className="hex-address">{row.address}</span>{'  '}
+            {row.cells.map((cell, column) => <span className={cell.marked ? 'hex-byte hex-byte-marked' : 'hex-byte'} key={column}>{cell.text}</span>)}
+            {'  |'}<span className="hex-ascii">{row.ascii}</span>{'|'}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

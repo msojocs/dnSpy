@@ -65,6 +65,12 @@ export const activeDocumentPosition = (): CaretPosition | undefined => {
   return entry && position ? { documentId: entry.documentId, line: position.lineNumber, column: position.column } : undefined
 }
 
+/**
+ * Whether `viewId` is the editor the user last worked in. A caret that moves in a background tab must
+ * not be taken for the current position, so a listener reports only when it is the active one.
+ */
+export const isActiveDocumentEditor = (viewId: string): boolean => activeViewId === viewId
+
 /** Where the caret sits in the editor of `viewId`, or undefined when that view is not open. */
 export const caretPosition = (viewId: string): { line: number; column: number } | undefined => {
   const position = editors.get(viewId)?.editor.getPosition()
