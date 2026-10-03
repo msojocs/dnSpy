@@ -188,6 +188,85 @@ export interface BackendStatus {
   capabilities?: Record<string, boolean>
 }
 
+// ---------------------------------------------------------------------------------------------
+// The create/edit dialogs' models.
+//
+// These mirror the backend's DTO records (backend/dnSpy.Backend.Contracts/Protocol.cs) field for
+// field, so a dialog can be read against the WPF options class it was ported from. Only what the
+// port reads so far is declared — the member models arrive with their dialogs — and an interface
+// that is a subset of what travels is safe here, because these values only ever come off the wire.
+// ---------------------------------------------------------------------------------------------
+
+/** A type as it is written into metadata: the assembly that declares it, then its namespace and name.
+ * A nested type's name is its path from the outermost declaring type, written with `/`. */
+export interface TypeRefDto {
+  scope: string
+  namespace: string
+  name: string
+  /** The explorer node it was picked from, which is what the backend resolves first. */
+  nodeId?: string
+}
+
+export type TypeSigKind =
+  | 'type' | 'genericInst' | 'szarray' | 'array' | 'ptr' | 'byref' | 'pinned'
+  | 'cmodreqd' | 'cmodopt' | 'genericvar' | 'genericmvar' | 'fnptr' | 'empty'
+
+/**
+ * One node of a type signature. The wrapper kinds — `szarray`, `ptr`, `byref`, `pinned`, `array` —
+ * carry the type they wrap in `element`; the two custom-modifier kinds put the modifier in `modifier`
+ * and the type it modifies in `element`, which is the order dnlib's `CModReqdSig`/`CModOptSig` take.
+ * `empty` is a slot a dialog has opened and not filled yet, which nothing writes.
+ */
+export interface TypeSigDto {
+  kind: TypeSigKind
+  type?: TypeRefDto
+  /** Whether the type is a value type, when the DTO knows; unset leaves it to the definition. */
+  valueType?: boolean
+  element?: TypeSigDto
+  modifier?: TypeSigDto
+  arguments?: TypeSigDto[]
+  rank?: number
+  sizes?: number[]
+  lowerBounds?: number[]
+  genericParameterNumber?: number
+  functionPointer?: MethodSigDto
+  /** How the backend renders this signature. Kept for round-tripping; the editor shows its own text. */
+  display?: string
+}
+
+/** `callingConvention` is dnlib's raw value: the low nibble is the convention and bits 4-6 carry
+ * Generic/HasThis/ExplicitThis, which is exactly how dnSpy's method-signature dialog models it. */
+export interface MethodSigDto {
+  callingConvention: number
+  returnType: TypeSigDto
+  parameters: TypeSigDto[]
+  varArgParameters?: TypeSigDto[]
+  genericParameterCount?: number
+  display?: string
+}
+
+export interface GenericParamDto {
+  number: number
+  flags: number
+  name: string
+  display?: string
+}
+
+/** A type's dialog model. Only the generic parameters are read so far — they say how many arguments
+ * an instance of the type takes. The attributes, base type, interfaces, custom attributes and
+ * security declarations travel with it too and are declared with the type dialog. */
+export interface TypeOptionsDto {
+  namespace: string
+  name: string
+  genericParameters: GenericParamDto[]
+}
+
+/** What a create or edit dialog opens with, for the kind it was opened for. */
+export interface NodeOptionsResponse {
+  kind: string
+  type?: TypeOptionsDto
+}
+
 export interface DebugProcess {
   processId: number
   name: string
@@ -322,6 +401,9 @@ export interface DnSpyApi {
   getModuleInfo(workspaceId: string, moduleId: string): Promise<ModuleInfoResponse>
   beginEdit(workspaceId: string): Promise<BeginEditResponse>
   getMethodBody(workspaceId: string, methodNodeId: string): Promise<MethodBodyResponse>
+  /** The dialog model behind a node, which is what an Edit dialog opens with. Read-only: nothing about
+   * it is queued until the dialog is accepted. */
+  getNodeOptions(workspaceId: string, kind: string, nodeId: string): Promise<NodeOptionsResponse>
   queueRename(workspaceId: string, transactionId: string, nodeId: string, newName: string): Promise<void>
   /** Removes a type, member, resource, or every type of a namespace from its owner. */
   queueDelete(workspaceId: string, transactionId: string, nodeId: string): Promise<void>

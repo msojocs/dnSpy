@@ -1383,6 +1383,136 @@ select:focus-visible,
   color: var(--danger);
 }
 
+/* The type- and method-signature editors, and the lists they are built into. */
+.typesig-editor,
+.methodsig-editor {
+  display: grid;
+  gap: 5px;
+}
+
+.typesig-preview {
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface-2);
+  font-family: "Cascadia Mono", "JetBrains Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.typesig-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.typesig-buttons button {
+  padding: 2px 8px;
+}
+
+.typesig-number {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.typesig-number input {
+  width: 70px;
+}
+
+.typesig-fieldset,
+.methodsig-flags {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 5px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.typesig-fieldset legend,
+.methodsig-flags legend {
+  padding-inline: 4px;
+  color: var(--text-muted);
+}
+
+.typesig-argument {
+  display: grid;
+  gap: 3px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
+.typesig-argument-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.typesig-warning {
+  color: var(--danger);
+}
+
+.typesig-list-editor {
+  display: grid;
+  gap: 5px;
+}
+
+.typesig-list-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+
+.typesig-list {
+  min-height: 66px;
+  max-height: 160px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+
+.typesig-list-row {
+  padding: 2px 5px;
+  font-family: "Cascadia Mono", "JetBrains Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  cursor: default;
+}
+
+.typesig-list-row.selected {
+  background: var(--selection);
+}
+
+.typesig-list-move {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+}
+
+.typesig-list-move button {
+  padding: 2px 6px;
+}
+
+.methodsig-flags {
+  grid-template-columns: repeat(auto-fit, minmax(150px, auto));
+  align-items: center;
+}
+
+.methodsig-return {
+  display: grid;
+  gap: 3px;
+}
+
+.methodsig-return-label {
+  color: var(--text-muted);
+}
+
+.methodsig-section > summary {
+  cursor: default;
+}
+
 .options-dialog {
   grid-template-rows: 33px minmax(0, 1fr) 43px;
   width: min(96vw, 940px);

@@ -375,4 +375,54 @@ public sealed class SignatureRoundTripTests {
 		var exception = Assert.Throws<RpcException>(() => context.Signatures.FromDtoRequired(new TypeSigDto("nonsense")));
 		Assert.Contains("nonsense", exception.Message, StringComparison.Ordinal);
 	}
+
+	/// <summary>
+	/// A slot the dialog has opened but the user has not filled in — a generic argument, whose count the
+	/// type decided. dnSpy's creator refuses to hand back an array of type signatures short of its count
+	/// either, so a signature that still holds one is refused here rather than written with a hole in it.
+	/// </summary>
+	[Fact]
+	public void AnUnfilledSlotIsRefused() {
+		var (module, _) = EditTestModule.Create();
+		var context = EditTestModule.Context(module);
+
+		var exception = Assert.Throws<RpcException>(() => context.Signatures.FromDtoRequired(new TypeSigDto(TypeSigKinds.Empty)));
+		Assert.Equal(ErrorCodes.EditValidationFailed, exception.Code);
+	}
+
+	/// <summary>
+	/// A dialog picks a type by name and cannot tell a struct from a class, so the definition settles it.
+	/// Without this a field typed by a struct picked out of the tree would be written as a class.
+	/// </summary>
+	[Fact]
+	public void AResolvedDefinitionDecidesWhetherTheTypeIsAValueType() {
+		var module = ModuleDefMD.Load(typeof(EditTestModule).Assembly.Location);
+		var context = EditTestModule.Context(module);
+
+		Assert.IsType<ValueTypeSig>(context.Signatures.FromDtoRequired(Named("SampleValue")));
+		Assert.IsType<ClassSig>(context.Signatures.FromDtoRequired(Named("SampleClass")));
+	}
+
+	/// <summary>
+	/// A DTO that says what it is keeps the last word: a type in an assembly nothing on this machine can
+	/// resolve has no definition to ask, so the name alone decides nothing.
+	/// </summary>
+	[Fact]
+	public void AValueTypeThatResolvesToNothingIsStillAValueType() {
+		var (module, _) = EditTestModule.Create();
+		var context = EditTestModule.Context(module);
+
+		var dto = Named("Missing") with { ValueType = true, Type = new TypeRefDto("No.Such.Assembly", "Ns", "Missing") };
+		Assert.IsType<ValueTypeSig>(context.Signatures.FromDtoRequired(dto));
+	}
+
+	static TypeSigDto Named(string name) => new(TypeSigKinds.Type, new TypeRefDto("", "dnSpy.Backend.Tests.Editing", name));
 }
+
+/// <summary>
+/// A value type and a reference type of the test assembly itself, for the cases that need a type's own
+/// definition — not a signature's element type — to decide what its signature has to be.
+/// </summary>
+public struct SampleValue { }
+
+public sealed class SampleClass { }

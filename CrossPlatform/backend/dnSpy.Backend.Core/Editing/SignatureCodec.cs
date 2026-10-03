@@ -121,8 +121,18 @@ public sealed class SignatureCodec {
 		TypeSigKinds.GenericVar => new GenericVar((uint)dto.GenericParameterNumber),
 		TypeSigKinds.GenericMVar => new GenericMVar((uint)dto.GenericParameterNumber),
 		TypeSigKinds.FnPtr => new FnPtrSig(MethodFromDto(dto.FunctionPointer)),
+		TypeSigKinds.Empty => throw Invalid("A type is required."),
 		_ => throw Invalid($"Unknown type signature kind '{dto.Kind}'."),
 	};
+
+	/// <summary>
+	/// Whether a named signature is a value type. A DTO that was read says so itself; one a dialog
+	/// assembled from a picked name usually does not, and then the definition decides — which is what
+	/// makes a struct come back as the struct it is rather than as a class. A type that resolves to
+	/// nothing has only the DTO to go on.
+	/// </summary>
+	static bool IsValueType(TypeSigDto dto, ITypeDefOrRef definition) =>
+		dto.ValueType ?? definition.ResolveTypeDef()?.IsValueType ?? false;
 
 	TypeSig BuildNamed(TypeSigDto dto) {
 		var reference = dto.Type ?? throw Invalid("A type signature needs a type.");
@@ -132,14 +142,14 @@ public sealed class SignatureCodec {
 		if (reference.Namespace == "System" && CorLibElementType(reference.Name) is { } element && !context.Types.IsDefinedLocally(reference))
 			return CorLibSig(element);
 		var definition = context.Types.Resolve(reference);
-		return dto.ValueType ? new ValueTypeSig(definition) : new ClassSig(definition);
+		return IsValueType(dto, definition) ? new ValueTypeSig(definition) : new ClassSig(definition);
 	}
 
 	TypeSig BuildGenericInstance(TypeSigDto dto) {
 		var reference = dto.Type ?? throw Invalid("A generic instance needs a type.");
 		var definition = context.Types.Resolve(reference);
 		return new GenericInstSig(
-			dto.ValueType ? new ValueTypeSig(definition) : new ClassSig(definition),
+			IsValueType(dto, definition) ? new ValueTypeSig(definition) : new ClassSig(definition),
 			[.. (dto.Arguments ?? []).Select(FromDtoRequired)]);
 	}
 

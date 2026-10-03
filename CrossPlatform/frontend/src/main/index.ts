@@ -205,6 +205,7 @@ const registerIpc = (): void => {
   ipcMain.handle('module:info', (_event, workspaceId: string, moduleId: string) => requireBackend().invoke('module/getInfo', { workspaceId, moduleId }))
   ipcMain.handle('edit:begin', (_event, workspaceId: string) => requireBackend().invoke('edit/begin', { workspaceId }))
   ipcMain.handle('edit:getMethodBody', (_event, workspaceId: string, methodNodeId: string) => requireBackend().invoke('edit/getMethodBody', { workspaceId, methodNodeId }))
+  ipcMain.handle('edit:getOptions', (_event, workspaceId: string, kind: string, nodeId: string) => requireBackend().invoke('edit/getOptions', { workspaceId, kind, nodeId }))
   ipcMain.handle('edit:rename', (_event, workspaceId: string, transactionId: string, nodeId: string, newName: string) => requireBackend().invoke('edit/rename', { workspaceId, transactionId, nodeId, newName }))
   ipcMain.handle('edit:delete', (_event, workspaceId: string, transactionId: string, nodeId: string) => requireBackend().invoke('edit/delete', { workspaceId, transactionId, nodeId }))
   ipcMain.handle('edit:setNamespace', (_event, workspaceId: string, transactionId: string, nodeId: string, newName: string) => requireBackend().invoke('edit/setNamespace', { workspaceId, transactionId, nodeId, newName }))

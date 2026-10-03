@@ -26,11 +26,12 @@ const SELECTABLE: Record<PickerMode, string[]> = {
  */
 const CONTAINERS = ['module', 'namespace', 'referencesgroup', 'assemblyreference', 'type']
 
+/** dnSpy's own titles for the pickers, `Pick_Type` and friends. */
 const PICKER_TITLES: Record<PickerMode, string> = {
-  type: 'Pick Type',
+  type: 'Pick a Type',
   member: 'Pick Member',
-  field: 'Pick Field',
-  method: 'Pick Method',
+  field: 'Pick a Field',
+  method: 'Pick a Method',
 }
 
 interface PickerRowProps {

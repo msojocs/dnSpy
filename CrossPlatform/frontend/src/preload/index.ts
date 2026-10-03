@@ -17,6 +17,7 @@ const api: DnSpyApi = {
   getModuleInfo: (workspaceId, moduleId) => ipcRenderer.invoke('module:info', workspaceId, moduleId),
   beginEdit: (workspaceId) => ipcRenderer.invoke('edit:begin', workspaceId),
   getMethodBody: (workspaceId, methodNodeId) => ipcRenderer.invoke('edit:getMethodBody', workspaceId, methodNodeId),
+  getNodeOptions: (workspaceId, kind, nodeId) => ipcRenderer.invoke('edit:getOptions', workspaceId, kind, nodeId),
   queueRename: (workspaceId, transactionId, nodeId, newName) => ipcRenderer.invoke('edit:rename', workspaceId, transactionId, nodeId, newName),
   queueDelete: (workspaceId, transactionId, nodeId) => ipcRenderer.invoke('edit:delete', workspaceId, transactionId, nodeId),
   queueSetNamespace: (workspaceId, transactionId, nodeId, newName) => ipcRenderer.invoke('edit:setNamespace', workspaceId, transactionId, nodeId, newName),

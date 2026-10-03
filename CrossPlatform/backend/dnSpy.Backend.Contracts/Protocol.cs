@@ -318,6 +318,14 @@ public static class TypeSigKinds {
 	public const string GenericVar = "genericvar";
 	public const string GenericMVar = "genericmvar";
 	public const string FnPtr = "fnptr";
+
+	/// <summary>
+	/// A slot a dialog has opened but not filled — a generic argument the user has not picked a type for
+	/// yet. Nothing produces one when reading, and one that is written back is rejected rather than
+	/// written: dnSpy's creator likewise refuses to hand over an array of type signatures that is short
+	/// of the count it asked for.
+	/// </summary>
+	public const string Empty = "empty";
 }
 
 /// <summary>
@@ -327,10 +335,15 @@ public static class TypeSigKinds {
 /// <paramref name="Modifier"/> and the type it modifies in <paramref name="Element"/>, which is the
 /// order dnlib's <c>CModOptSig</c>/<c>CModReqdSig</c> take them in.
 /// </summary>
+/// <param name="ValueType">
+/// Whether the type is a value type. A signature that was read says so; a dialog that has nothing but a
+/// name to go on leaves it unset, and the type's own definition decides. Unset is not the same as false,
+/// which is why this is not a plain <see cref="bool"/>.
+/// </param>
 public sealed record TypeSigDto(
 	string Kind,
 	TypeRefDto? Type = null,
-	bool ValueType = false,
+	bool? ValueType = null,
 	TypeSigDto? Element = null,
 	TypeSigDto? Modifier = null,
 	IReadOnlyList<TypeSigDto>? Arguments = null,
