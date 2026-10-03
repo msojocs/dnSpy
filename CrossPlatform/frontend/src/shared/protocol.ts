@@ -22,6 +22,17 @@ export interface OpenWorkspaceResponse {
   stateId: string
 }
 
+/**
+ * The answer to adding assemblies to an already open workspace. `modules` is the full list of what the
+ * workspace holds now, not just what the call added, so a caller can set it straight over its own state.
+ * `skipped` names the requested paths that were already open — a file added twice stays one tree.
+ */
+export interface AddModulesResponse {
+  modules: OpenedModule[]
+  skipped: string[]
+  stateId: string
+}
+
 export interface TreeNode {
   id: string
   label: string
@@ -29,6 +40,12 @@ export interface TreeNode {
   hasChildren: boolean
   description?: string
   icon?: string
+  /**
+   * Module path and metadata token rather than a node id, so it survives a restart — node ids are issued
+   * by a counter in the order nodes are first materialised, and a restored session only has the key to
+   * name a node by. See `SavedSession` in the app store.
+   */
+  key?: string
 }
 
 export interface TreeNodesResponse {
@@ -683,9 +700,23 @@ export interface ScriptEvaluateResponse {
 
 export type UiLocale = 'en' | 'zh-CN'
 
+/** What the process was started with: files named on the command line, and whether the session from the
+ * last run should be left alone (`--no-load-files`). */
+export interface StartupOptions {
+  initialPaths: string[]
+  noLoadFiles: boolean
+}
+
 export interface DnSpyApi {
   openAssemblies(): Promise<string[]>
+  getStartupOptions(): Promise<StartupOptions>
+  /** Narrows a remembered path list to the files still on disk. Used before restoring a session, where
+   * one file that has since been deleted would otherwise fail the whole open. */
+  filterExistingPaths(paths: string[]): Promise<string[]>
   openWorkspace(paths: string[]): Promise<OpenWorkspaceResponse>
+  /** Adds assemblies to the workspace that is already open, the way dnSpy's Open command grows the tree
+   * instead of replacing it. Paths already open come back in `skipped`. */
+  addModules(workspaceId: string, paths: string[]): Promise<AddModulesResponse>
   closeWorkspace(workspaceId: string): Promise<void>
   getRoots(workspaceId: string): Promise<TreeNodesResponse>
   getChildren(workspaceId: string, nodeId: string): Promise<TreeNodesResponse>
@@ -770,7 +801,6 @@ export interface DnSpyApi {
   isFullScreen(): Promise<boolean>
   quit(): Promise<void>
   getBackendStatus(): Promise<BackendStatus>
-  getInitialPaths(): Promise<string[]>
   getProcessId(): Promise<number>
   setLocale(locale: UiLocale): Promise<void>
   onWindowMaximizedChange(callback: (isMaximized: boolean) => void): () => void

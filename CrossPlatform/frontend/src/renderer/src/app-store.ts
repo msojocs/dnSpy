@@ -1,3 +1,4 @@
+import { TabNode, type Model } from 'flexlayout-react'
 import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
@@ -135,6 +136,13 @@ interface AppState {
   loadingNodes: Record<string, boolean>
   selectedNode?: TreeNode
   documents: Record<string, DocumentState>
+  /** The document tabs in the order the layout shows them, and the one that is selected. The shell owns
+   * the layout and reports both here, because a restored session has to put the tabs back as they were. */
+  documentOrder: string[]
+  activeDocumentId?: string
+  /** True while the previous session is being put back. The churn that causes — a workspace arriving,
+   * tabs being rebuilt — is not the user's state and must not be written over the archive. */
+  restoringSession: boolean
   searchResults: SearchResult[]
   references: ReferenceResult[]
   output: string[]
@@ -196,6 +204,12 @@ interface AppState {
   openPaths(paths: string[]): Promise<void>
   closeWorkspace(): Promise<void>
   toggleNode(node: TreeNode): Promise<void>
+  /** Expands a node unconditionally, unlike `toggleNode` which collapses an expanded one. A restore has to
+   * expand nodes that the tree may have expanded on its own, and a toggle there would close them instead. */
+  expandNode(node: TreeNode): Promise<void>
+  /** Materialises a node's children without expanding it, which is how a restore rebuilds the collapsed
+   * branches that hold a restored tab or selection. Does nothing when they are already loaded. */
+  loadChildren(node: TreeNode): Promise<void>
   selectNode(node: TreeNode): void
   /** Collapse every expanded node except the selected node and its ancestors. */
   collapseTreeViewNodes(): void
@@ -270,6 +284,9 @@ interface AppState {
    */
   openNodeById?: (nodeId: string) => Promise<string | undefined>
   setOpenNodeById(open: ((nodeId: string) => Promise<string | undefined>) | undefined): void
+  /** Records the tab order and the selected tab, which the shell reads off the layout it owns. */
+  setDocumentOrder(order: string[], active?: string): void
+  setRestoringSession(value: boolean): void
   /** Brings a tool window to the front. Set by the shell, which owns the layout. */
   openToolWindow?: (tabId: string) => void
   setOpenToolWindow(open: ((tabId: string) => void) | undefined): void
@@ -340,6 +357,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   wordWrap: typeof localStorage === 'undefined' ? false : localStorage.getItem('dnspy.wordWrap') === 'true',
   highlightCurrentLine: typeof localStorage === 'undefined' ? true : localStorage.getItem('dnspy.highlightCurrentLine') !== 'false',
   documents: {},
+  documentOrder: [],
+  restoringSession: false,
   searchResults: [],
   references: [],
   output: [],
@@ -382,8 +401,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ busy: true, error: undefined })
     try {
       const previousWorkspace = get().workspaceId
-      if (previousWorkspace)
-        await window.dnSpy.closeWorkspace(previousWorkspace)
+      if (previousWorkspace) {
+        // dnSpy's Open command grows the tree rather than replacing it, and a file it already has is
+        // selected rather than loaded a second time. Nothing is torn down here: the same workspace
+        // serves both sets of modules, so the node ids the client has cached still name their nodes,
+        // and the tabs, expanded branches and undo stack all stay.
+        const previousModules = get().modules
+        const added = await window.dnSpy.addModules(previousWorkspace, paths)
+        const roots = await window.dnSpy.getRoots(previousWorkspace)
+        set((state) => {
+          const known = new Set(state.roots.map((root) => root.id))
+          return {
+            modules: added.modules,
+            roots: roots.nodes,
+            // The first root that was not there before is the one the user just added.
+            selectedNode: roots.nodes.find((root) => !known.has(root.id)) ?? state.selectedNode,
+            workspaceStateId: added.stateId,
+            savedStateId: added.stateId,
+            recentWorkspaces: rememberWorkspace(added.modules.map((module) => module.path)),
+          }
+        })
+        const count = added.modules.length - previousModules.length
+        get().appendOutput(count === 0
+          ? t('Skipped {count} module(s) that are already open.', { count: added.skipped.length })
+          : t('Opened {count} module(s).', { count }))
+        return
+      }
       const opened = await window.dnSpy.openWorkspace(paths)
       const roots = await window.dnSpy.getRoots(opened.workspaceId)
       set({
@@ -396,6 +439,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         loadingNodes: {},
         selectedNode: roots.nodes[0],
         documents: {},
+        documentOrder: [],
+        activeDocumentId: undefined,
         searchResults: [],
         references: [],
         dirty: false,
@@ -446,11 +491,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({ expanded: { ...state.expanded, [node.id]: false } }))
       return
     }
+    await get().expandNode(node)
+  },
+
+  expandNode: async (node) => {
+    if (!node.hasChildren)
+      return
     set((state) => ({
       expanded: { ...state.expanded, [node.id]: true },
       loadingNodes: { ...state.loadingNodes, [node.id]: !state.children[node.id] },
     }))
-    if (get().children[node.id])
+    await get().loadChildren(node)
+  },
+
+  loadChildren: async (node) => {
+    if (!node.hasChildren || get().children[node.id])
       return
     const workspaceId = get().workspaceId
     if (!workspaceId)
@@ -1288,6 +1343,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOpenNodeById: (open) => set({ openNodeById: open }),
   setOpenToolWindow: (open) => set({ openToolWindow: open }),
 
+  setDocumentOrder: (order, active) => set((state) => (
+    order.length === state.documentOrder.length && order.every((id, index) => id === state.documentOrder[index]) && active === state.activeDocumentId
+      ? state
+      : { documentOrder: order, activeDocumentId: active }
+  )),
+
+  setRestoringSession: (value) => set({ restoringSession: value }),
+
   toggleBookmark: (nodeId, line, column) => {
     const statement = codeStatementAt(get().documents[nodeId]?.codeStatements, line, column)
     // The IL map turns a second click on the same statement into a removal, the way line breakpoints
@@ -1924,6 +1987,225 @@ useAppStore.setState({ bookmarks: loadBookmarks() })
 useAppStore.subscribe((state, previous) => {
   if (state.bookmarks !== previous.bookmarks)
     saveBookmarks(state.bookmarks)
+})
+
+const sessionStorageKey = 'dnspy.session.v1'
+
+/** A node a restored session has to materialise, and whether the user actually had it open. */
+export interface SavedSessionNode {
+  key: string
+  expanded: boolean
+}
+
+export interface SavedSessionDocument {
+  key: string
+  language: DecompilerLanguage
+}
+
+/**
+ * What one run leaves for the next: the assemblies that were open, the branches that held anything
+ * visible, and the tabs in order. Node ids are deliberately absent — they come from a counter in the
+ * order nodes are first materialised, so they mean nothing after a restart. Everything here names a
+ * node by its key instead.
+ */
+export interface SavedSession {
+  version: 1
+  paths: string[]
+  /** Ancestors before descendants, so replaying the list top-down can always materialise a parent first. */
+  nodes: SavedSessionNode[]
+  documents: SavedSessionDocument[]
+  activeDocument?: string
+  selectedNode?: string
+}
+
+/** Expanded nodes this far into a session are beyond anything a person opens by hand; the cut keeps a
+ * pathological tree from filling the store. Ancestors and documents are never dropped to meet it. */
+const MAX_SESSION_NODES = 2000
+
+/** `undefined` rather than an empty session, so the caller can tell "nothing saved" from "saved empty". */
+export function loadSession(): SavedSession | undefined {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(sessionStorageKey) ?? 'null') as Partial<SavedSession> | null
+    if (typeof parsed !== 'object' || parsed === null || parsed.version !== 1)
+      return undefined
+    return {
+      version: 1,
+      paths: Array.isArray(parsed.paths) ? parsed.paths.filter((path): path is string => typeof path === 'string') : [],
+      nodes: Array.isArray(parsed.nodes) ? parsed.nodes.flatMap(toSavedNode) : [],
+      documents: Array.isArray(parsed.documents) ? parsed.documents.flatMap(toSavedDocument) : [],
+      activeDocument: typeof parsed.activeDocument === 'string' ? parsed.activeDocument : undefined,
+      selectedNode: typeof parsed.selectedNode === 'string' ? parsed.selectedNode : undefined,
+    }
+  } catch {
+    // A session that cannot be read is the same as one that was never written; starting clean is the
+    // only sensible answer, and it must not stop the app from starting.
+    return undefined
+  }
+}
+
+const toSavedNode = (value: unknown): SavedSessionNode[] => {
+  const node = value as { key?: unknown; expanded?: unknown } | null
+  return typeof node?.key === 'string' && node.key !== '' ? [{ key: node.key, expanded: node.expanded === true }] : []
+}
+
+const toSavedDocument = (value: unknown): SavedSessionDocument[] => {
+  const document = value as { key?: unknown; language?: unknown } | null
+  if (typeof document?.key !== 'string' || document.key === '')
+    return []
+  const language = document.language
+  return [{
+    key: document.key,
+    language: language === 'visualBasic' || language === 'il' || language === 'ilWithCSharp' ? language : 'cSharp',
+  }]
+}
+
+/** The parts of the state a session is built from, named so the builder can be tested without a store. */
+export type SessionSource = Pick<AppState,
+  'modules' | 'roots' | 'children' | 'parents' | 'expanded' | 'selectedNode' | 'documents' | 'documentOrder' | 'activeDocumentId'>
+
+/**
+ * The session the current state would be restored from. Every node named here — a restored tab, the
+ * selection, an expanded branch — is recorded along with the ancestors above it, since a node cannot
+ * exist after a restart without its parent having been materialised first. The result is sorted by
+ * depth so replaying it in order always finds the parent it needs.
+ */
+export function buildSession(state: SessionSource): SavedSession {
+  const nodesById = new Map<string, TreeNode>()
+  for (const root of state.roots)
+    nodesById.set(root.id, root)
+  for (const list of Object.values(state.children)) {
+    for (const child of list)
+      nodesById.set(child.id, child)
+  }
+
+  // The key a node is recorded under, and the parent above it. Roots have no parent entry, which is
+  // exactly where the walk stops.
+  const parentOf = (node: TreeNode): TreeNode | undefined => {
+    const parentId = state.parents[node.id]
+    return parentId ? nodesById.get(parentId) : undefined
+  }
+  const depthOf = (node: TreeNode): number => {
+    let depth = 0
+    for (let parent = parentOf(node); parent !== undefined; parent = parentOf(parent))
+      depth++
+    return depth
+  }
+
+  const wanted = new Map<string, { node: TreeNode; expanded: boolean; depth: number }>()
+  const include = (node: TreeNode, expanded: boolean): void => {
+    let current: TreeNode | undefined = node
+    let currentExpanded = expanded
+    let depth = depthOf(node)
+    while (current) {
+      const entry = current.key ? wanted.get(current.key) : undefined
+      if (current.key) {
+        if (entry)
+          entry.expanded ||= currentExpanded
+        else
+          wanted.set(current.key, { node: current, expanded: currentExpanded, depth })
+      }
+      // Only the node itself was ever open; the branch that carries it comes back collapsed.
+      currentExpanded = false
+      current = parentOf(current)
+      depth--
+    }
+  }
+
+  if (state.selectedNode)
+    include(state.selectedNode, false)
+  for (const documentId of state.documentOrder) {
+    const node = nodesById.get(documentId)
+    if (node)
+      include(node, false)
+  }
+  let budget = MAX_SESSION_NODES
+  for (const [id, open] of Object.entries(state.expanded)) {
+    const node = open ? nodesById.get(id) : undefined
+    if (!node?.key)
+      continue
+    if (!wanted.has(node.key) && budget-- <= 0)
+      break
+    include(node, true)
+  }
+
+  const activeNode = state.activeDocumentId ? nodesById.get(state.activeDocumentId) : undefined
+  return {
+    version: 1,
+    paths: state.modules.map((module) => module.path),
+    nodes: [...wanted.values()]
+      .sort((left, right) => left.depth - right.depth)
+      .map((entry) => ({ key: entry.node.key as string, expanded: entry.expanded })),
+    documents: state.documentOrder.flatMap((documentId) => {
+      const node = nodesById.get(documentId)
+      return node?.key ? [{ key: node.key, language: state.documents[documentId]?.requestedLanguage ?? 'cSharp' }] : []
+    }),
+    activeDocument: activeNode?.key,
+    selectedNode: state.selectedNode?.key,
+  }
+}
+
+function saveSession(session: SavedSession): void {
+  try {
+    localStorage.setItem(sessionStorageKey, JSON.stringify(session))
+  } catch {
+    // A full or unavailable store must not take a running session down with it.
+  }
+}
+
+/**
+ * The document tabs of a layout in the order they appear, and the selected one, both named by document
+ * id. The shell reports these through `setDocumentOrder` because the layout is the shell's to read.
+ */
+export function orderedDocumentKeys(model: Model): { order: string[]; active?: string } {
+  const order: string[] = []
+  model.visitNodes((node) => {
+    if (!(node instanceof TabNode) || node.getComponent() !== 'document')
+      return
+    const documentId = (node.getConfig() as { documentId?: string } | undefined)?.documentId
+    if (documentId)
+      order.push(documentId)
+  })
+  const selected = model.getActiveTabset()?.getSelectedNode()
+  const active = selected?.getComponent() === 'document'
+    ? (selected.getConfig() as { documentId?: string } | undefined)?.documentId
+    : undefined
+  return { order, active }
+}
+
+/**
+ * Persistence stays off until the startup code has decided what to do with the stored session. Without
+ * that gate the store's own empty state — written the moment the module finishes evaluating — would be
+ * the first thing saved, over the archive it is about to read.
+ */
+let sessionPersistenceEnabled = false
+
+export const enableSessionPersistence = (): void => {
+  sessionPersistenceEnabled = true
+}
+
+// The session has no commit step either, so every change that could survive a restart is written
+// straight away. A restore is the exception: while one is in flight the layout is being rebuilt and
+// none of that half-built state is worth keeping — only the moment it ends is.
+//
+// One archive for one window: a second window would share this localStorage and the two would overwrite
+// each other's session. That matches where the app is today — `window-all-closed` quits on every
+// platform — and a window-scoped key is the change to make if it ever keeps more than one open.
+useAppStore.subscribe((state, previous) => {
+  if (!sessionPersistenceEnabled || state.restoringSession)
+    return
+  const changed = state.workspaceId !== previous.workspaceId
+    || state.modules !== previous.modules
+    || state.roots !== previous.roots
+    || state.children !== previous.children
+    || state.parents !== previous.parents
+    || state.expanded !== previous.expanded
+    || state.selectedNode !== previous.selectedNode
+    || state.documents !== previous.documents
+    || state.documentOrder !== previous.documentOrder
+    || state.activeDocumentId !== previous.activeDocumentId
+    || state.restoringSession !== previous.restoringSession
+  if (changed)
+    saveSession(buildSession(state))
 })
 
 function loadRecentWorkspaces(): string[][] {

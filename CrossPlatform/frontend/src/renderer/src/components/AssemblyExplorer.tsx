@@ -125,13 +125,13 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModu
 export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps): React.JSX.Element => {
   const roots = useAppStore((state) => state.roots)
   const expanded = useAppStore((state) => state.expanded)
-  const toggleNode = useAppStore((state) => state.toggleNode)
+  const expandNode = useAppStore((state) => state.expandNode)
   const { t } = useLanguage()
 
   useEffect(() => {
     for (const root of roots) {
       if (!expanded[root.id])
-        void toggleNode(root)
+        void expandNode(root)
     }
   }, [roots]) // Expanding freshly loaded roots is intentional.
 

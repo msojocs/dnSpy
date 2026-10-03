@@ -12,6 +12,7 @@ public static class RpcMethods {
 	public const string Shutdown = "system/shutdown";
 	public const string Cancel = "system/cancel";
 	public const string WorkspaceOpen = "workspace/open";
+	public const string WorkspaceAddModules = "workspace/addModules";
 	public const string WorkspaceClose = "workspace/close";
 	public const string TreeGetRoots = "tree/getRoots";
 	public const string TreeGetChildren = "tree/getChildren";
@@ -84,6 +85,13 @@ public sealed record OpenWorkspaceRequest(IReadOnlyList<string> Paths);
 
 public sealed record OpenWorkspaceResponse(string WorkspaceId, IReadOnlyList<OpenedModule> Modules, string StateId);
 
+/// <summary>Adds assemblies to a workspace that is already open, the way dnSpy's Open command adds
+/// them to the tree instead of replacing it. Paths that are already open are reported in
+/// <see cref="Skipped"/> rather than loaded twice.</summary>
+public sealed record AddModulesRequest(string WorkspaceId, IReadOnlyList<string> Paths);
+
+public sealed record AddModulesResponse(IReadOnlyList<OpenedModule> Modules, IReadOnlyList<string> Skipped, string StateId);
+
 public sealed record OpenedModule(string Id, string Name, string Path, bool HasPdb);
 
 public sealed record WorkspaceRequest(string WorkspaceId);
@@ -92,13 +100,19 @@ public sealed record NodeRequest(string WorkspaceId, string NodeId);
 
 public sealed record TreeNodesResponse(IReadOnlyList<TreeNodeDto> Nodes);
 
+/// <summary>
+/// <paramref name="Id"/> is a counter value that is issued in the order nodes are first materialised,
+/// so it does not survive a restart. <paramref name="Key"/> does: it is built from the module's path
+/// and the metadata token, which is what a client stores to find the same node in a later session.
+/// </summary>
 public sealed record TreeNodeDto(
 	string Id,
 	string Label,
 	string Kind,
 	bool HasChildren,
 	string? Description = null,
-	string? Icon = null);
+	string? Icon = null,
+	string? Key = null);
 
 public enum DecompilerLanguage {
 	CSharp,

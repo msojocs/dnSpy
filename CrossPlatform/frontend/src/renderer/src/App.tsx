@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
-import type { TreeNode } from '../../shared/protocol'
-import { methodBreakpointName, ownerTypeIdOf, useAppStore } from './app-store'
+import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
+import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, useAppStore, type SavedSession } from './app-store'
 import { clearBookmarks, clearBookmarksInDocument, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from './bookmark-commands'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
@@ -175,6 +175,9 @@ export const App = (): React.JSX.Element => {
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
   const [layoutVersion, forceLayoutUpdate] = useState(0)
   const previousWorkspaceId = useRef<string | undefined | null>(null)
+  // The tabs from the saved layout name document ids from the run that wrote it, so they are torn down
+  // and rebuilt from the restored session instead.
+  const startupHandled = useRef(false)
   const visibleToolWindows = useMemo(() => {
     const visible = new Set<string>()
     for (const id of Object.keys(restorableBorderTabs)) {
@@ -193,7 +196,6 @@ export const App = (): React.JSX.Element => {
     return component === 'document' ? 'code' : component === 'hex' || component === 'module-info' ? component : null
   }, [model, layoutVersion])
   const canShowCode = activeDocument === 'code'
-  const initialPathsHandled = useRef(false)
   // When a Ctrl+K chord stops waiting for its second key, as a timestamp so it needs no timer.
   const bookmarkChord = useRef(0)
   const workspaceId = useAppStore((state) => state.workspaceId)
@@ -228,6 +230,12 @@ export const App = (): React.JSX.Element => {
   const treeChildren = useAppStore((state) => state.children)
   const treeParents = useAppStore((state) => state.parents)
   const openDocument = useAppStore((state) => state.openDocument)
+  const expandNode = useAppStore((state) => state.expandNode)
+  const loadChildren = useAppStore((state) => state.loadChildren)
+  const selectNode = useAppStore((state) => state.selectNode)
+  const setRestoringSession = useAppStore((state) => state.setRestoringSession)
+  const setDocumentOrder = useAppStore((state) => state.setDocumentOrder)
+  const appendOutput = useAppStore((state) => state.appendOutput)
   const setOpenNodeById = useAppStore((state) => state.setOpenNodeById)
   const setOpenToolWindow = useAppStore((state) => state.setOpenToolWindow)
   const bookmarks = useAppStore((state) => state.bookmarks)
@@ -308,15 +316,6 @@ export const App = (): React.JSX.Element => {
     void window.dnSpy.getBackendStatus().then(setBackendStatus)
     return unsubscribe
   }, [setBackendStatus])
-  useEffect(() => {
-    if (backendStatus.state !== 'ready' || initialPathsHandled.current)
-      return
-    initialPathsHandled.current = true
-    void window.dnSpy.getInitialPaths().then((paths) => {
-      if (paths.length > 0)
-        void openPaths(paths)
-    })
-  }, [backendStatus.state, openPaths])
   useEffect(() => window.dnSpy.onDebugEvent((event) => { void handleDebugEvent(event) }), [handleDebugEvent])
 
   useEffect(() => {
@@ -546,11 +545,8 @@ export const App = (): React.JSX.Element => {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveCode, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
-  useEffect(() => {
-    if (previousWorkspaceId.current === workspaceId)
-      return
-    previousWorkspaceId.current = workspaceId
-    setNavigation({ items: [], index: -1 })
+  // Closing the workspace's documents is also the first thing a restore does, so the two share it.
+  const closeDocumentTabs = (): void => {
     const tabsToClose: string[] = []
     model.visitNodes((node) => {
       if (node instanceof TabNode && ['document', 'hex', 'module-info'].includes(node.getComponent() ?? ''))
@@ -558,10 +554,25 @@ export const App = (): React.JSX.Element => {
     })
     for (const tabId of tabsToClose)
       model.doAction(Actions.deleteTab(tabId))
+  }
+
+  const showStartTab = (): void => {
     const targetTabSet = getTargetDocumentTabSet(model)
-    if (!model.getNodeById('start') && targetTabSet) {
+    if (!model.getNodeById('start') && targetTabSet)
       model.doAction(Actions.addNode({ type: 'tab', id: 'start', name: t('Start'), component: 'start', enableClose: false }, targetTabSet.getId(), DockLocation.CENTER, -1, true))
-    }
+  }
+
+  useEffect(() => {
+    if (previousWorkspaceId.current === workspaceId)
+      return
+    previousWorkspaceId.current = workspaceId
+    setNavigation({ items: [], index: -1 })
+    // A restore opens the workspace itself, and the tabs it puts back are the ones this would otherwise
+    // delete a moment later; it clears the stale ones and adds Start where it needs them.
+    if (useAppStore.getState().restoringSession)
+      return
+    closeDocumentTabs()
+    showStartTab()
     forceLayoutUpdate((value) => value + 1)
   }, [model, workspaceId, t])
 
@@ -576,7 +587,7 @@ export const App = (): React.JSX.Element => {
     return () => window.removeEventListener('beforeunload', beforeUnload)
   }, [dirty])
 
-  const addDocumentTab = async (node: TreeNode, recordHistory = true): Promise<void> => {
+  const addDocumentTab = async (node: TreeNode, recordHistory = true, language?: DecompilerLanguage): Promise<void> => {
     if (recordHistory) {
       setNavigation((current) => {
         if (current.items[current.index]?.id === node.id)
@@ -585,7 +596,7 @@ export const App = (): React.JSX.Element => {
         return { items, index: items.length - 1 }
       })
     }
-    const documentId = await openDocument(node)
+    const documentId = await openDocument(node, language)
     const tabId = `doc:${documentId}`
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
@@ -603,6 +614,83 @@ export const App = (): React.JSX.Element => {
         model.doAction(Actions.deleteTab('start'))
     }
     forceLayoutUpdate((value) => value + 1)
+  }
+
+  // Where the previous session comes back. Every node the saved session names is looked up by key —
+  // walking down from the roots, materialising each branch on the way, because only the module roots
+  // exist after a restart — and whatever no longer resolves is passed over so the rest still restores.
+  const restoreSession = async (session: SavedSession): Promise<void> => {
+    if (session.paths.length === 0)
+      return
+    setRestoringSession(true)
+    try {
+      // The saved layout still holds tabs from the run that wrote it, named by document ids that died
+      // with it. They are rebuilt from the session below instead.
+      closeDocumentTabs()
+      const paths = await window.dnSpy.filterExistingPaths(session.paths)
+      if (paths.length < session.paths.length)
+        appendOutput(t('{count} file(s) from the previous session are no longer on disk.', { count: session.paths.length - paths.length }))
+      if (paths.length === 0) {
+        showStartTab()
+        forceLayoutUpdate((value) => value + 1)
+        return
+      }
+      await openPaths(paths)
+      if (!useAppStore.getState().workspaceId)
+        return // openPaths has already reported why
+      const byKey = new Map<string, TreeNode>()
+      for (const root of useAppStore.getState().roots) {
+        if (root.key)
+          byKey.set(root.key, root)
+      }
+      for (const reference of session.nodes) {
+        const node = byKey.get(reference.key)
+        if (!node)
+          continue
+        // The list is ordered parents-first, so a node it names has its parent already in the map.
+        // Expanding is not a toggle here: the explorer expands every fresh root on its own, and a
+        // toggle would close the root it just opened.
+        if (reference.expanded)
+          await expandNode(node)
+        else
+          await loadChildren(node)
+        for (const child of useAppStore.getState().children[node.id] ?? []) {
+          if (child.key)
+            byKey.set(child.key, child)
+        }
+      }
+      const selected = session.selectedNode ? byKey.get(session.selectedNode) : undefined
+      if (selected)
+        selectNode(selected)
+      let restoredDocuments = 0
+      for (const document of session.documents) {
+        const node = byKey.get(document.key)
+        if (!node)
+          continue
+        await addDocumentTab(node, false, document.language)
+        restoredDocuments++
+      }
+      // Opening a document takes the Start tab away, so one only comes back when nothing was restored
+      // to take its place.
+      if (restoredDocuments === 0)
+        showStartTab()
+      const active = session.activeDocument ? byKey.get(session.activeDocument) : undefined
+      if (active) {
+        model.doAction(Actions.selectTab(`doc:${active.id}`))
+        forceLayoutUpdate((value) => value + 1)
+      }
+      appendOutput(t('Restored the previous session.'))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      appendOutput(t('Could not restore the previous session: {message}', { message }))
+      showStartTab()
+      forceLayoutUpdate((value) => value + 1)
+    } finally {
+      // Enabled before the flag drops: the change that ends the restore is the one write that captures
+      // everything it put back.
+      enableSessionPersistence()
+      setRestoringSession(false)
+    }
   }
 
   const openNodeId = async (nodeId: string): Promise<void> => {
@@ -631,8 +719,8 @@ export const App = (): React.JSX.Element => {
 
   // The store cannot open tabs or tool windows itself, so it calls back into the shell. Handlers are
   // read through a ref because both close over the current workspace and layout.
-  const shellCallbacksRef = useRef({ openBookmarkTarget, showBorderTab })
-  shellCallbacksRef.current = { openBookmarkTarget, showBorderTab }
+  const shellCallbacksRef = useRef({ openBookmarkTarget, showBorderTab, restoreSession })
+  shellCallbacksRef.current = { openBookmarkTarget, showBorderTab, restoreSession }
   useEffect(() => {
     setOpenNodeById((nodeId) => shellCallbacksRef.current.openBookmarkTarget(nodeId))
     setOpenToolWindow((tabId) => shellCallbacksRef.current.showBorderTab(tabId))
@@ -641,6 +729,32 @@ export const App = (): React.JSX.Element => {
       setOpenToolWindow(undefined)
     }
   }, [setOpenNodeById, setOpenToolWindow])
+
+  // The one place the previous session comes back. It runs once the backend can answer, and puts the
+  // assemblies, the branches, the tabs and the selection back before anything else looks at the state.
+  // Files named on the command line are opened afterwards, which — because Open appends — grows the
+  // restored tree exactly the way the same command behaves in a running window.
+  useEffect(() => {
+    if (backendStatus.state !== 'ready' || startupHandled.current)
+      return
+    startupHandled.current = true
+    void (async () => {
+      const options = await window.dnSpy.getStartupOptions()
+      const session = options.noLoadFiles ? undefined : loadSession()
+      if (session && session.paths.length > 0) {
+        await shellCallbacksRef.current.restoreSession(session)
+      } else {
+        // Nothing comes back: the tabs the saved layout still holds name documents from a run that is
+        // over, so the window starts on a clean page rather than on tabs that lead nowhere.
+        closeDocumentTabs()
+        showStartTab()
+        forceLayoutUpdate((value) => value + 1)
+      }
+      enableSessionPersistence()
+      if (options.initialPaths.length > 0)
+        await openPaths(options.initialPaths)
+    })()
+  }, [backendStatus.state, openPaths])
 
   const goBack = (): void => {
     if (navigation.index <= 0) return
@@ -871,6 +985,10 @@ export const App = (): React.JSX.Element => {
           factory={factory}
           onModelChange={(nextModel) => {
             localStorage.setItem('dnspy.layout.v1', JSON.stringify(nextModel.toJson()))
+            // Every layout change comes through here, which makes it the one place that knows the tab
+            // order — and the tab order is part of the session the next run restores.
+            const { order, active } = orderedDocumentKeys(nextModel)
+            setDocumentOrder(order, active)
             forceLayoutUpdate((value) => value + 1)
           }}
           onContextMenu={(node, event) => {

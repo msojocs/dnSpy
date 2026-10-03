@@ -12,20 +12,30 @@ let importBookmarksPath: string
 const contractsAssemblyPath = path.resolve(import.meta.dirname, '../../../backend/dnSpy.Backend.Contracts/bin/Debug/net10.0/dnSpy.Backend.Contracts.dll')
 const debugTargetPath = path.resolve(import.meta.dirname, '../../../backend/tests/DebugTarget/bin/Debug/net10.0/DebugTarget.dll')
 
+// A session only survives if the profile does, so a restore test launches twice against one directory
+// rather than letting every launch start from a fresh one.
+interface LaunchOptions {
+  userDataDirectory?: string
+  extraArgs?: string[]
+  /** What the assembly picker hands back from its second call on. Lets a test open a different file. */
+  secondAssembly?: string
+}
+
 // The environment decides what the Open Assembly button hands back. A debug test opens the debuggee itself,
 // because the in-process engine turns a decompiled line into an IL offset through the module's statement map
 // and that map only exists for an assembly the workspace has decompiled.
-const launchApp = async (assemblies: string): Promise<void> => {
-  userDataDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-'))
+const launchApp = async (assemblies: string, options: LaunchOptions = {}): Promise<void> => {
+  userDataDirectory = options.userDataDirectory ?? mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-'))
   savePath = path.join(userDataDirectory, 'saved-module.dll')
   saveCodePath = path.join(userDataDirectory, 'saved-code.cs')
   importBookmarksPath = path.join(userDataDirectory, 'bookmarks-to-import.json')
   application = await electron.launch({
-    args: ['.', '--no-sandbox', `--user-data-dir=${userDataDirectory}`],
+    args: ['.', '--no-sandbox', `--user-data-dir=${userDataDirectory}`, ...(options.extraArgs ?? [])],
     cwd: path.resolve(import.meta.dirname, '../..'),
     env: {
       ...process.env,
       DNSPY_E2E_ASSEMBLY: assemblies,
+      ...(options.secondAssembly ? { DNSPY_E2E_SECOND_ASSEMBLY: options.secondAssembly } : {}),
       DNSPY_E2E_DEBUG_TARGET: debugTargetPath,
       DNSPY_E2E_SAVE_PATH: savePath,
       DNSPY_E2E_SAVE_CODE_PATH: saveCodePath,
@@ -37,9 +47,10 @@ const launchApp = async (assemblies: string): Promise<void> => {
   await page.waitForLoadState('domcontentloaded')
 }
 
-const closeApp = async (): Promise<void> => {
+const closeApp = async (options: { keepUserData?: boolean } = {}): Promise<void> => {
   await application.close()
-  rmSync(userDataDirectory, { recursive: true, force: true })
+  if (!options.keepUserData)
+    rmSync(userDataDirectory, { recursive: true, force: true })
 }
 
 const openAssemblyAndNamespace = async (): Promise<void> => {
@@ -55,7 +66,7 @@ const openAssemblyAndNamespace = async (): Promise<void> => {
 
 test.describe('the workspace shell', () => {
   test.beforeEach(async () => { await launchApp(contractsAssemblyPath) })
-  test.afterEach(closeApp)
+  test.afterEach(async () => { await closeApp() })
 
   test('starts the backend and renders the upstream-style shell', async () => {
     await expect(page.getByRole('menubar')).toBeVisible()
@@ -779,7 +790,7 @@ test.describe('the workspace shell', () => {
 // both through the workspace's decompiled statement map rather than through PDBs on disk.
 test.describe('the in-process debug engine', () => {
   test.beforeEach(async () => { await launchApp(debugTargetPath) })
-  test.afterEach(closeApp)
+  test.afterEach(async () => { await closeApp() })
 
   const openDebugTarget = async (): Promise<void> => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
@@ -1042,5 +1053,111 @@ test.describe('the in-process debug engine', () => {
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
     await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
+  })
+})
+
+// Opening a second file adds it to what is already there, the way the original does, instead of throwing
+// the workspace away. The picker answers with a different assembly from its second call on, which is also
+// how the same file gets picked twice below.
+test.describe('opening more than one assembly', () => {
+  test.beforeEach(async () => { await launchApp(contractsAssemblyPath, { secondAssembly: debugTargetPath }) })
+  test.afterEach(async () => { await closeApp() })
+
+  test('appends to the tree and leaves what was open alone', async () => {
+    await openAssemblyAndNamespace()
+    await openHelloRequest()
+
+    await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+
+    const modules = page.locator('.tree-row[data-kind="module"]')
+    await expect(modules).toHaveCount(2)
+    await expect(modules.nth(0)).toContainText('dnSpy.Backend.Contracts')
+    await expect(modules.nth(1)).toContainText('DebugTarget')
+    // Everything the first file had brought up is still there: the branch the user expanded, and the tab.
+    await expect(page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })).toBeVisible()
+
+    // A file that is already open is reported as such, and adds nothing a second time.
+    await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+    await expect(modules).toHaveCount(2)
+    await expect(page.getByRole('tabpanel', { name: 'Output' })).toContainText('already open')
+  })
+})
+
+// Double-clicking a type row is how every other test opens a document; this is that, named for what the
+// session tests do with it.
+const openHelloRequest = async (): Promise<void> => {
+  const typeRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
+  await expect(typeRow).toBeVisible()
+  await typeRow.dblclick()
+  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })).toBeVisible()
+}
+
+const storedSession = async (): Promise<{
+  paths: string[]
+  nodes: { key: string; expanded: boolean }[]
+  documents: { key: string; language: string }[]
+  activeDocument?: string
+  selectedNode?: string
+} | null> => await page.evaluate(() => JSON.parse(localStorage.getItem('dnspy.session.v1') ?? 'null'))
+
+// The three launches share one profile directory: that directory is the only thing that carries a
+// session from one run to the next, so they cannot be independent tests. Serial mode keeps them in
+// order and skips the rest once one fails, rather than restoring from a state that was never written.
+test.describe('the session a run leaves behind', () => {
+  test.describe.configure({ mode: 'serial', timeout: 60_000 })
+  const profileDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-session-'))
+
+  test.afterAll(async () => {
+    await application?.close().catch(() => undefined)
+    rmSync(profileDirectory, { recursive: true, force: true })
+  })
+
+  test('is written while the window is used', async () => {
+    await launchApp(contractsAssemblyPath, { userDataDirectory: profileDirectory })
+    await openAssemblyAndNamespace()
+    await openHelloRequest()
+
+    const session = await storedSession()
+    expect(session?.paths).toEqual([contractsAssemblyPath])
+    // The module root and the namespace the user opened are both recorded, the namespace as expanded.
+    expect(session?.nodes).toContainEqual({ key: `module:${contractsAssemblyPath}`, expanded: true })
+    expect(session?.nodes.some((node) => node.key.includes(':namespace:dnSpy.Backend.Contracts') && node.expanded)).toBe(true)
+    expect(session?.documents).toHaveLength(1)
+    expect(session?.documents[0]).toEqual({ key: session?.selectedNode, language: 'cSharp' })
+    expect(session?.activeDocument).toBe(session?.selectedNode)
+
+    await closeApp({ keepUserData: true })
+  })
+
+  test('comes back on the next launch, without being asked to open anything', async () => {
+    await launchApp(contractsAssemblyPath, { userDataDirectory: profileDirectory })
+
+    // No Open command is issued: the tree, its expansion, the tab and the selection all arrive from the
+    // session. The namespace being expanded is what proves the branch was rebuilt rather than reopened.
+    await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+    const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
+    await expect(namespaceRow).toHaveAttribute('aria-expanded', 'true')
+
+    const tab = page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })
+    await expect(tab).toHaveAttribute('aria-selected', 'true')
+    const typeRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ })
+    await expect(typeRow).toHaveAttribute('aria-selected', 'true')
+
+    await closeApp({ keepUserData: true })
+  })
+
+  test('is left where it is when the app is told not to load any files', async () => {
+    await launchApp(contractsAssemblyPath, { userDataDirectory: profileDirectory, extraArgs: ['--no-load-files'] })
+    await expect(page.getByText('Ready', { exact: true })).toBeVisible()
+
+    // The saved layout still names the previous document, but nothing brings it back: the window starts
+    // on an empty tree and a Start page, and the stored session is still there for a launch without the
+    // flag.
+    await expect(page.locator('.tree-row')).toHaveCount(0)
+    await expect(page.getByRole('tab', { name: 'Start' })).toBeVisible()
+    expect((await storedSession())?.paths).toEqual([contractsAssemblyPath])
+
+    await closeApp()
   })
 })

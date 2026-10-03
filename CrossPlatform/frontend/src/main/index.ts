@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
@@ -11,6 +12,8 @@ let dialogPathHistory: DialogPathHistory | undefined
 let lastBackendStatus: BackendStatus = { state: 'starting' }
 let uiLocale: UiLocale = 'en'
 const initialPaths = parseInitialPaths(process.argv)
+// dnSpy spells it `--dont-load-files`; both are accepted so a script written against either works.
+const noLoadFiles = process.argv.includes('--no-load-files') || process.argv.includes('--dont-load-files')
 
 const nativeMessages = {
   'zh-CN': {
@@ -158,6 +161,19 @@ const contentTypeFor = (filePath: string): string => {
   }
 }
 
+/**
+ * Chromium commits localStorage to disk on its own schedule, so the session saved just before the
+ * window went away can still be sitting in memory when the process ends. Without this the last state
+ * of every run — which is the only state a restore ever reads — is the one that gets lost.
+ */
+function flushSessionStorage(): void {
+  try {
+    session.defaultSession.flushStorageData()
+  } catch {
+    // Storage is not reachable once the session is torn down; quitting must not be held up by it.
+  }
+}
+
 function parseInitialPaths(args: string[]): string[] {
   const paths: string[] = []
   for (let index = 0; index < args.length; index++) {
@@ -174,9 +190,16 @@ const requireBackend = (): BackendClient => {
 }
 
 const registerIpc = (): void => {
+  // The assembly picker answers with the same file every time, so a test that wants a second, different
+  // file — which is what shows an open appending to the tree — needs a counter to tell the picks apart.
+  let openAssembliesCalls = 0
   ipcMain.handle('dialog:openAssemblies', async () => {
-    if (!app.isPackaged && process.env.DNSPY_E2E_ASSEMBLY)
+    if (!app.isPackaged && process.env.DNSPY_E2E_ASSEMBLY) {
+      const second = process.env.DNSPY_E2E_SECOND_ASSEMBLY
+      if (second && openAssembliesCalls++ > 0)
+        return second.split(path.delimiter).filter(Boolean)
       return process.env.DNSPY_E2E_ASSEMBLY.split(path.delimiter).filter(Boolean)
+    }
     const result = await dialog.showOpenDialog(mainWindow!, {
       title: nativeText().openAssembly,
       defaultPath: dialogPathHistory?.openDirectory,
@@ -192,6 +215,7 @@ const registerIpc = (): void => {
     return result.filePaths
   })
   ipcMain.handle('workspace:open', (_event, paths: string[]) => requireBackend().invoke('workspace/open', { paths }))
+  ipcMain.handle('workspace:addModules', (_event, workspaceId: string, paths: string[]) => requireBackend().invoke('workspace/addModules', { workspaceId, paths }))
   ipcMain.handle('workspace:close', (_event, workspaceId: string) => requireBackend().invoke('workspace/close', { workspaceId }))
   ipcMain.handle('tree:roots', (_event, workspaceId: string) => requireBackend().invoke('tree/getRoots', { workspaceId }))
   ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }))
@@ -401,7 +425,8 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('window:isFullScreen', (event) => BrowserWindow.fromWebContents(event.sender)?.isFullScreen() ?? false)
   ipcMain.handle('backend:status:get', () => lastBackendStatus)
-  ipcMain.handle('app:initialPaths', () => initialPaths)
+  ipcMain.handle('app:startupOptions', () => ({ initialPaths, noLoadFiles }))
+  ipcMain.handle('app:filterExistingPaths', (_event, paths: string[]) => paths.filter((candidate) => existsSync(candidate)))
   ipcMain.handle('app:processId', () => process.pid)
   ipcMain.handle('app:setLocale', (_event, locale: UiLocale) => {
     if (locale === 'en' || locale === 'zh-CN')
@@ -431,8 +456,12 @@ app.on('activate', () => {
     createWindow()
 })
 
-app.on('window-all-closed', () => app.quit())
+app.on('window-all-closed', () => {
+  flushSessionStorage()
+  app.quit()
+})
 
 app.on('before-quit', () => {
+  flushSessionStorage()
   void backend?.dispose()
 })

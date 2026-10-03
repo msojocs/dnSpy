@@ -57,6 +57,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 	}
 
+	public Task<AddModulesResponse> AddModulesAsync(AddModulesRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.AddModulesAsync(request, cancellationToken), cancellationToken);
+
 	public void Close(WorkspaceRequest request) {
 		if (workspaces.TryRemove(request.WorkspaceId, out var workspace))
 			workspace.Dispose();
@@ -809,22 +812,59 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public string Id { get; }
 
 		public async Task OpenAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken) {
+			await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
+			if (modules.Count == 0)
+				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
+		}
+
+		/// <summary>
+		/// Loads the modules of a path list that are not open yet and returns them. A path already open is
+		/// left alone, the way dnSpy's drop handler skips a file it already has, so the same list can be
+		/// offered twice without producing two trees. Loading nothing is not an error here: the Open command
+		/// raises one instead, while adding to an open workspace is content to have had nothing to do.
+		/// </summary>
+		public async Task<IReadOnlyList<ModuleEntry>> LoadModulesAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken) {
+			var added = new List<ModuleEntry>();
 			foreach (var path in paths) {
 				cancellationToken.ThrowIfCancellationRequested();
+				var fullPath = Path.GetFullPath(path);
+				if (FindModuleEntry(fullPath) is not null)
+					continue;
 				ModuleDefMD module;
 				try {
-					module = await Task.Run(() => ModuleDefMD.Load(path), cancellationToken).ConfigureAwait(false);
+					module = await Task.Run(() => ModuleDefMD.Load(fullPath), cancellationToken).ConfigureAwait(false);
 				}
 				catch (BadImageFormatException) when (paths.Count > 1) {
 					continue;
 				}
-				var entry = new ModuleEntry(path, module);
-				var root = GetOrAddNode($"module:{path}", NodeKind.Module, module, entry);
+				var entry = new ModuleEntry(fullPath, module);
+				var root = GetOrAddNode($"module:{fullPath}", NodeKind.Module, module, entry);
 				entry.Id = root.Id;
 				modules.Add(entry.Id, entry);
+				added.Add(entry);
 			}
-			if (modules.Count == 0)
+			return added;
+		}
+
+		/// <summary>
+		/// Adds assemblies to an open workspace, the way dnSpy's Open command adds them to the tree rather
+		/// than replacing it. The paths that were already open come back in the response so the caller can
+		/// say so; a request that names only open files succeeds, and one that names no managed file at all
+		/// is rejected like the Open command.
+		/// </summary>
+		public async Task<AddModulesResponse> AddModulesAsync(AddModulesRequest request, CancellationToken cancellationToken) {
+			var paths = ExpandPaths(request.Paths);
+			var skipped = paths.Where(path => FindModuleEntry(path) is not null).ToArray();
+			IReadOnlyList<ModuleEntry> added;
+			try {
+				added = await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
+			}
+			catch (BadImageFormatException) {
 				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
+			}
+			if (added.Count == 0 && skipped.Length == 0)
+				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
+			return new AddModulesResponse(CreateOpenResponse().Modules, skipped, stateId);
 		}
 
 		public OpenWorkspaceResponse CreateOpenResponse() => new(
@@ -1046,7 +1086,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		IReadOnlyList<NodeEntry> GetResourceChildren(NodeEntry node) => ((ModuleDefMD)node.Value)
 			.Resources
 			.OrderBy(r => r.Name.String, StringComparer.OrdinalIgnoreCase)
-			.Select((r, index) => GetOrAddNode($"resource:{node.Module.Id}:{index}:{r.Name}", NodeKind.Resource, r, node.Module))
+			.Select((r, index) => GetOrAddNode($"resource:{node.Module.Path}:{index}:{r.Name}", NodeKind.Resource, r, node.Module))
 			.ToArray();
 
 		IReadOnlyList<NodeEntry> GetEmbeddedResourceChildren(NodeEntry node) {
@@ -1063,7 +1103,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 			return values
 				.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
-				.Select(value => GetOrAddNode($"resource-entry:{node.Module.Id}:{embedded.Name}:{value.Name}", NodeKind.ResourceEntry, value, node.Module))
+				.Select(value => GetOrAddNode($"resource-entry:{node.Module.Path}:{embedded.Name}:{value.Name}", NodeKind.ResourceEntry, value, node.Module))
 				.ToArray();
 		}
 
@@ -2481,7 +2521,8 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			node.Kind.ToString().ToLowerInvariant(),
 			HasChildren(node),
 			GetDescription(node),
-			GetIcon(node));
+			GetIcon(node),
+			node.Key);
 
 		static string GetLabel(NodeEntry node) => node.Kind switch {
 			NodeKind.Module => ((ModuleDefMD)node.Value).Assembly?.Name.String ?? ((ModuleDefMD)node.Value).Name.String,

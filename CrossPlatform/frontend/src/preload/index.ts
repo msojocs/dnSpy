@@ -3,7 +3,10 @@ import type { BackendStatus, DecompilerLanguage, DnSpyApi, UiLocale } from '../s
 
 const api: DnSpyApi = {
   openAssemblies: () => ipcRenderer.invoke('dialog:openAssemblies'),
+  getStartupOptions: () => ipcRenderer.invoke('app:startupOptions'),
+  filterExistingPaths: (paths) => ipcRenderer.invoke('app:filterExistingPaths', paths),
   openWorkspace: (paths) => ipcRenderer.invoke('workspace:open', paths),
+  addModules: (workspaceId, paths) => ipcRenderer.invoke('workspace:addModules', workspaceId, paths),
   closeWorkspace: (workspaceId) => ipcRenderer.invoke('workspace:close', workspaceId),
   getRoots: (workspaceId) => ipcRenderer.invoke('tree:roots', workspaceId),
   getChildren: (workspaceId, nodeId) => ipcRenderer.invoke('tree:children', workspaceId, nodeId),
@@ -71,7 +74,6 @@ const api: DnSpyApi = {
   isFullScreen: () => ipcRenderer.invoke('window:isFullScreen'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getBackendStatus: () => ipcRenderer.invoke('backend:status:get'),
-  getInitialPaths: () => ipcRenderer.invoke('app:initialPaths'),
   getProcessId: () => ipcRenderer.invoke('app:processId'),
   setLocale: (locale: UiLocale) => ipcRenderer.invoke('app:setLocale', locale),
   onWindowMaximizedChange: (callback) => {

@@ -158,6 +158,8 @@ internal sealed class JsonRpcServer {
 				return new { acknowledged = true };
 			case RpcMethods.WorkspaceOpen:
 				return await workspaces.OpenAsync(DeserializeParams<OpenWorkspaceRequest>(request), cancellationToken).ConfigureAwait(false);
+			case RpcMethods.WorkspaceAddModules:
+				return await workspaces.AddModulesAsync(DeserializeParams<AddModulesRequest>(request), cancellationToken).ConfigureAwait(false);
 			case RpcMethods.WorkspaceClose:
 				workspaces.Close(DeserializeParams<WorkspaceRequest>(request));
 				return new { closed = true };

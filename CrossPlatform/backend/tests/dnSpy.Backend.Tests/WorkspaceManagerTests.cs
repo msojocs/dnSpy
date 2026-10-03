@@ -1289,6 +1289,109 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Null((await Find(path, 0)).NodeId);
 	}
 
+	[Fact]
+	public async Task AddModules_AppendsToTheOpenWorkspaceWithoutDisturbingIt() {
+		var opened = await OpenContractsAssemblyAsync();
+		var getter = await FindRpcExceptionGetterAsync(opened.WorkspaceId);
+
+		var added = await manager.AddModulesAsync(
+			new AddModulesRequest(opened.WorkspaceId, [typeof(WorkspaceManagerTests).Assembly.Location]),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(2, added.Modules.Count);
+		Assert.Empty(added.Skipped);
+		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		Assert.Equal(2, roots.Nodes.Count);
+
+		// The whole append design rests on the workspace instance being reused, so every node id it has
+		// already handed out — and every id a client cached — still names the same node.
+		var stillThere = await manager.GetNodeAsync(new NodeRequest(opened.WorkspaceId, getter.Id), TestContext.Current.CancellationToken);
+		Assert.Equal(getter.Id, stillThere.Id);
+		Assert.Equal(getter.Label, stillThere.Label);
+	}
+
+	[Fact]
+	public async Task AddModules_SkipsFilesThatAreAlreadyOpen() {
+		var opened = await OpenContractsAssemblyAsync();
+		var path = opened.Modules[0].Path;
+
+		var added = await manager.AddModulesAsync(
+			new AddModulesRequest(opened.WorkspaceId, [path]),
+			TestContext.Current.CancellationToken);
+
+		// Adding a file twice is what dnSpy's drop handler is careful to avoid: it selects what is already
+		// there rather than growing a second tree, so the answer is the file as skipped and no new module.
+		Assert.Equal([path], added.Skipped);
+		Assert.Single(added.Modules);
+		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		Assert.Single(roots.Nodes);
+	}
+
+	[Fact]
+	public async Task AddModules_RejectsWhatTheOpenCommandWouldReject() {
+		var opened = await OpenContractsAssemblyAsync();
+		var missing = Path.Combine(Path.GetDirectoryName(opened.Modules[0].Path)!, "Missing.dll");
+
+		var notFound = await Assert.ThrowsAsync<RpcException>(() => manager.AddModulesAsync(
+			new AddModulesRequest(opened.WorkspaceId, [missing]),
+			TestContext.Current.CancellationToken));
+		Assert.Equal(ErrorCodes.FileNotFound, notFound.Code);
+
+		var junkPath = Path.Combine(Path.GetTempPath(), $"dnspy-not-an-assembly-{Guid.NewGuid():N}.dll");
+		await File.WriteAllTextAsync(junkPath, "not a managed assembly", TestContext.Current.CancellationToken);
+		try {
+			var badImage = await Assert.ThrowsAsync<RpcException>(() => manager.AddModulesAsync(
+				new AddModulesRequest(opened.WorkspaceId, [junkPath]),
+				TestContext.Current.CancellationToken));
+			Assert.Equal(ErrorCodes.InvalidParams, badImage.Code);
+		}
+		finally {
+			File.Delete(junkPath);
+		}
+	}
+
+	/// <summary>
+	/// A node id is a counter value issued in the order nodes are materialised, so it cannot be stored
+	/// across sessions; the key that travels with it can. This is the regression test for that property:
+	/// a key that quietly picked up a node id — as the resource keys once did — would fail here.
+	/// </summary>
+	[Fact]
+	public async Task NodeKeys_AreStableAcrossReopeningTheSameFiles() {
+		var before = await CollectKeysAsync();
+		var after = await CollectKeysAsync();
+		Assert.Equal(before, after);
+
+		async Task<string[]> CollectKeysAsync() {
+			var target = Path.GetFullPath(Path.Combine(
+				AppContext.BaseDirectory,
+				"..", "..", "..", "..", "BamlTarget", "bin", TestConfiguration, "net10.0-windows", "BamlTarget.dll"));
+			Assert.True(File.Exists(target), $"BAML fixture was not built: {target}");
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([typeof(HelloRequest).Assembly.Location, target]), TestContext.Current.CancellationToken);
+			try {
+				var keys = new List<string>();
+				var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+				foreach (var root in roots.Nodes) {
+					keys.Add(root.Key!);
+					var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, root.Id), TestContext.Current.CancellationToken);
+					foreach (var child in moduleChildren.Nodes) {
+						keys.Add(child.Key!);
+						// One level further covers the shapes that are not built from the module path alone:
+						// namespaces, the references group, and — through the resources group — resources.
+						var grandchildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, child.Id), TestContext.Current.CancellationToken);
+						keys.AddRange(grandchildren.Nodes.Select(node => node.Key!));
+					}
+				}
+				// A resource node is what the key stability of the resources tree turns on, and the fixture
+				// has one; without it this test could pass while the resource keys still embedded an id.
+				Assert.Contains(keys, key => key.StartsWith("resource:", StringComparison.Ordinal));
+				return [.. keys];
+			}
+			finally {
+				manager.Close(new WorkspaceRequest(opened.WorkspaceId));
+			}
+		}
+	}
+
 	/// <summary>Opens the debuggee and decompiles one of its method nodes, for the state machine tests.</summary>
 	async Task<(string Path, OpenWorkspaceResponse Opened, TreeNodeDto Node, DecompileResponse Document)> OpenMethodDocumentAsync(string memberLabel) {
 		var path = Path.Combine(AppContext.BaseDirectory, "DebugTarget.dll");

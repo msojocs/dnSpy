@@ -1,7 +1,8 @@
+import { Actions, Model } from 'flexlayout-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodeStatement, DebugBreakpoint, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
-import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, bytesToHex, codeStatementAt, filterBookmarks, lineBreakpointMarkers, methodBreakpointName, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
-import type { Bookmark, LineBreakpoint } from './app-store'
+import type { CodeStatement, DebugBreakpoint, DecompilerLanguage, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
+import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
+import type { Bookmark, DocumentState, LineBreakpoint, SessionSource } from './app-store'
 import { translate } from './localization'
 
 describe('suggestCodeFilename', () => {
@@ -1202,5 +1203,311 @@ describe('hex editor commands', () => {
 
     expect(useAppStore.getState().hexNavigation).toMatchObject({ moduleId: 'mod1', offset: 0x200, length: 3 })
     expect(useAppStore.getState().hexNavigation!.nonce).not.toBe(first!.nonce)
+  })
+})
+
+const treeNode = (id: string, key: string, extra: Partial<TreeNode> = {}): TreeNode => ({
+  id,
+  label: id,
+  kind: 'type',
+  hasChildren: true,
+  key,
+  ...extra,
+})
+
+const moduleNode = (id: string, path: string): TreeNode => treeNode(id, `module:${path}`, { label: path, kind: 'module' })
+
+const openedModule = (id: string, path: string) => ({ id, name: path, path, hasPdb: false })
+
+const documentState = (nodeId: string, requestedLanguage: DecompilerLanguage = 'cSharp'): DocumentState => ({
+  title: nodeId,
+  language: 'csharp',
+  text: '',
+  spans: [],
+  diagnostics: [],
+  nodeId,
+  loading: false,
+  requestedLanguage,
+})
+
+describe('openPaths', () => {
+  const rootA = moduleNode('n1', '/A.dll')
+  const rootB = moduleNode('n2', '/B.dll')
+  const member = treeNode('n3', 'module:/A.dll:type:1', { label: 'Type' })
+  const openWorkspace = vi.fn()
+  const addModules = vi.fn()
+  const closeWorkspace = vi.fn(async () => undefined)
+  const getRoots = vi.fn()
+  const getChildren = vi.fn()
+
+  beforeEach(() => {
+    openWorkspace.mockReset().mockResolvedValue({ workspaceId: 'w1', modules: [openedModule('n1', '/A.dll')], stateId: 's1' })
+    addModules.mockReset().mockResolvedValue({ modules: [openedModule('n1', '/A.dll'), openedModule('n2', '/B.dll')], skipped: [], stateId: 's2' })
+    closeWorkspace.mockClear()
+    getRoots.mockReset().mockResolvedValue({ nodes: [rootA, rootB] })
+    getChildren.mockReset().mockResolvedValue({ nodes: [member] })
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, openWorkspace, addModules, closeWorkspace, getRoots, getChildren },
+    })
+    useAppStore.setState({
+      workspaceId: undefined,
+      modules: [],
+      roots: [],
+      children: {},
+      parents: {},
+      expanded: {},
+      loadingNodes: {},
+      selectedNode: undefined,
+      documents: {},
+      documentOrder: [],
+      activeDocumentId: undefined,
+      restoringSession: false,
+      output: [],
+      dirty: false,
+      workspaceStateId: undefined,
+      savedStateId: undefined,
+      recentWorkspaces: [],
+    })
+  })
+
+  it('adds to the workspace that is already open instead of replacing it', async () => {
+    const children = { n1: [member] }
+    const documents = { n3: documentState('n3', 'il') }
+    useAppStore.setState({
+      workspaceId: 'w1',
+      modules: [openedModule('n1', '/A.dll')],
+      roots: [rootA],
+      children,
+      parents: { n3: 'n1' },
+      expanded: { n1: true },
+      selectedNode: member,
+      documents,
+      dirty: true,
+      workspaceStateId: 's1',
+      savedStateId: 's1',
+    })
+
+    await useAppStore.getState().openPaths(['/B.dll'])
+
+    expect(addModules).toHaveBeenCalledWith('w1', ['/B.dll'])
+    // Nothing is closed: the workspace instance is what makes every cached node id still mean something.
+    expect(closeWorkspace).not.toHaveBeenCalled()
+    expect(openWorkspace).not.toHaveBeenCalled()
+    const state = useAppStore.getState()
+    expect(state.workspaceId).toBe('w1')
+    expect(state.roots).toEqual([rootA, rootB])
+    expect(state.modules).toHaveLength(2)
+    expect(state.workspaceStateId).toBe('s2')
+    expect(state.savedStateId).toBe('s2')
+    // The branches, the open document and the unsaved edits all survive an append untouched.
+    expect(state.children).toBe(children)
+    expect(state.documents).toBe(documents)
+    expect(state.expanded).toEqual({ n1: true })
+    expect(state.dirty).toBe(true)
+    // The selection follows the module that was just added.
+    expect(state.selectedNode).toBe(rootB)
+  })
+
+  it('keeps the selection when nothing new arrived', async () => {
+    useAppStore.setState({ workspaceId: 'w1', modules: [openedModule('n1', '/A.dll')], roots: [rootA], selectedNode: rootA })
+    getRoots.mockResolvedValue({ nodes: [rootA] })
+    addModules.mockResolvedValue({ modules: [openedModule('n1', '/A.dll')], skipped: ['/A.dll'], stateId: 's1' })
+
+    await useAppStore.getState().openPaths(['/A.dll'])
+
+    expect(useAppStore.getState().selectedNode).toBe(rootA)
+    expect(useAppStore.getState().output.at(-1)).toContain('already open')
+  })
+
+  it('replaces the workspace when none is open yet', async () => {
+    await useAppStore.getState().openPaths(['/A.dll'])
+
+    expect(openWorkspace).toHaveBeenCalledWith(['/A.dll'])
+    expect(addModules).not.toHaveBeenCalled()
+    expect(closeWorkspace).not.toHaveBeenCalled()
+    const state = useAppStore.getState()
+    expect(state.workspaceId).toBe('w1')
+    expect(state.roots).toEqual([rootA, rootB])
+    expect(state.selectedNode).toBe(rootA)
+  })
+
+  it('materialises children without expanding the node', async () => {
+    useAppStore.setState({ workspaceId: 'w1', roots: [rootA] })
+
+    await useAppStore.getState().loadChildren(rootA)
+
+    expect(getChildren).toHaveBeenCalledWith('w1', 'n1')
+    expect(useAppStore.getState().children).toEqual({ n1: [member] })
+    expect(useAppStore.getState().parents).toEqual({ n3: 'n1' })
+    expect(useAppStore.getState().expanded).toEqual({})
+
+    // Asking again is free — the branch is already there.
+    await useAppStore.getState().loadChildren(rootA)
+    expect(getChildren).toHaveBeenCalledTimes(1)
+  })
+
+  it('expands without collapsing, which is what a restore needs', async () => {
+    useAppStore.setState({ workspaceId: 'w1', roots: [rootA] })
+
+    // The explorer expands every fresh root on its own, so a restore walks into already-expanded nodes.
+    await useAppStore.getState().expandNode(rootA)
+    await useAppStore.getState().expandNode(rootA)
+
+    expect(useAppStore.getState().expanded).toEqual({ n1: true })
+    expect(getChildren).toHaveBeenCalledTimes(1)
+
+    // A toggle would have closed it again.
+    await useAppStore.getState().toggleNode(rootA)
+    expect(useAppStore.getState().expanded).toEqual({ n1: false })
+  })
+})
+
+describe('session', () => {
+  const sessionStorageKey = 'dnspy.session.v1'
+  const root = moduleNode('n1', '/A.dll')
+  const space = treeNode('n2', 'module:/A.dll:namespace:Ns', { label: 'Ns', kind: 'namespace' })
+  const type = treeNode('n3', 'module:/A.dll:type:1', { label: 'Type' })
+
+  const source = (extra: Partial<SessionSource> = {}): SessionSource => ({
+    modules: [openedModule('n1', '/A.dll')],
+    roots: [root],
+    children: { n1: [space], n2: [type] },
+    parents: { n2: 'n1', n3: 'n2' },
+    expanded: {},
+    selectedNode: undefined,
+    documents: {},
+    documentOrder: [],
+    activeDocumentId: undefined,
+    ...extra,
+  })
+
+  beforeEach(() => {
+    localStorage.removeItem(sessionStorageKey)
+  })
+
+  it('records a node before the branch that holds it, marking only what was open', () => {
+    const session = buildSession(source({
+      expanded: { n1: true, n2: true },
+      selectedNode: type,
+      documents: { n3: documentState('n3', 'visualBasic') },
+      documentOrder: ['n3'],
+      activeDocumentId: 'n3',
+    }))
+
+    expect(session.paths).toEqual(['/A.dll'])
+    expect(session.nodes).toEqual([
+      { key: 'module:/A.dll', expanded: true },
+      { key: 'module:/A.dll:namespace:Ns', expanded: true },
+      { key: 'module:/A.dll:type:1', expanded: false },
+    ])
+    expect(session.documents).toEqual([{ key: 'module:/A.dll:type:1', language: 'visualBasic' }])
+    expect(session.activeDocument).toBe('module:/A.dll:type:1')
+    expect(session.selectedNode).toBe('module:/A.dll:type:1')
+  })
+
+  it('brings back the ancestors of a document in a branch the user never opened', () => {
+    const session = buildSession(source({
+      documents: { n3: documentState('n3', 'il') },
+      documentOrder: ['n3'],
+    }))
+
+    expect(session.nodes).toEqual([
+      { key: 'module:/A.dll', expanded: false },
+      { key: 'module:/A.dll:namespace:Ns', expanded: false },
+      { key: 'module:/A.dll:type:1', expanded: false },
+    ])
+  })
+
+  it('reads back exactly what it wrote', () => {
+    const session = buildSession(source({ expanded: { n1: true }, documentOrder: ['n3'], documents: { n3: documentState('n3') } }))
+    localStorage.setItem(sessionStorageKey, JSON.stringify(session))
+
+    expect(loadSession()).toEqual(session)
+  })
+
+  it('answers undefined rather than throwing on a session it cannot read', () => {
+    expect(loadSession()).toBeUndefined()
+
+    localStorage.setItem(sessionStorageKey, '{ not json')
+    expect(loadSession()).toBeUndefined()
+
+    localStorage.setItem(sessionStorageKey, JSON.stringify({ version: 99, paths: ['/A.dll'] }))
+    expect(loadSession()).toBeUndefined()
+  })
+
+  it('drops damaged rows and keeps the rest', () => {
+    localStorage.setItem(sessionStorageKey, JSON.stringify({
+      version: 1,
+      paths: ['/A.dll', 7],
+      nodes: [{ key: 'k', expanded: true }, { expanded: true }, null, { key: '' }],
+      documents: [{ key: 'k', language: 'nonsense' }, { language: 'cSharp' }],
+      activeDocument: 5,
+    }))
+
+    expect(loadSession()).toEqual({
+      version: 1,
+      paths: ['/A.dll'],
+      nodes: [{ key: 'k', expanded: true }],
+      documents: [{ key: 'k', language: 'cSharp' }],
+      activeDocument: undefined,
+      selectedNode: undefined,
+    })
+  })
+
+  it('writes only once persistence is on, and not at all during a restore', () => {
+    useAppStore.setState({ ...source(), restoringSession: false, workspaceId: 'w1' })
+    expect(localStorage.getItem(sessionStorageKey)).toBeNull()
+
+    enableSessionPersistence()
+    useAppStore.setState({ expanded: { n1: true } })
+    const saved = localStorage.getItem(sessionStorageKey)
+    expect(JSON.parse(saved!)).toMatchObject({ paths: ['/A.dll'], nodes: [{ key: 'module:/A.dll', expanded: true }] })
+
+    useAppStore.setState({ restoringSession: true })
+    useAppStore.setState({ workspaceId: 'w2', roots: [], modules: [] })
+    expect(localStorage.getItem(sessionStorageKey)).toBe(saved)
+
+    // The moment the restore ends is the one write that captures everything it put back.
+    useAppStore.setState({ restoringSession: false })
+    expect(JSON.parse(localStorage.getItem(sessionStorageKey)!).paths).toEqual([])
+  })
+})
+
+describe('orderedDocumentKeys', () => {
+  const layout = (): Model => Model.fromJson({
+    global: {},
+    layout: {
+      type: 'row',
+      children: [{
+        type: 'tabset',
+        id: 'ts1',
+        children: [
+          { type: 'tab', id: 'start', name: 'Start', component: 'start', enableClose: false },
+          { type: 'tab', id: 'doc:n3', name: 'A', component: 'document', config: { documentId: 'n3' } },
+          { type: 'tab', id: 'doc:n4', name: 'B', component: 'document', config: { documentId: 'n4' } },
+          { type: 'tab', id: 'hex:n1', name: 'Hex', component: 'hex' },
+        ],
+      }],
+    },
+  })
+
+  it('lists the document tabs in layout order, ignoring the special ones', () => {
+    const model = layout()
+    // A layout that has never been touched has no tabset the user selected, so there is no active tab
+    // to report — flexlayout only marks one once a selection has been made.
+    expect(orderedDocumentKeys(model)).toEqual({ order: ['n3', 'n4'], active: undefined })
+
+    model.doAction(Actions.selectTab('doc:n3'))
+    expect(orderedDocumentKeys(model)).toEqual({ order: ['n3', 'n4'], active: 'n3' })
+  })
+
+  it('reports the selected document, or nothing when a special tab has focus', () => {
+    const model = layout()
+    model.doAction(Actions.selectTab('doc:n4'))
+    expect(orderedDocumentKeys(model)).toEqual({ order: ['n3', 'n4'], active: 'n4' })
+
+    model.doAction(Actions.selectTab('start'))
+    expect(orderedDocumentKeys(model).active).toBeUndefined()
   })
 })
