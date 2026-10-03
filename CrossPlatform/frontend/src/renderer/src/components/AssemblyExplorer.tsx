@@ -26,7 +26,8 @@ interface AssemblyExplorerProps {
   onShowModuleInfo(node: TreeNode): void
 }
 
-const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
+/** The tree's icon for a node, shared with the dialogs that show the same tree — the type picker. */
+export const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
   const props = { size: 15, strokeWidth: 1.6, 'aria-hidden': true as const }
   switch (icon) {
     case 'assembly': return <Package {...props} />

@@ -1366,6 +1366,23 @@ select:focus-visible,
   }
 }
 
+.picker-dialog {
+  grid-template-rows: 33px minmax(0, 1fr) 43px;
+  width: min(92vw, 620px);
+  height: min(86vh, 560px);
+}
+
+.picker-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 5px;
+}
+
+.picker-error {
+  padding: 5px;
+  color: var(--danger);
+}
+
 .options-dialog {
   grid-template-rows: 33px minmax(0, 1fr) 43px;
   width: min(96vw, 940px);
