@@ -1,9 +1,11 @@
 import { showPopupMenu, type IPopupMenuItem, type PopupMenuEntry } from 'flexlayout-react'
 import {
+  Binary,
   Box,
   Braces,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   CircleDot,
   Code2,
   FileBox,
@@ -30,6 +32,10 @@ export const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
   const props = { size: 15, strokeWidth: 1.6, 'aria-hidden': true as const }
   switch (icon) {
     case 'assembly': return <Package {...props} />
+    // A file that is not a managed assembly: dnSpy shows a PE document with the assembly icon, an ELF image
+    // and the structures read out of either with the binary one, and a file it could not read with the error.
+    case 'binary': return <Binary {...props} />
+    case 'error': return <CircleAlert {...props} />
     case 'namespace': return <Folder {...props} />
     case 'reference': return <Library {...props} />
     case 'resource': return <FileBox {...props} />

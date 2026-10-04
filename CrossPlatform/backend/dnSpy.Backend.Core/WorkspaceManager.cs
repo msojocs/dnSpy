@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
+using dnlib.PE;
 using dnSpy.Backend.Contracts;
 using dnSpy.Backend.Core.Editing;
 using ICSharpCode.Decompiler;
@@ -793,6 +794,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		readonly SemaphoreSlim gate = new(1, 1);
 		readonly SymbolResolver symbols;
 		readonly Dictionary<string, ModuleEntry> modules = new(StringComparer.Ordinal);
+		// PE-only modules (non-managed assemblies)
+		readonly Dictionary<string, PeOnlyModuleEntry> peModules = new(StringComparer.Ordinal);
+		// ELF images. dnSpy itself has no ELF reader, but on Linux an executable the user picks is usually
+		// one of these, and its headers are readable the same way a PE image's are.
+		readonly Dictionary<string, ElfFileEntry> elfFiles = new(StringComparer.Ordinal);
+		// Files that are neither a managed assembly, a PE image nor an ELF image — a script, a file that is
+		// not there any more. WPF keeps those open as unknown documents rather than refusing them
+		// (DsDocumentService.CreateDocumentCore), and the tree shows them under their own file name.
+		readonly Dictionary<string, UnknownFileEntry> unknownFiles = new(StringComparer.Ordinal);
 		// The root nodes in the order the tree shows them. The dictionary above is keyed by node id, so
 		// its iteration order is a hash order that the client cannot rely on — the same two assemblies
 		// would come back in a different order across runs. This list is that order: load order until the
@@ -830,85 +840,144 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		public async Task OpenAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken) {
 			await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
-			if (modules.Count == 0)
-				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
+			// Every file that exists ends up in the tree one way or another, so this only fires when the
+			// caller named no file at all.
+			if (modules.Count == 0 && peModules.Count == 0 && elfFiles.Count == 0 && unknownFiles.Count == 0)
+				throw new RpcException(ErrorCodes.InvalidParams, "Select at least one file to open.");
 		}
 
 		/// <summary>
-		/// Loads the modules of a path list that are not open yet and returns them. A path already open is
+		/// Loads the files of a path list that are not open yet and returns them. A path already open is
 		/// left alone, the way dnSpy's drop handler skips a file it already has, so the same list can be
 		/// offered twice without producing two trees. Loading nothing is not an error here: the Open command
 		/// raises one instead, while adding to an open workspace is content to have had nothing to do.
 		/// </summary>
-		public async Task<IReadOnlyList<ModuleEntry>> LoadModulesAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken) {
-			var added = new List<ModuleEntry>();
+		public async Task<IReadOnlyList<IModuleEntry>> LoadModulesAsync(IReadOnlyList<string> paths, CancellationToken cancellationToken) {
+			var added = new List<IModuleEntry>();
 			foreach (var path in paths) {
 				cancellationToken.ThrowIfCancellationRequested();
 				var fullPath = Path.GetFullPath(path);
-				if (FindModuleEntry(fullPath) is not null)
+				if (IsOpen(fullPath))
 					continue;
-				ModuleDefMD module;
-				try {
-					module = await Task.Run(() => ModuleDefMD.Load(fullPath), cancellationToken).ConfigureAwait(false);
+
+				var entry = await Task.Run(() => LoadEntry(fullPath), cancellationToken).ConfigureAwait(false);
+				var root = entry switch {
+					ModuleEntry module => GetOrAddNode($"assembly:{fullPath}", NodeKind.Assembly, module.Module.Assembly ?? (object)module.Module, entry),
+					PeOnlyModuleEntry peModule => GetOrAddNode($"pe:{fullPath}", NodeKind.PEDocument, peModule, peModule),
+					ElfFileEntry elf => GetOrAddNode($"elf:{fullPath}", NodeKind.ElfDocument, elf, elf),
+					_ => GetOrAddNode($"unknown:{fullPath}", NodeKind.UnknownDocument, entry, entry),
+				};
+				switch (entry) {
+					case ModuleEntry module:
+						module.Id = root.Id;
+						modules.Add(module.Id, module);
+						break;
+					case PeOnlyModuleEntry peModule:
+						peModule.Id = root.Id;
+						peModules.Add(peModule.Id, peModule);
+						break;
+					case ElfFileEntry elf:
+						elf.Id = root.Id;
+						elfFiles.Add(elf.Id, elf);
+						break;
+					case UnknownFileEntry unknown:
+						unknown.Id = root.Id;
+						unknownFiles.Add(unknown.Id, unknown);
+						break;
 				}
-				catch (BadImageFormatException) when (paths.Count > 1) {
-					continue;
-				}
-				var entry = new ModuleEntry(fullPath, module);
-				// Create Assembly node as root, Module will be its child
-				var assemblyDef = module.Assembly;
-				var root = GetOrAddNode($"assembly:{fullPath}", NodeKind.Assembly, assemblyDef ?? (object)module, entry);
-				entry.Id = root.Id;
-				modules.Add(entry.Id, entry);
-				rootOrder.Add(entry.Id);
+				rootOrder.Add(root.Id);
 				added.Add(entry);
 			}
 			return added;
 		}
 
+		bool IsOpen(string fullPath) =>
+			FindModuleEntry(fullPath) is not null
+			|| FindPeModuleEntry(fullPath) is not null
+			|| FindElfEntry(fullPath) is not null
+			|| FindUnknownEntry(fullPath) is not null;
+
 		/// <summary>
-		/// Adds assemblies to an open workspace, the way dnSpy's Open command adds them to the tree rather
-		/// than replacing it. The paths that were already open come back in the response so the caller can
-		/// say so; a request that names only open files succeeds, and one that names no managed file at all
-		/// is rejected like the Open command.
+		/// Reads one file the way dnSpy's <c>DsDocumentService.CreateDocumentCore</c> does: a managed module
+		/// when it carries .NET metadata, the PE image when it is a valid PE but not a managed one, and an
+		/// unknown document for anything else — a file that is not a PE at all, or one that cannot be read.
+		/// An ELF image gets its own reader, since dnSpy has none and on Linux it is what a native binary
+		/// usually is. Nothing here throws, because a file the user picked is never a reason to fail the open.
+		/// </summary>
+		static IModuleEntry LoadEntry(string fullPath) {
+			ModuleDefMD? module = null;
+			try {
+				module = ModuleDefMD.Load(fullPath);
+			}
+			catch {
+				// Not a managed module dnSpy can read — a native binary, or a file that is gone or that
+				// nothing may read. dnSpy decides by looking at the CLR data directory before it tries;
+				// either way it moves on to the PE image rather than failing the open over one file.
+			}
+			if (module is not null)
+				return new ModuleEntry(fullPath, module);
+
+			try {
+				return new PeOnlyModuleEntry(fullPath, new PEImage(fullPath));
+			}
+			catch {
+				// Not a PE image either. An ELF image is only claimed as one when its own header can be
+				// read, so a file with the magic bytes and nothing behind them stays an unknown document.
+				if (ElfImage.HasMagic(fullPath) && ElfImage.TryLoad(fullPath) is { } elf)
+					return new ElfFileEntry(fullPath, elf);
+				return new UnknownFileEntry(fullPath);
+			}
+		}
+
+		/// <summary>
+		/// Adds files to an open workspace, the way dnSpy's Open command adds them to the tree rather than
+		/// replacing it. The paths that were already open come back in the response so the caller can say so;
+		/// a request that names only open files succeeds, and every file it names ends up in the tree, since
+		/// one that is neither managed nor a PE image is kept as an unknown document.
 		/// </summary>
 		public async Task<AddModulesResponse> AddModulesAsync(AddModulesRequest request, CancellationToken cancellationToken) {
 			var paths = ExpandPaths(request.Paths);
-			var skipped = paths.Where(path => FindModuleEntry(path) is not null).ToArray();
-			IReadOnlyList<ModuleEntry> added;
-			try {
-				added = await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
-			}
-			catch (BadImageFormatException) {
-				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
-			}
-			if (added.Count == 0 && skipped.Length == 0)
-				throw new RpcException(ErrorCodes.InvalidParams, "None of the selected files is a managed assembly.");
+			var skipped = paths.Where(IsOpen).ToArray();
+			await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
 			return new AddModulesResponse(CreateOpenResponse().Modules, skipped, stateId);
 		}
 
-		public OpenWorkspaceResponse CreateOpenResponse() => new(
-			Id,
-			OrderedModules().Select(m => new OpenedModule(
-				m.Id,
-				m.Module.Assembly?.Name.String ?? m.Module.Name.String,
-				m.Path,
-				File.Exists(Path.ChangeExtension(m.Path, ".pdb")))).ToArray(),
-			stateId);
+		public OpenWorkspaceResponse CreateOpenResponse() {
+			var opened = OrderedEntries().Select(entry => entry switch {
+				ModuleEntry module => new OpenedModule(
+					module.Id,
+					module.Module.Assembly?.Name.String ?? module.Module.Name.String,
+					module.Path,
+					File.Exists(Path.ChangeExtension(module.Path, ".pdb"))),
+				// A PE-only file and an unknown one have no assembly name to show or symbols to load, so
+				// they are listed under their file name the way the tree lists them.
+				_ => new OpenedModule(entry.Id, Path.GetFileName(entry.Path), entry.Path, false),
+			}).ToList();
+			return new OpenWorkspaceResponse(Id, opened, stateId);
+		}
 
-		public TreeNodesResponse GetRoots() => new(OrderedModules().Select(m => ToDto(nodes[m.Id])).ToArray());
+		public TreeNodesResponse GetRoots() =>
+			new(OrderedEntries().Select(entry => ToDto(nodes[entry.Id])).ToArray());
 
 		/// <summary>
-		/// The modules in the order the tree shows them, which is what keeps the client's root list and its
-		/// module list in step. An id with no module behind it is skipped rather than trusted, so a reload
-		/// that rebuilds the modules cannot hand out a root that is no longer there.
+		/// Every file the workspace holds, in the order the tree shows them, which is what keeps the client's
+		/// root list and its module list in step. An id with nothing behind it is skipped rather than trusted,
+		/// so a reload that rebuilds the modules cannot hand out a root that is no longer there.
 		/// </summary>
-		IEnumerable<ModuleEntry> OrderedModules() {
+		IEnumerable<IModuleEntry> OrderedEntries() {
 			foreach (var id in rootOrder) {
 				if (modules.TryGetValue(id, out var module))
 					yield return module;
+				else if (peModules.TryGetValue(id, out var peModule))
+					yield return peModule;
+				else if (elfFiles.TryGetValue(id, out var elf))
+					yield return elf;
+				else if (unknownFiles.TryGetValue(id, out var unknown))
+					yield return unknown;
 			}
 		}
+
+		IEnumerable<ModuleEntry> OrderedModules() => OrderedEntries().OfType<ModuleEntry>();
 
 		/// <summary>
 		/// Sorts the root nodes by the name the tree shows, case-insensitively, with the current position
@@ -930,7 +999,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var children = node.Kind switch {
 				NodeKind.Assembly => GetAssemblyChildren(node),
 				NodeKind.Module => GetModuleChildren(node),
+				// dnSpy hangs its hex PE node off a PE document as well as off a module
+				// (PEFilePETreeNodeDataProvider), so a native file can be inspected the same way.
+				NodeKind.PEDocument => GetPeDocumentChildren(node),
 				NodeKind.PE => GetPEChildren(node),
+				// An ELF image has no PE node to hang its headers off, so it gets nodes of its own.
+				NodeKind.ElfDocument => GetElfDocumentChildren(node),
+				NodeKind.Elf => GetElfChildren(node),
 				NodeKind.Namespace => GetNamespaceChildren(node),
 				NodeKind.TypeReferencesGroup => GetTypeReferenceChildren(node),
 				NodeKind.ReferencesGroup => GetReferenceChildren(node),
@@ -947,8 +1022,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		IReadOnlyList<NodeEntry> GetAssemblyChildren(NodeEntry node) {
 			// Assembly node contains the Module node as its only child
-			var module = node.Module.Module;
-			var moduleNode = GetOrAddNode($"module:{node.Module.Path}", NodeKind.Module, module, node.Module);
+			var moduleEntry = node.AsModuleEntry!;
+			var module = moduleEntry.Module;
+			var moduleNode = GetOrAddNode($"module:{moduleEntry.Path}", NodeKind.Module, module, moduleEntry);
 			return new[] { moduleNode };
 		}
 
@@ -958,8 +1034,8 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 			// Order matches WPF version:
 			// 1. PE node (if applicable)
-			if (module.Metadata?.PEImage != null)
-				result.Add(GetOrAddNode($"{node.Key}:pe", NodeKind.PE, module, node.Module));
+			if (module.Metadata?.PEImage is { } peImage)
+				result.Add(GetOrAddNode($"{node.Key}:pe", NodeKind.PE, peImage, node.Module));
 
 			// 2. Type References folder
 			result.Add(GetOrAddNode($"{node.Key}:typerefs", NodeKind.TypeReferencesGroup, module, node.Module));
@@ -973,7 +1049,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				result.Add(GetOrAddNode($"{node.Key}:resources", NodeKind.ResourcesGroup, module, node.Module));
 
 			// 5. Namespaces (including empty namespace shown as "-")
-			result.AddRange(GetNamespaceNodes(node.Key, node.Module));
+			result.AddRange(GetNamespaceNodes(node.Key, node.AsModuleEntry!));
 
 			return result;
 		}
@@ -999,18 +1075,109 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			// or a namespace rename mutates the module while this node stays cached, so a snapshot would
 			// keep listing types that no longer belong here.
 			var name = ((NamespaceValue)node.Value).Name;
-			return node.Module.Module.Types
+			var moduleEntry = node.AsModuleEntry!;
+			return moduleEntry.Module.Types
 				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType && (t.Namespace.String ?? string.Empty) == name)
 				.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase)
-				.Select(t => GetMemberNode(t, node.Module))
+				.Select(t => GetMemberNode(t, moduleEntry))
 				.ToArray();
 		}
 
+		/// <summary>
+		/// The PE node that hangs off a PE document, which is the only child dnSpy gives it: a native file has
+		/// no .NET metadata, and it holds no child document of its own.
+		/// </summary>
+		IReadOnlyList<NodeEntry> GetPeDocumentChildren(NodeEntry node) =>
+			node.Module is PeOnlyModuleEntry peEntry
+				? new[] { GetOrAddNode($"{node.Key}:pe", NodeKind.PE, peEntry.PEImage, node.Module) }
+				: Array.Empty<NodeEntry>();
+
 		IReadOnlyList<NodeEntry> GetPEChildren(NodeEntry node) {
-			// PE node children are not implemented yet - this is a placeholder
-			// In WPF version, PE node contains sections like .text, .rsrc, etc.
-			return Array.Empty<NodeEntry>();
+			var entry = (IModuleEntry)node.Module;
+			return PeStructures(entry)
+				.Select(structure => PeStructureNode(node, structure))
+				.ToArray();
 		}
+
+		/// <summary>
+		/// The structures an image is made of, in the order dnSpy's PENode.CreateChildren yields them: the DOS
+		/// header, the file header, the optional header, every section, and then — for an image that carries
+		/// .NET metadata — the CLR header and the metadata storage it points at.
+		/// </summary>
+		static IReadOnlyList<PeStructureValue> PeStructures(IModuleEntry entry) =>
+			GetPeStructureSource(entry) is { } source ? PeStructures(source) : Array.Empty<PeStructureValue>();
+
+		static IReadOnlyList<PeStructureValue> PeStructures(PeStructureSource source) {
+			var structures = new List<PeStructureValue> {
+				new(PeStructureKind.DosHeader, -1),
+				new(PeStructureKind.FileHeader, -1),
+				new(PeStructureKind.OptionalHeader, -1),
+			};
+			for (var i = 0; i < source.Image.ImageSectionHeaders.Count; i++)
+				structures.Add(new PeStructureValue(PeStructureKind.Section, i));
+			if (source.Metadata is { } metadata && metadata.ImageCor20Header is not null) {
+				structures.Add(new PeStructureValue(PeStructureKind.Cor20Header, -1));
+				if (metadata.MetadataHeader is not null) {
+					structures.Add(new PeStructureValue(PeStructureKind.StorageSignature, -1));
+					structures.Add(new PeStructureValue(PeStructureKind.StorageHeader, -1));
+					for (var i = 0; i < metadata.AllStreams.Count; i++)
+						structures.Add(new PeStructureValue(PeStructureKind.StorageStream, i));
+				}
+			}
+			return structures;
+		}
+
+		/// <summary>
+		/// What the PE structures of a file are read from: its image, and the metadata when it is a managed
+		/// module. A file that is neither has none, and so has no structures.
+		/// </summary>
+		static PeStructureSource? GetPeStructureSource(IModuleEntry entry) => entry switch {
+			ModuleEntry module when module.Module.Metadata is { } metadata && metadata.PEImage as PEImage is { } peImage =>
+				new PeStructureSource(peImage, metadata),
+			PeOnlyModuleEntry peOnly => new PeStructureSource(peOnly.PEImage, null),
+			_ => null,
+		};
+
+		NodeEntry PeStructureNode(NodeEntry peNode, PeStructureValue value) => GetOrAddNode(
+			$"{peNode.Key}:{value.Kind.ToString().ToLowerInvariant()}:{value.Index}",
+			NodeKind.PeStructure,
+			value,
+			peNode.Module);
+
+		/// <summary>
+		/// The ELF node that hangs off an ELF document, which is the only child it has: the file's own name is
+		/// the document, and everything worth expanding is under this node.
+		/// </summary>
+		IReadOnlyList<NodeEntry> GetElfDocumentChildren(NodeEntry node) =>
+			node.Module is ElfFileEntry elfEntry
+				? new[] { GetOrAddNode($"{node.Key}:elf", NodeKind.Elf, elfEntry.Elf, node.Module) }
+				: Array.Empty<NodeEntry>();
+
+		IReadOnlyList<NodeEntry> GetElfChildren(NodeEntry node) {
+			var elf = (ElfImage)node.Value;
+			return ElfStructures(elf)
+				.Select(structure => ElfStructureNode(node, structure))
+				.ToArray();
+		}
+
+		/// <summary>
+		/// The structures an ELF image is made of, in the order <c>readelf -h -l -S</c> prints them: the file
+		/// header, every program header, then every section header.
+		/// </summary>
+		static IReadOnlyList<ElfStructureValue> ElfStructures(ElfImage elf) {
+			var structures = new List<ElfStructureValue> { new(ElfStructureKind.FileHeader, -1) };
+			for (var i = 0; i < elf.ProgramHeaders.Count; i++)
+				structures.Add(new ElfStructureValue(ElfStructureKind.ProgramHeader, i));
+			for (var i = 0; i < elf.Sections.Count; i++)
+				structures.Add(new ElfStructureValue(ElfStructureKind.SectionHeader, i));
+			return structures;
+		}
+
+		NodeEntry ElfStructureNode(NodeEntry elfNode, ElfStructureValue value) => GetOrAddNode(
+			$"{elfNode.Key}:{value.Kind.ToString().ToLowerInvariant()}:{value.Index}",
+			NodeKind.ElfStructure,
+			value,
+			elfNode.Module);
 
 		IReadOnlyList<NodeEntry> GetTypeReferenceChildren(NodeEntry node) {
 			var module = (ModuleDefMD)node.Value;
@@ -1022,7 +1189,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		IReadOnlyList<NodeEntry> GetReferenceChildren(NodeEntry node) => ((ModuleDefMD)node.Value)
 			.GetAssemblyRefs()
 			.OrderBy(r => r.Name.String, StringComparer.OrdinalIgnoreCase)
-			.Select(r => GetOrAddNode(MemberKey(node.Module, "reference", r.MDToken.Raw), NodeKind.AssemblyReference, r, node.Module))
+			.Select(r => GetOrAddNode(MemberKey(node.AsModuleEntry!, "reference", r.MDToken.Raw), NodeKind.AssemblyReference, r, node.Module))
 			.ToArray();
 
 		/// <summary>
@@ -1035,7 +1202,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var reference = (AssemblyRef)node.Value;
 			if (FindOpenModuleByName(reference.Name.String) is { } open)
 				return GetModuleChildren(nodes[open.Id]);
-			return LoadReferenceModule(node.Module, reference) is { } module
+			return LoadReferenceModule(node.AsModuleEntry!, reference) is { } module
 				? [.. GetNamespaceNodes(node.Key, module)]
 				: Array.Empty<NodeEntry>();
 		}
@@ -1046,7 +1213,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		bool HasAssemblyReferenceChildren(NodeEntry node) {
 			var reference = (AssemblyRef)node.Value;
 			return FindOpenModuleByName(reference.Name.String) is not null
-				|| ReferencePath(node.Module, reference) is not null;
+				|| ReferencePath(node.AsModuleEntry!, reference) is not null;
 		}
 
 		/// <summary>An open module whose assembly goes by this simple name. Matching on the name alone is
@@ -1171,7 +1338,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		IReadOnlyList<NodeEntry> GetResourceChildren(NodeEntry node) => ((ModuleDefMD)node.Value)
 			.Resources
 			.OrderBy(r => r.Name.String, StringComparer.OrdinalIgnoreCase)
-			.Select((r, index) => GetOrAddNode($"resource:{node.Module.Path}:{index}:{r.Name}", NodeKind.Resource, r, node.Module))
+			.Select((r, index) => GetOrAddNode($"resource:{node.AsModuleEntry!.Path}:{index}:{r.Name}", NodeKind.Resource, r, node.Module))
 			.ToArray();
 
 		IReadOnlyList<NodeEntry> GetEmbeddedResourceChildren(NodeEntry node) {
@@ -1188,7 +1355,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 			return values
 				.OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
-				.Select(value => GetOrAddNode($"resource-entry:{node.Module.Path}:{embedded.Name}:{value.Name}", NodeKind.ResourceEntry, value, node.Module))
+				.Select(value => GetOrAddNode($"resource-entry:{node.AsModuleEntry!.Path}:{embedded.Name}:{value.Name}", NodeKind.ResourceEntry, value, node.Module))
 				.ToArray();
 		}
 
@@ -1210,12 +1377,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		IReadOnlyList<NodeEntry> GetTypeChildren(NodeEntry node) {
 			var type = (TypeDef)node.Value;
+			var moduleEntry = node.AsModuleEntry!;
 			var result = new List<NodeEntry>();
-			result.AddRange(type.NestedTypes.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase).Select(t => GetMemberNode(t, node.Module)));
-			result.AddRange(type.Fields.OrderBy(f => f.Name.String, StringComparer.OrdinalIgnoreCase).Select(f => GetMemberNode(f, node.Module)));
-			result.AddRange(type.Properties.OrderBy(p => p.Name.String, StringComparer.OrdinalIgnoreCase).Select(p => GetMemberNode(p, node.Module)));
-			result.AddRange(type.Events.OrderBy(e => e.Name.String, StringComparer.OrdinalIgnoreCase).Select(e => GetMemberNode(e, node.Module)));
-			result.AddRange(type.Methods.OrderBy(m => m.Name.String, StringComparer.OrdinalIgnoreCase).ThenBy(m => m.MethodSig?.Params.Count ?? 0).Select(m => GetMemberNode(m, node.Module)));
+			result.AddRange(type.NestedTypes.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase).Select(t => GetMemberNode(t, moduleEntry)));
+			result.AddRange(type.Fields.OrderBy(f => f.Name.String, StringComparer.OrdinalIgnoreCase).Select(f => GetMemberNode(f, moduleEntry)));
+			result.AddRange(type.Properties.OrderBy(p => p.Name.String, StringComparer.OrdinalIgnoreCase).Select(p => GetMemberNode(p, moduleEntry)));
+			result.AddRange(type.Events.OrderBy(e => e.Name.String, StringComparer.OrdinalIgnoreCase).Select(e => GetMemberNode(e, moduleEntry)));
+			result.AddRange(type.Methods.OrderBy(m => m.Name.String, StringComparer.OrdinalIgnoreCase).ThenBy(m => m.MethodSig?.Params.Count ?? 0).Select(m => GetMemberNode(m, moduleEntry)));
 			return result;
 		}
 
@@ -1235,9 +1403,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		DecompileResponse DecompileResourceEntry(NodeEntry node, CancellationToken cancellationToken) {
 			var resource = (ResourceEntryValue)node.Value;
+			var moduleEntry = node.AsModuleEntry!;
 			if (resource.Name.EndsWith(".baml", StringComparison.OrdinalIgnoreCase) && resource.Value is byte[] baml) {
 				try {
-					var decompiler = new XamlDecompiler(node.Module.Path, new BamlDecompilerSettings {
+					var decompiler = new XamlDecompiler(moduleEntry.Path, new BamlDecompilerSettings {
 						ThrowOnAssemblyResolveErrors = false,
 					}) {
 						CancellationToken = cancellationToken,
@@ -1266,9 +1435,26 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		};
 
 		DecompileResponse DecompileCSharp(NodeEntry node, CancellationToken cancellationToken) {
+			// A PE node and its structures are not decompiled code: they are the headers, sections and metadata
+			// of the image, read straight out of the file (dnSpy's AsmEditor hex nodes). The ELF structures
+			// are the same thing under a different file format.
+			if (node.Kind is NodeKind.PE or NodeKind.PeStructure)
+				return DecompilePeStructure(node);
+			if (node.Kind is NodeKind.Elf or NodeKind.ElfStructure)
+				return DecompileElfStructure(node);
+			var moduleEntry = node.AsModuleEntry;
+			// Neither a PE-only file, an ELF image nor one dnSpy could not read has any C# to decompile, so
+			// the document says what the file is instead of showing an empty tab.
+			if (moduleEntry is null) {
+				if (node.AsPeOnlyModuleEntry is { } peEntry)
+					return DecompilePEInfo(node, peEntry);
+				if (node.Module is ElfFileEntry elfEntry)
+					return DecompileElfInfo(node, elfEntry);
+				return DecompileUnknownFile(node);
+			}
 			var settings = new DecompilerSettings();
 			try {
-				using var session = CreateCSharpDecompilerSession(node.Module, settings, cancellationToken);
+				using var session = CreateCSharpDecompilerSession(moduleEntry, settings, cancellationToken);
 				var decompiler = session.Decompiler;
 
 				string text;
@@ -1287,11 +1473,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 							decompiler.Decompile([ToEntityHandle((IMDTokenProvider)node.Value)]),
 						_ => throw new RpcException(ErrorCodes.UnsupportedDocument, "This tree node cannot be decompiled."),
 					};
-					var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, node.Module));
+					var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, moduleEntry));
 					RenderWithLocations(syntaxTree, output, settings);
 					text = output.ToString();
 					spans = output.Spans;
-					codeStatements = BuildCodeStatements(syntaxTree, decompiler, node.Module, cancellationToken);
+					codeStatements = BuildCodeStatements(syntaxTree, decompiler, moduleEntry, cancellationToken);
 				}
 				var diagnostics = decompiler.Errors
 					.Select(e => new DiagnosticDto("warning", e.ToString()))
@@ -1308,6 +1494,129 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			catch (Exception ex) {
 				throw new RpcException(ErrorCodes.UnsupportedDocument, "The selected item could not be decompiled.", null, ex);
 			}
+		}
+
+		/// <summary>
+		/// A file that is not a managed assembly and not a PE image — an ELF binary, a script, a file that
+		/// went away. dnSpy opens it all the same and its tab holds the file name as a comment
+		/// (NodeDecompiler.DecompileUnknown); the diagnostic says why there is nothing else to show.
+		/// </summary>
+		DecompileResponse DecompileUnknownFile(NodeEntry node) {
+			var path = ((IModuleEntry)node.Module).Path;
+			return new DecompileResponse(
+				GetLabel(node),
+				"csharp",
+				$"// {Path.GetFileName(path)}" + Environment.NewLine,
+				Array.Empty<TextSpanDto>(),
+				[new DiagnosticDto("info", $"{path} is not a managed assembly or a valid PE file, so it has no code to show.")]);
+		}
+
+		/// <summary>
+		/// The document of a PE node or of one PE structure under it. A PE node shows every structure it holds
+		/// in one document, the way dnSpy's PENode decompiles its children.
+		/// </summary>
+		DecompileResponse DecompilePeStructure(NodeEntry node) {
+			var entry = (IModuleEntry)node.Module;
+			var source = GetPeStructureSource(entry);
+			var builder = new StringBuilder();
+			if (node.Kind == NodeKind.PE) {
+				builder.AppendLine($"// {Path.GetFileName(entry.Path)}");
+				builder.AppendLine();
+				AppendPeStructures(builder, entry);
+			}
+			else if (source is not null) {
+				var value = (PeStructureValue)node.Value;
+				PeStructureFormatter.Append(builder, source, value.Kind, value.Index);
+			}
+			return new DecompileResponse(
+				GetLabel(node),
+				"csharp",
+				builder.ToString(),
+				Array.Empty<TextSpanDto>(),
+				Array.Empty<DiagnosticDto>());
+		}
+
+		/// <summary>Every structure of an image, one block after another.</summary>
+		static void AppendPeStructures(StringBuilder builder, IModuleEntry entry) {
+			if (GetPeStructureSource(entry) is not { } source)
+				return;
+			foreach (var structure in PeStructures(source)) {
+				PeStructureFormatter.Append(builder, source, structure.Kind, structure.Index);
+				builder.AppendLine();
+			}
+		}
+
+		/// <summary>
+		/// The document of an ELF node or of one ELF structure under it. It is the PE node's document under
+		/// another format: the node shows every structure it holds, a structure shows its own fields.
+		/// </summary>
+		DecompileResponse DecompileElfStructure(NodeEntry node) {
+			// The node carries the image itself, a structure node only names one of its parts, so the image
+			// comes from the file either way.
+			var image = ((ElfFileEntry)node.Module).Elf;
+			var builder = new StringBuilder();
+			if (node.Kind == NodeKind.Elf) {
+				builder.AppendLine($"// {Path.GetFileName(((IModuleEntry)node.Module).Path)}");
+				builder.AppendLine();
+				AppendElfStructures(builder, image);
+			}
+			else {
+				var value = (ElfStructureValue)node.Value;
+				ElfStructureFormatter.Append(builder, image, value.Kind, value.Index);
+			}
+			return new DecompileResponse(
+				GetLabel(node),
+				"csharp",
+				builder.ToString(),
+				Array.Empty<TextSpanDto>(),
+				Array.Empty<DiagnosticDto>());
+		}
+
+		/// <summary>
+		/// The document of a file that is an ELF image. dnSpy has no such document, but on Linux this is what
+		/// a native binary the user picked turns out to be, and its headers are all there is to show.
+		/// </summary>
+		static DecompileResponse DecompileElfInfo(NodeEntry node, ElfFileEntry elfEntry) {
+			var builder = new StringBuilder();
+			builder.AppendLine($"// ELF File: {Path.GetFileName(elfEntry.Path)}");
+			builder.AppendLine($"// Path: {elfEntry.Path}");
+			builder.AppendLine($"// Size: {elfEntry.FileLength:N0} bytes");
+			builder.AppendLine();
+			AppendElfStructures(builder, elfEntry.Elf);
+			return new DecompileResponse(
+				GetLabel(node),
+				"csharp",
+				builder.ToString(),
+				Array.Empty<TextSpanDto>(),
+				Array.Empty<DiagnosticDto>());
+		}
+
+		/// <summary>Every structure of an ELF image, one block after another.</summary>
+		static void AppendElfStructures(StringBuilder builder, ElfImage image) {
+			foreach (var structure in ElfStructures(image)) {
+				ElfStructureFormatter.Append(builder, image, structure.Kind, structure.Index);
+				builder.AppendLine();
+			}
+		}
+
+		/// <summary>
+		/// The document of a file that is a PE image but not a managed assembly — dnSpy's PEDocumentNode. It
+		/// says which file it is and then shows the same structures its PE node lists, since such a file has no
+		/// code to show and the headers are all it has.
+		/// </summary>
+		DecompileResponse DecompilePEInfo(NodeEntry node, PeOnlyModuleEntry peEntry) {
+			var builder = new StringBuilder();
+			builder.AppendLine($"// PE File: {Path.GetFileName(peEntry.Path)}");
+			builder.AppendLine($"// Path: {peEntry.Path}");
+			builder.AppendLine($"// Size: {peEntry.FileLength:N0} bytes");
+			builder.AppendLine();
+			AppendPeStructures(builder, peEntry);
+			return new DecompileResponse(
+				GetLabel(node),
+				"csharp",
+				builder.ToString(),
+				Array.Empty<TextSpanDto>(),
+				Array.Empty<DiagnosticDto>());
 		}
 
 		// A gutter click has to land on an exact IL offset, not on "the method that owns this line": the engine
@@ -1478,12 +1787,50 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			Array.Empty<TextSpanDto>(),
 			Array.Empty<DiagnosticDto>());
 
+		/// <summary>
+		/// A PE structure is a header of the image rather than code, so there is no IL to interleave — and no
+		/// reason to build a decompiler session to say so.
+		/// </summary>
+		DecompileResponse DecompilePeStructureIl(NodeEntry node) => new(
+			GetLabel(node),
+			"il",
+			$"// {GetLabel(node)}",
+			Array.Empty<TextSpanDto>(),
+			[new DiagnosticDto("info", "A PE structure has no IL; open it as C# to see its fields.")]);
+
+		/// <summary>An ELF structure is a header of the file rather than code, and has no IL for the same reason.</summary>
+		DecompileResponse DecompileElfStructureIl(NodeEntry node) => new(
+			GetLabel(node),
+			"il",
+			$"// {GetLabel(node)}",
+			Array.Empty<TextSpanDto>(),
+			[new DiagnosticDto("info", "An ELF structure has no IL; open it as C# to see its fields.")]);
+
 		DecompileResponse DecompileILWithCSharp(NodeEntry node, CancellationToken cancellationToken) {
+			if (node.Kind is NodeKind.PE or NodeKind.PeStructure)
+				return DecompilePeStructureIl(node);
+			if (node.Kind is NodeKind.Elf or NodeKind.ElfStructure)
+				return DecompileElfStructureIl(node);
+			var moduleEntry = node.AsModuleEntry;
+			// There is no IL to interleave with C# for a file that carries no .NET metadata.
+			if (moduleEntry is null) {
+				var description = node.AsPeOnlyModuleEntry is not null
+					? "This PE file does not contain .NET metadata."
+					: node.Module is ElfFileEntry
+						? "This ELF file does not contain .NET metadata."
+						: "This file is not a managed assembly or a valid PE file.";
+				return new DecompileResponse(
+					GetLabel(node),
+					"il",
+					"// No IL: this file does not contain .NET metadata.",
+					Array.Empty<TextSpanDto>(),
+					[new DiagnosticDto("info", description)]);
+			}
 			var settings = new DecompilerSettings {
 				UsingDeclarations = false,
 			};
 			try {
-				using var session = CreateCSharpDecompilerSession(node.Module, settings, cancellationToken);
+				using var session = CreateCSharpDecompilerSession(moduleEntry, settings, cancellationToken);
 				var sourceProvider = new DecompiledSourceProvider(session.Decompiler, settings, cancellationToken);
 				var text = ILFormatter.Format(node, sourceProvider.GetStatements);
 				var diagnostics = session.Decompiler.Errors
@@ -1614,6 +1961,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// </summary>
 		public HexTargetResponse ResolveHexTarget(string nodeId) {
 			var node = GetNode(nodeId);
+			// PE-only modules don't support member-level hex operations
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.UnsupportedDocument, "PE-only modules do not support hex operations.");
 			HexMethodTargetDto? method = null;
 			HexRangeDto? fieldInitialValue = null;
 			HexRangeDto? resource = null;
@@ -1628,7 +1978,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				resource = ResolveResourceTarget(value);
 				break;
 			}
-			return new HexTargetResponse(node.Module.Id, node.Module.FileLength, method, fieldInitialValue, resource);
+			return new HexTargetResponse(moduleEntry.Id, moduleEntry.FileLength, method, fieldInitialValue, resource);
 		}
 
 		static HexMethodTargetDto? ResolveMethodTarget(MethodDef method) {
@@ -1689,6 +2039,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public void QueueHexPatch(HexPatchRequest request) {
 			var transaction = GetTransaction(request.TransactionId);
 			var node = GetNode(request.NodeId);
+			// PE-only modules don't support hex patches
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.UnsupportedDocument, "PE-only modules do not support hex patches.");
 			byte[] data;
 			try {
 				data = Convert.FromBase64String(request.Base64Data);
@@ -1698,14 +2051,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 			if (data.Length == 0)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch is empty.");
-			if (request.Offset < 0 || request.Offset + data.Length > node.Module.FileLength)
+			if (request.Offset < 0 || request.Offset + data.Length > moduleEntry.FileLength)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch does not fit inside the file.");
 			// A patch over a member may only cover that member, so the write commands can never spill into
 			// whatever the serializer put next to the body they were aimed at.
 			if (HexTargets.GetPatchRegion(node.Value) is { } region &&
 				(request.Offset < region.Offset || request.Offset + data.Length > region.Offset + region.Size))
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The patch is larger than what it is writing over.");
-			transaction.Add(node.Id, node.Module, () => node.Module.ApplyHexPatch(node.Id, node.Value, request.Offset, data));
+			transaction.Add(node.Id, moduleEntry, () => moduleEntry.ApplyHexPatch(node.Id, node.Value, request.Offset, data));
 		}
 
 		public ModuleInfoResponse GetModuleInfo(string moduleId) {
@@ -1765,13 +2118,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				return NewOptions(request.Kind, owner, request.Nested);
 			if (GetNodeOrNull(request.NodeId) is not { } node || node.Value is not IMDTokenProvider member)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be edited.");
-			return CreateEditContext(node.Module).Options.Existing(member);
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support editing.");
+			return CreateEditContext(moduleEntry).Options.Existing(member);
 		}
 
 		NodeOptionsDto NewOptions(string kind, NodeEntry? owner, bool nested) {
-			var module = owner?.Module ?? OpenModules.FirstOrDefault()
+			var moduleEntry = owner?.AsModuleEntry ?? OpenModules.FirstOrDefault()
 				?? throw new RpcException(ErrorCodes.EditValidationFailed, "The workspace has no module to create the item in.");
-			var options = CreateEditContext(module).Options;
+			var options = CreateEditContext(moduleEntry).Options;
 			return kind switch {
 				// A nested type has no namespace of its own, which is what dnSpy's own create command passes.
 				NodeOptionKinds.Type => options.NewType(nested ? string.Empty : NamespaceOf(owner), nested),
@@ -1863,9 +2218,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.NodeId);
 			if (node.Value is not IMDTokenProvider)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "Only types and members can be renamed.");
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support renaming.");
 			var oldName = GetEditableName(node.Value)
 				?? throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be renamed.");
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				SetEditableName(node.Value, request.NewName);
 				return () => SetEditableName(node.Value, oldName);
 			});
@@ -1874,11 +2231,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public void QueueDelete(DeleteEditRequest request) {
 			var transaction = GetTransaction(request.TransactionId);
 			var node = GetNode(request.NodeId);
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support deletion.");
 			var undo = new List<Action>();
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				// Validation happens before any list is touched, so a rejected delete cannot leave the
 				// module half-modified when CommitEdit rolls this operation back.
-				PlanDelete(node, out var remove);
+				PlanDelete(node, moduleEntry, out var remove);
 				foreach (var step in remove)
 					step(undo);
 				return () => {
@@ -1894,10 +2253,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// Works out how to remove <paramref name="node"/> without mutating anything yet. Each step both
 		/// performs the removal when handed the undo list and records how to put the item back.
 		/// </summary>
-		static void PlanDelete(NodeEntry node, out IReadOnlyList<Action<List<Action>>> remove) {
+		static void PlanDelete(NodeEntry node, ModuleEntry module, out IReadOnlyList<Action<List<Action>>> remove) {
 			switch (node.Value) {
 			case TypeDef type: {
-				var owner = type.DeclaringType is null ? node.Module.Module.Types : type.DeclaringType.NestedTypes;
+				var owner = type.DeclaringType is null ? module.Module.Types : type.DeclaringType.NestedTypes;
 				var index = owner.IndexOf(type);
 				if (index < 0)
 					throw new RpcException(ErrorCodes.EditValidationFailed, "The type no longer belongs to its owner.");
@@ -1961,7 +2320,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				break;
 			}
 			case NamespaceValue ns: {
-				var types = node.Module.Module.Types
+				var types = module.Module.Types
 					.Select((type, index) => (Type: type, Index: index))
 					.Where(entry => entry.Type.DeclaringType is null && !entry.Type.IsGlobalModuleType &&
 						(entry.Type.Namespace.String ?? string.Empty) == ns.Name)
@@ -1970,13 +2329,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				// Removing every type of the namespace, and removing an empty namespace, are the same
 				// command in dnSpy — the latter just ends up with nothing to remove.
 				remove = types.Select(entry => (Action<List<Action>>)(undo => {
-					node.Module.Module.Types.RemoveAt(entry.Index);
-					undo.Add(() => node.Module.Module.Types.Insert(entry.Index, entry.Type));
+					module.Module.Types.RemoveAt(entry.Index);
+					undo.Add(() => module.Module.Types.Insert(entry.Index, entry.Type));
 				})).ToArray();
 				break;
 			}
 			case Resource resource: {
-				var owner = node.Module.Module.Resources;
+				var owner = module.Module.Resources;
 				var index = owner.IndexOf(resource);
 				if (index < 0)
 					throw new RpcException(ErrorCodes.EditValidationFailed, "The resource no longer belongs to the module.");
@@ -2045,10 +2404,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.NodeId);
 			if (node.Value is not NamespaceValue ns)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "Only a namespace can be renamed.");
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support namespace operations.");
 
 			var oldName = ns.Name;
 			var newName = request.NewName;
-			var types = node.Module.Module.Types
+			var types = moduleEntry.Module.Types
 				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType && (t.Namespace.String ?? string.Empty) == oldName)
 				.ToArray();
 			if (types.Length == 0)
@@ -2064,7 +2425,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				.Where(typeRef => movedNames.Contains(typeRef.FullName))
 				.ToArray();
 
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				foreach (var typeRef in typeRefs)
 					typeRef.Namespace = newName;
 				foreach (var type in types)
@@ -2083,11 +2444,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.MethodNodeId);
 			if (node.Value is not MethodDef method)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item is not a method.");
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support method body editing.");
 			if (method.HasBody && method.Body.ExceptionHandlers.Count > 0 && !request.ClearExceptionHandlers)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The method contains exception handlers. Explicitly clear them or use an exception-handler aware editor.");
 
 			var body = BuildMethodBody(method, request);
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				var oldBody = method.Body;
 				method.Body = body;
 				return () => method.Body = oldBody;
@@ -2099,9 +2462,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.MethodNodeId);
 			if (node.Value is not MethodDef method)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item is not a method.");
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support method body editing.");
 
 			var body = MethodBodyStub.Create(method);
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				var oldBody = method.Body;
 				var oldCodeType = method.CodeType;
 				// dnSpy's MethodBodyOptions.CopyTo writes the code type back as IL; a method that was
@@ -2120,6 +2485,8 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.ResourceNodeId);
 			if (node.Value is not EmbeddedResource oldResource)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "Only embedded resources can be replaced.");
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support resource editing.");
 			byte[] data;
 			try {
 				data = Convert.FromBase64String(request.Base64Data);
@@ -2127,15 +2494,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			catch (FormatException ex) {
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The resource data is not valid base64.", null, ex);
 			}
-			var index = node.Module.Module.Resources.IndexOf(oldResource);
+			var index = moduleEntry.Module.Resources.IndexOf(oldResource);
 			if (index < 0)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The resource no longer belongs to the module.");
 			var replacement = new EmbeddedResource(oldResource.Name, data, oldResource.Attributes);
-			transaction.Add(node.Id, node.Module, () => {
-				node.Module.Module.Resources[index] = replacement;
+			transaction.Add(node.Id, moduleEntry, () => {
+				moduleEntry.Module.Resources[index] = replacement;
 				node.Value = replacement;
 				return () => {
-					node.Module.Module.Resources[index] = oldResource;
+					moduleEntry.Module.Resources[index] = oldResource;
 					node.Value = oldResource;
 				};
 			});
@@ -2154,6 +2521,8 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public EditNodeResponse QueueCreate(CreateNodeRequest request) {
 			var transaction = GetTransaction(request.TransactionId);
 			var owner = GetNode(request.OwnerNodeId);
+			var ownerModule = owner.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support creating items.");
 			var options = request.Options;
 			// Which list the row goes in is decided by its owner, so say now whether there is one: a rejected
 			// request should not burn a row id on an object nothing will ever hold.
@@ -2174,10 +2543,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			else
 				ownerType = OwnerTypeOf(owner);
 
-			var created = Create(options, CreateEditContext(owner.Module), ownerType);
-			var node = GetMemberNode(created, owner.Module);
+			var created = Create(options, CreateEditContext(ownerModule), ownerType);
+			var node = GetMemberNode(created, ownerModule);
 			var membership = MembershipOf(owner, ownerType, created);
-			transaction.Add(node.Id, owner.Module, () => {
+			transaction.Add(node.Id, ownerModule, () => {
 				membership.Add();
 				return membership.Remove;
 			});
@@ -2208,12 +2577,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var node = GetNode(request.NodeId);
 			if (node.Value is not IMDTokenProvider target)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The selected item cannot be edited.");
-			var context = CreateEditContext(node.Module);
+			var moduleEntry = node.AsModuleEntry
+				?? throw new RpcException(ErrorCodes.EditValidationFailed, "PE-only modules do not support editing.");
+			var context = CreateEditContext(moduleEntry);
 			var before = context.Options.Existing(target);
 			if (before.Kind != request.Options.Kind)
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The options are for a different kind of item.");
 			var after = request.Options;
-			transaction.Add(node.Id, node.Module, () => {
+			transaction.Add(node.Id, moduleEntry, () => {
 				Apply(context, target, after);
 				return () => Apply(context, target, before);
 			});
@@ -2255,7 +2626,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		static (Action Add, Action Remove) MembershipOf(NodeEntry owner, TypeDef? ownerType, IMDTokenProvider created) => created switch {
 			// A type with no type to be nested in is a top-level one, which the module holds; its own
 			// namespace is what files it, and there is no list per namespace to put it in.
-			TypeDef type when ownerType is null => Pair(owner.Module.Module.Types, type),
+			TypeDef type when ownerType is null => Pair(owner.AsModuleEntry!.Module.Types, type),
 			TypeDef type => Pair(ownerType.NestedTypes, type),
 			MethodDef method => Pair(ownerType!.Methods, method),
 			FieldDef field => Pair(ownerType!.Fields, field),
@@ -2282,7 +2653,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				throw new RpcException(ErrorCodes.EditValidationFailed, "The edit transaction could not be applied.", null, ex);
 			}
 			transactions.Remove(transactionId);
-			foreach (var module in transaction.Operations.Select(operation => operation.Module).Distinct())
+			foreach (var module in transaction.Operations.Select(operation => operation.Module).Distinct().OfType<ModuleEntry>())
 				module.IsModified = true;
 			var previousStateId = stateId;
 			stateId = Guid.NewGuid().ToString("N");
@@ -2421,8 +2792,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// has not reset yet would otherwise match a node that is not the one it named.
 		/// </summary>
 		public async Task<OpenWorkspaceResponse> ReloadAsync(CancellationToken cancellationToken) {
-			var paths = modules.Values.Select(module => module.Path).ToArray();
+			var paths = OrderedEntries().Select(entry => entry.Path).ToArray();
 			modules.Clear();
+			peModules.Clear();
+			elfFiles.Clear();
+			unknownFiles.Clear();
 			referenceModules.Clear();
 			referenceResolvers.Clear();
 			referencePaths.Clear();
@@ -2438,7 +2812,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			stateId = Guid.NewGuid().ToString("N");
 			symbols.Invalidate();
 			await LoadModulesAsync(paths, cancellationToken).ConfigureAwait(false);
-			if (modules.Count == 0)
+			if (modules.Count == 0 && peModules.Count == 0 && elfFiles.Count == 0 && unknownFiles.Count == 0)
 				throw new RpcException(ErrorCodes.FileNotFound, "None of the assemblies could be reloaded.");
 			return CreateOpenResponse();
 		}
@@ -2584,7 +2958,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		ModuleEntry GetModule(string moduleId) => modules.TryGetValue(moduleId, out var module)
 			? module
-			: throw new RpcException(ErrorCodes.NodeNotFound, "The module no longer exists.");
+			// A PE-only, ELF or unreadable file is in the tree but has no module to edit or write, and saying
+			// so is more use than reporting that the id is unknown.
+			: throw new RpcException(
+				ErrorCodes.NodeNotFound,
+				peModules.ContainsKey(moduleId) || elfFiles.ContainsKey(moduleId) || unknownFiles.ContainsKey(moduleId)
+					? "This file is not a managed assembly, so it cannot be edited or saved."
+					: "The module no longer exists.");
 
 		NodeEntry GetNode(string nodeId) => nodes.TryGetValue(nodeId, out var node)
 			? node
@@ -2596,7 +2976,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			member,
 			module);
 
-		NodeEntry GetOrAddNode(string key, NodeKind kind, object value, ModuleEntry module) {
+		NodeEntry GetOrAddNode(string key, NodeKind kind, object value, object module) {
 			if (nodeIdsByKey.TryGetValue(key, out var id))
 				return nodes[id];
 			id = $"n{(++nextNodeId).ToString(CultureInfo.InvariantCulture)}";
@@ -2674,6 +3054,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			NodeKind.Assembly => GetAssemblyLabel(node),
 			NodeKind.Module => GetModuleLabel((ModuleDefMD)node.Value),
 			NodeKind.PE => "PE",
+			NodeKind.PeStructure => GetPeStructureLabel(node),
+			NodeKind.Elf => "ELF",
+			NodeKind.ElfStructure => GetElfStructureLabel(node),
+			// dnSpy names these nodes after the file, so the tree says which file could not be read.
+			NodeKind.PEDocument or NodeKind.UnknownDocument or NodeKind.ElfDocument => Path.GetFileName(((IModuleEntry)node.Module).Path),
 			NodeKind.Namespace => string.IsNullOrEmpty(((NamespaceValue)node.Value).Name) ? "-" : ((NamespaceValue)node.Value).Name,
 			NodeKind.TypeReferencesGroup => "Type References",
 			NodeKind.ReferencesGroup => "Assembly References",
@@ -2684,6 +3069,21 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			NodeKind.Type or NodeKind.Method or NodeKind.Field or NodeKind.Property or NodeKind.Event => GetMemberDisplayName((IMDTokenProvider)node.Value),
 			_ => node.Kind.ToString(),
 		};
+
+		static string GetPeStructureLabel(NodeEntry node) {
+			var value = (PeStructureValue)node.Value;
+			var entry = (IModuleEntry)node.Module;
+			return GetPeStructureSource(entry) is { } source
+				? PeStructureFormatter.Label(source, value.Kind, value.Index)
+				: value.Kind.ToString();
+		}
+
+		static string GetElfStructureLabel(NodeEntry node) {
+			var value = (ElfStructureValue)node.Value;
+			return node.Module is ElfFileEntry entry
+				? ElfStructureFormatter.Label(entry.Elf, value.Kind, value.Index)
+				: value.Kind.ToString();
+		}
 
 		static string GetAssemblyLabel(NodeEntry node) {
 			// Assembly node's value could be AssemblyDef or ModuleDefMD (for modules without assembly)
@@ -2708,8 +3108,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		static string? GetDescription(NodeEntry node) => node.Kind switch {
-			NodeKind.Assembly => node.Module.Path,
-			NodeKind.Module => node.Module.Path,
+			NodeKind.Assembly or NodeKind.Module or NodeKind.PEDocument or NodeKind.UnknownDocument or NodeKind.ElfDocument => ((IModuleEntry)node.Module).Path,
+			// dnSpy's hex nodes show the file they read the structure out of as their tooltip, and the ELF
+			// structures do the same.
+			NodeKind.PE or NodeKind.PeStructure or NodeKind.Elf or NodeKind.ElfStructure => ((IModuleEntry)node.Module).Path,
 			NodeKind.AssemblyReference => ((AssemblyRef)node.Value).FullName,
 			NodeKind.Resource => DescribeResource((Resource)node.Value),
 			NodeKind.ResourceEntry => DescribeResourceEntry((ResourceEntryValue)node.Value),
@@ -2721,6 +3123,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		bool HasChildren(NodeEntry node) => node.Kind switch {
 			NodeKind.Assembly or NodeKind.Module or NodeKind.PE or NodeKind.Namespace or NodeKind.TypeReferencesGroup or NodeKind.ReferencesGroup or NodeKind.ResourcesGroup => true,
+			// A PE document has the PE node, the way dnSpy's does wherever the image was read from a file.
+			NodeKind.PEDocument => node.Module is PeOnlyModuleEntry,
+			// An ELF document has the node its headers hang off, and that node always has the file header.
+			NodeKind.ElfDocument => node.Module is ElfFileEntry,
+			NodeKind.Elf => true,
 			NodeKind.AssemblyReference => HasAssemblyReferenceChildren(node),
 			NodeKind.Resource => node.Value is EmbeddedResource resource && resource.Name.EndsWith(".resources", StringComparison.OrdinalIgnoreCase),
 			NodeKind.Type => ((TypeDef)node.Value).NestedTypes.Count + ((TypeDef)node.Value).Fields.Count + ((TypeDef)node.Value).Properties.Count + ((TypeDef)node.Value).Events.Count + ((TypeDef)node.Value).Methods.Count != 0,
@@ -2730,7 +3137,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		static string GetIcon(NodeEntry node) => node.Kind switch {
 			NodeKind.Assembly => "assembly",
 			NodeKind.Module => "assembly",
-			NodeKind.PE => "binary",
+			// Every hex structure node dnSpy creates uses DsImages.BinaryFile.
+			NodeKind.PE or NodeKind.PeStructure => "binary",
+			NodeKind.PEDocument => "binary",
+			// An ELF image is read the same way and shown the same way: it is a binary whose headers are
+			// what there is to see.
+			NodeKind.Elf or NodeKind.ElfStructure or NodeKind.ElfDocument => "binary",
+			// dnSpy shows an unknown document with DsImages.AssemblyError.
+			NodeKind.UnknownDocument => "error",
 			NodeKind.Namespace => "namespace",
 			NodeKind.TypeReferencesGroup => "reference",
 			NodeKind.ReferencesGroup or NodeKind.AssemblyReference => "reference",
@@ -2904,6 +3318,30 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			return null;
 		}
 
+		internal PeOnlyModuleEntry? FindPeModuleEntry(string path) {
+			foreach (var entry in peModules.Values) {
+				if (Path.GetFullPath(entry.Path).Equals(Path.GetFullPath(path), StringComparison.Ordinal))
+					return entry;
+			}
+			return null;
+		}
+
+		internal ElfFileEntry? FindElfEntry(string path) {
+			foreach (var entry in elfFiles.Values) {
+				if (Path.GetFullPath(entry.Path).Equals(Path.GetFullPath(path), StringComparison.Ordinal))
+					return entry;
+			}
+			return null;
+		}
+
+		internal UnknownFileEntry? FindUnknownEntry(string path) {
+			foreach (var entry in unknownFiles.Values) {
+				if (Path.GetFullPath(entry.Path).Equals(Path.GetFullPath(path), StringComparison.Ordinal))
+					return entry;
+			}
+			return null;
+		}
+
 		internal IEnumerable<ModuleEntry> OpenModules => modules.Values;
 
 		internal string SymbolScope => stateId;
@@ -2937,6 +3375,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			foreach (var module in modules.Values)
 				module.Module.Dispose();
 			modules.Clear();
+			foreach (var peModule in peModules.Values)
+				peModule.PEImage.Dispose();
+			peModules.Clear();
+			// An ELF image holds nothing but the headers that were read out of the file, so there is
+			// nothing to dispose of here.
+			elfFiles.Clear();
+			unknownFiles.Clear();
 			foreach (var module in referenceModules.Values)
 				module.Module.Dispose();
 			referenceModules.Clear();
@@ -3026,7 +3471,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 		}
 
-		internal sealed class ModuleEntry(string path, ModuleDefMD module) {
+		internal sealed class ModuleEntry(string path, ModuleDefMD module) : IModuleEntry {
 			public string Id { get; set; } = string.Empty;
 			public string Path { get; } = path;
 			public ModuleDefMD Module { get; } = module;
@@ -3144,12 +3589,16 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
 		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);
-		sealed class NodeEntry(string id, string key, NodeKind kind, object value, ModuleEntry module) {
+		sealed class NodeEntry(string id, string key, NodeKind kind, object value, object module) {
 			public string Id { get; } = id;
 			public string Key { get; } = key;
 			public NodeKind Kind { get; } = kind;
 			public object Value { get; set; } = value;
-			public ModuleEntry Module { get; } = module;
+			/// <summary>The module this node belongs to — a ModuleEntry, or one of the entries for the files
+			/// that are not managed ones (PeOnlyModuleEntry, ElfFileEntry, UnknownFileEntry).</summary>
+			public object Module { get; } = module;
+			public ModuleEntry? AsModuleEntry => Module as ModuleEntry;
+			public PeOnlyModuleEntry? AsPeOnlyModuleEntry => Module as PeOnlyModuleEntry;
 		}
 
 		sealed class EditTransaction(int baseVersion) {
@@ -3157,10 +3606,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			public int BaseVersion { get; } = baseVersion;
 			public List<EditOperation> Operations { get; } = [];
 
-			public void Add(string nodeId, ModuleEntry module, Func<Action> apply) => Operations.Add(new EditOperation(nodeId, module, apply));
+			public void Add(string nodeId, IModuleEntry module, Func<Action> apply) => Operations.Add(new EditOperation(nodeId, module, apply));
 		}
 
-		sealed record EditOperation(string NodeId, ModuleEntry Module, Func<Action> Apply);
+		sealed record EditOperation(string NodeId, IModuleEntry Module, Func<Action> Apply);
 		sealed record EditHistoryEntry(IReadOnlyList<EditOperation> Operations, IReadOnlyList<Action> UndoActions, string BeforeStateId, string AfterStateId);
 
 		internal sealed class SpanTextOutput(Func<object, string?> resolveTarget) : ITextOutput {
@@ -3251,7 +3700,20 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		enum NodeKind {
 			Assembly,
 			Module,
+			// The PE structure node under a module, one of dnSpy's AsmEditor hex nodes.
 			PE,
+			// One field of that PE structure — a header, a section, a metadata stream.
+			PeStructure,
+			// The ELF node under an ELF document and one field of it — the file header, a program header or
+			// a section header. dnSpy has no ELF reader, so these follow the PE node's shape instead.
+			Elf,
+			ElfStructure,
+			// A root for a file that is a PE image but not a managed assembly, one for an ELF image, and one
+			// for a file that is neither. All are labelled with the file name, as dnSpy's PE and unknown
+			// document nodes are.
+			PEDocument,
+			ElfDocument,
+			UnknownDocument,
 			Namespace,
 			TypeReferencesGroup,
 			ReferencesGroup,
@@ -3269,6 +3731,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		static class ILFormatter {
 			public static string Format(NodeEntry node, Func<MethodDef, IReadOnlyList<ILSourceStatement>>? sourceProvider = null) {
 				var builder = new StringBuilder();
+				// A PE node and its structures are headers of the image, not code, so the node's own name is
+				// all there is to say about them. The ELF structures are the same thing.
+				if (node.Kind is NodeKind.PE or NodeKind.PeStructure or NodeKind.Elf or NodeKind.ElfStructure) {
+					builder.AppendLine($"// {GetLabel(node)}");
+					return builder.ToString();
+				}
 				switch (node.Value) {
 					case ModuleDef module:
 						builder.AppendLine($"// {module.Assembly?.FullName ?? module.Name.String}");
@@ -3304,6 +3772,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 						break;
 					case Resource resource:
 						builder.AppendLine($".mresource {resource.Attributes} '{resource.Name}'");
+						break;
+					// A PE-only or unreadable file has no metadata, so it has no IL either. Its own name is
+					// what the C# document shows as well, and it beats the generic error below.
+					case IModuleEntry entry:
+						builder.AppendLine($"// {Path.GetFileName(entry.Path)}");
 						break;
 					default:
 						throw new RpcException(ErrorCodes.UnsupportedDocument, "This tree node has no IL representation.");
@@ -3389,5 +3862,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				_ => operand.ToString() ?? string.Empty,
 			};
 		}
+	}
+
+	/// <summary>
+	/// Common interface for module entries (both managed and non-managed PE files).
+	/// </summary>
+	internal interface IModuleEntry {
+		string Id { get; }
+		string Path { get; }
+		long FileLength { get; }
 	}
 }

@@ -1121,6 +1121,42 @@ test.describe('opening more than one assembly', () => {
   })
 })
 
+// A file dnSpy cannot read is opened all the same, the way WPF's unknown document is: the tree shows it
+// under its file name and so does the tab. Opening one used to fail the whole command, which is what made
+// an ELF executable — the reported case, and what this fixture is — impossible to open at all.
+test.describe('opening a file that is not a managed assembly', () => {
+  const fixtureDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-unknown-'))
+  const unknownFilePath = path.join(fixtureDirectory, 'not-an-assembly')
+
+  test.beforeEach(async () => {
+    // An ELF header: the file the report was about, and one no PE reader will accept.
+    writeFileSync(unknownFilePath, Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]))
+    await launchApp(unknownFilePath)
+  })
+  test.afterEach(async () => {
+    await closeApp()
+    rmSync(fixtureDirectory, { recursive: true, force: true })
+  })
+
+  test('keeps it in the tree and opens it as a document', async () => {
+    await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+
+    const root = page.getByRole('treeitem').first()
+    await expect(root).toContainText('not-an-assembly')
+    await expect(root).toHaveAttribute('data-kind', 'unknowndocument')
+
+    // The command did what it was asked, so nothing reports a failure — and no dialog is left behind.
+    const output = page.getByRole('tabpanel', { name: 'Output' })
+    await expect(output).toContainText('Opened 1 module(s).')
+    await expect(output).not.toContainText('Open failed')
+
+    await root.dblclick()
+    await expect(page.getByRole('tab', { name: 'not-an-assembly' })).toBeVisible()
+    await expect.poll(async () => (await page.locator('.monaco-editor .view-lines').innerText()).replaceAll(' ', ' '))
+      .toContain('// not-an-assembly')
+  })
+})
+
 // Double-clicking a type row is how every other test opens a document; this is that, named for what the
 // session tests do with it.
 const openHelloRequest = async (): Promise<void> => {

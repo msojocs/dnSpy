@@ -1327,23 +1327,618 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Single(roots.Nodes);
 	}
 
+	/// <summary>
+	/// A file that is neither a managed assembly nor a PE image opens as an unknown document: the tree
+	/// shows it under its file name and the tab holds that name, which is dnSpy's behaviour for anything it
+	/// cannot read. Failing the whole command instead — which is what an ELF executable used to do — is the
+	/// bug this pins down.
+	/// </summary>
+	[Fact]
+	public async Task OpensAFileThatIsNeitherManagedNorPeAsAnUnknownDocument() {
+		var path = Path.Combine(Path.GetTempPath(), $"dnspy-unknown-{Guid.NewGuid():N}");
+		// An ELF header, the case that was reported. dnSpy's PE reader refuses it, so it never reaches the
+		// managed path at all.
+		await File.WriteAllBytesAsync(
+			path,
+			[0x7F, (byte)'E', (byte)'L', (byte)'F', 2, 1, 1, ..new byte[32]],
+			TestContext.Current.CancellationToken);
+		try {
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+			var root = Assert.Single((await manager.GetRootsAsync(
+				new WorkspaceRequest(opened.WorkspaceId),
+				TestContext.Current.CancellationToken)).Nodes);
+
+			Assert.Equal("unknowndocument", root.Kind);
+			Assert.Equal(Path.GetFileName(path), root.Label);
+			Assert.Equal(path, root.Description);
+			Assert.Equal("error", root.Icon);
+			Assert.False(root.HasChildren);
+
+			// It is in the module list too, so a session that is restored opens it again rather than
+			// quietly dropping the file the user had.
+			var module = Assert.Single(opened.Modules);
+			Assert.Equal(path, module.Path);
+			Assert.Equal(Path.GetFileName(path), module.Name);
+
+			var document = await manager.DecompileAsync(
+				new DecompileRequest(opened.WorkspaceId, root.Id, DecompilerLanguage.CSharp),
+				TestContext.Current.CancellationToken);
+			Assert.Equal($"// {Path.GetFileName(path)}", document.Text.TrimEnd());
+			Assert.Contains(document.Diagnostics, diagnostic => diagnostic.Severity == "info");
+
+			// There is nothing to edit or write, and the answer says so rather than naming the wrong thing.
+			var save = await Assert.ThrowsAsync<RpcException>(() => manager.SaveModuleInPlaceAsync(
+				new SaveModuleInPlaceRequest(opened.WorkspaceId, root.Id),
+				TestContext.Current.CancellationToken));
+			Assert.Equal(ErrorCodes.NodeNotFound, save.Code);
+			Assert.Contains("not a managed assembly", save.Message, StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	/// <summary>
+	/// One unreadable file in a multi-selection does not take the rest of it down: dnSpy opens every file
+	/// it was given and keeps the ones it cannot read as unknown documents beside them.
+	/// </summary>
+	[Fact]
+	public async Task OpeningAManagedAssemblyAndAnUnreadableFileKeepsBoth() {
+		var path = Path.Combine(Path.GetTempPath(), $"dnspy-unknown-{Guid.NewGuid():N}");
+		await File.WriteAllTextAsync(path, "not a managed assembly", TestContext.Current.CancellationToken);
+		try {
+			var assembly = typeof(HelloRequest).Assembly.Location;
+			var opened = await manager.OpenAsync(
+				new OpenWorkspaceRequest([assembly, path]),
+				TestContext.Current.CancellationToken);
+			var roots = (await manager.GetRootsAsync(
+				new WorkspaceRequest(opened.WorkspaceId),
+				TestContext.Current.CancellationToken)).Nodes;
+
+			Assert.Equal(2, roots.Count);
+			Assert.Equal(roots.Select(root => root.Id), opened.Modules.Select(module => module.Id));
+			Assert.Single(roots, root => root.Kind == "assembly");
+			Assert.Single(roots, root => root.Kind == "unknowndocument" && root.Label == Path.GetFileName(path));
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	/// <summary>
+	/// A PE image that is not a managed assembly is a PE document, named after its file, and its tab shows
+	/// the header dnSpy's PE tab shows.
+	/// </summary>
+	[Fact]
+	public async Task OpensANativePeFileAsAPeDocument() {
+		var path = Path.Combine(Path.GetTempPath(), $"dnspy-native-{Guid.NewGuid():N}.exe");
+		await File.WriteAllBytesAsync(path, MinimalNativePeImage(), TestContext.Current.CancellationToken);
+		try {
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+			var root = Assert.Single((await manager.GetRootsAsync(
+				new WorkspaceRequest(opened.WorkspaceId),
+				TestContext.Current.CancellationToken)).Nodes);
+
+			Assert.Equal("pedocument", root.Kind);
+			Assert.Equal(Path.GetFileName(path), root.Label);
+			Assert.Equal(path, root.Description);
+			Assert.Equal("binary", root.Icon);
+
+			var document = await manager.DecompileAsync(
+				new DecompileRequest(opened.WorkspaceId, root.Id, DecompilerLanguage.CSharp),
+				TestContext.Current.CancellationToken);
+			Assert.Contains("Machine:", document.Text, StringComparison.Ordinal);
+			Assert.Contains("(x86)", document.Text, StringComparison.Ordinal);
+			Assert.Contains("Windows Console", document.Text, StringComparison.Ordinal);
+			Assert.Contains(".text", document.Text, StringComparison.Ordinal);
+
+			// No .NET metadata, so there is no IL to show, and the document says that instead of failing.
+			var il = await manager.DecompileAsync(
+				new DecompileRequest(opened.WorkspaceId, root.Id, DecompilerLanguage.ILWithCSharp),
+				TestContext.Current.CancellationToken);
+			Assert.Contains("does not contain .NET metadata", il.Text, StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	/// <summary>
+	/// The smallest thing dnlib accepts as a PE image: a DOS header, a PE32 optional header with no CLR
+	/// data directory, and one .text section holding a <c>ret</c>. Nothing here is a managed assembly, which
+	/// is the point — it is the native file the PE document exists for.
+	/// </summary>
+	static byte[] MinimalNativePeImage() {
+		var data = new byte[0x400];
+		void U16(int offset, ushort value) {
+			data[offset] = (byte)value;
+			data[offset + 1] = (byte)(value >> 8);
+		}
+		void U32(int offset, uint value) {
+			for (var i = 0; i < 4; i++)
+				data[offset + i] = (byte)(value >> (8 * i));
+		}
+
+		data[0] = (byte)'M';
+		data[1] = (byte)'Z';
+		U32(0x3C, 0x80);
+		data[0x80] = (byte)'P';
+		data[0x81] = (byte)'E';
+		U16(0x84, 0x14C);           // Machine: I386
+		U16(0x86, 1);               // NumberOfSections
+		U32(0x88, 0x60000000);      // TimeDateStamp
+		U16(0x94, 0xE0);            // SizeOfOptionalHeader
+		U16(0x96, 0x0102);          // Characteristics: executable, 32-bit
+		const int optional = 0x98;
+		U16(optional, 0x10B);       // Magic: PE32
+		U32(optional + 4, 0x200);   // SizeOfCode
+		U32(optional + 16, 0x1000); // AddressOfEntryPoint
+		U32(optional + 20, 0x1000); // BaseOfCode
+		U32(optional + 28, 0x400000);   // ImageBase
+		U32(optional + 32, 0x1000);     // SectionAlignment
+		U32(optional + 36, 0x200);      // FileAlignment
+		U16(optional + 40, 6);      // MajorOperatingSystemVersion
+		U16(optional + 48, 6);      // MajorSubsystemVersion
+		U32(optional + 56, 0x2000);     // SizeOfImage
+		U32(optional + 60, 0x200);      // SizeOfHeaders
+		U16(optional + 68, 3);      // Subsystem: Windows Console
+		U32(optional + 72, 0x100000);   // SizeOfStackReserve
+		U32(optional + 76, 0x1000);     // SizeOfStackCommit
+		U32(optional + 80, 0x100000);   // SizeOfHeapReserve
+		U32(optional + 84, 0x1000);     // SizeOfHeapCommit
+		U32(optional + 92, 16);     // NumberOfRvaAndSizes — every directory stays zero, CLR included
+		const int section = 0x178;
+		foreach (var (index, value) in ".text\0\0\0"u8.ToArray().Index())
+			data[section + index] = value;
+		U32(section + 8, 0x100);        // VirtualSize
+		U32(section + 12, 0x1000);      // VirtualAddress
+		U32(section + 16, 0x200);       // SizeOfRawData
+		U32(section + 20, 0x200);       // PointerToRawData
+		U32(section + 36, 0x60000020);  // Characteristics: code, execute, read
+		data[0x200] = 0xC3;
+		return data;
+	}
+
+	[Fact]
+	public async Task APeNodeListsTheStructuresOfTheImage() {
+		var opened = await OpenContractsAssemblyAsync();
+		var pe = await FindPeNodeAsync(opened.WorkspaceId);
+
+		Assert.Equal("PE", pe.Label);
+		Assert.Equal("binary", pe.Icon);
+		Assert.True(pe.HasChildren);
+
+		var structures = await ChildrenAsync(opened.WorkspaceId, pe.Id);
+		// dnSpy's PENode.CreateChildren order: the two headers, the optional header, the sections, then the
+		// CLR header and the metadata storage it points at.
+		Assert.Equal("DOS Header", structures[0].Label);
+		Assert.Equal("File Header", structures[1].Label);
+		Assert.Matches(@"^Optional Header \((32|64)-bit\)$", structures[2].Label);
+		Assert.StartsWith("Section #0: .", structures[3].Label, StringComparison.Ordinal);
+		Assert.Contains(structures, node => node.Label == "Cor20 Header");
+		Assert.Contains(structures, node => node.Label == "Storage Signature");
+		Assert.Contains(structures, node => node.Label == "Storage Header");
+		// One node per stream the metadata holds: the tables, the strings, the blobs, ...
+		var streams = structures.Where(node => node.Label.StartsWith("Storage Stream #", StringComparison.Ordinal)).ToList();
+		Assert.NotEmpty(streams);
+		Assert.Contains(streams, node => node.Label.EndsWith(": #~", StringComparison.Ordinal));
+		Assert.Contains(streams, node => node.Label.EndsWith(": #Strings", StringComparison.Ordinal));
+
+		Assert.All(structures, node => Assert.Equal("pestructure", node.Kind));
+		Assert.All(structures, node => Assert.False(node.HasChildren));
+		// A structure belongs to the file it was read from, which is the tooltip dnSpy shows for them.
+		Assert.All(structures, node => Assert.Equal(opened.Modules[0].Path, node.Description));
+		Assert.All(structures, node => Assert.Equal("binary", node.Icon));
+	}
+
+	[Fact]
+	public async Task APeStructureDocumentListsItsFields() {
+		var opened = await OpenContractsAssemblyAsync();
+		var pe = await FindPeNodeAsync(opened.WorkspaceId);
+		var structures = await ChildrenAsync(opened.WorkspaceId, pe.Id);
+
+		var dosHeader = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "DOS Header").Id);
+		Assert.Contains("e_magic:", dosHeader, StringComparison.Ordinal);
+		Assert.Contains("(MZ)", dosHeader, StringComparison.Ordinal);
+		Assert.Contains("e_lfanew:", dosHeader, StringComparison.Ordinal);
+
+		var fileHeader = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "File Header").Id);
+		Assert.Contains("Machine:", fileHeader, StringComparison.Ordinal);
+		Assert.Contains("NumberOfSections:", fileHeader, StringComparison.Ordinal);
+		Assert.Contains("Characteristics:", fileHeader, StringComparison.Ordinal);
+
+		// The optional header is where the CLR data directory — the thing that makes a file managed — is named.
+		var optionalHeader = await DocumentTextAsync(
+			opened.WorkspaceId,
+			Assert.Single(structures, node => node.Label.StartsWith("Optional Header", StringComparison.Ordinal)).Id);
+		Assert.Contains("ImageBase:", optionalHeader, StringComparison.Ordinal);
+		Assert.Contains(".NET:", optionalHeader, StringComparison.Ordinal);
+		Assert.Contains("DataDirectories:", optionalHeader, StringComparison.Ordinal);
+
+		var section = await DocumentTextAsync(
+			opened.WorkspaceId,
+			Assert.Single(structures, node => node.Label.StartsWith("Section #0:", StringComparison.Ordinal)).Id);
+		Assert.Contains("Name:", section, StringComparison.Ordinal);
+		Assert.Contains("VirtualSize:", section, StringComparison.Ordinal);
+		Assert.Contains("CNT_CODE", section, StringComparison.Ordinal);
+
+		var cor20Header = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "Cor20 Header").Id);
+		Assert.Contains("MetaData:", cor20Header, StringComparison.Ordinal);
+		// A managed assembly built by the SDK is IL only.
+		Assert.Contains("ILOnly", cor20Header, StringComparison.Ordinal);
+
+		var storageSignature = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "Storage Signature").Id);
+		Assert.Contains("BSJB", storageSignature, StringComparison.Ordinal);
+		Assert.Contains("VersionString:", storageSignature, StringComparison.Ordinal);
+
+		var storageStream = await DocumentTextAsync(
+			opened.WorkspaceId,
+			Assert.Single(structures, node => node.Label.EndsWith(": #~", StringComparison.Ordinal)).Id);
+		Assert.Contains("Offset:", storageStream, StringComparison.Ordinal);
+		Assert.Contains("Size:", storageStream, StringComparison.Ordinal);
+
+		// A structure is a header of the image, not code, so the IL view names the node and says why it is
+		// empty instead of failing or dumping IL that does not belong to it.
+		var il = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "DOS Header").Id, DecompilerLanguage.ILWithCSharp),
+			TestContext.Current.CancellationToken);
+		Assert.Equal("// DOS Header", il.Text);
+		Assert.Contains(il.Diagnostics, diagnostic => diagnostic.Message.Contains("no IL", StringComparison.Ordinal));
+	}
+
+	[Fact]
+	public async Task ThePeNodeShowsEveryStructureInOneDocument() {
+		var opened = await OpenContractsAssemblyAsync();
+		var pe = await FindPeNodeAsync(opened.WorkspaceId);
+
+		var text = await DocumentTextAsync(opened.WorkspaceId, pe.Id);
+
+		Assert.Contains("DOS Header", text, StringComparison.Ordinal);
+		Assert.Contains("Cor20 Header", text, StringComparison.Ordinal);
+		Assert.Contains(": #~", text, StringComparison.Ordinal);
+	}
+
+	[Fact]
+	public async Task ANativePeFileListsItsStructuresToo() {
+		var path = Path.Combine(Path.GetTempPath(), $"dnspy-native-tree-{Guid.NewGuid():N}.exe");
+		await File.WriteAllBytesAsync(path, MinimalNativePeImage(), TestContext.Current.CancellationToken);
+		try {
+			var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+			var root = Assert.Single(await ChildrenAsync(opened.WorkspaceId, Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes).Id));
+			Assert.Equal("pe", root.Kind);
+
+			var structures = await ChildrenAsync(opened.WorkspaceId, root.Id);
+			Assert.Equal("DOS Header", structures[0].Label);
+			Assert.Contains(structures, node => node.Label == "Section #0: .text");
+			// Nothing points at .NET metadata, so there is no CLR header to list and no heaps to walk.
+			Assert.DoesNotContain(structures, node => node.Label == "Cor20 Header");
+			Assert.DoesNotContain(structures, node => node.Label == "Storage Header");
+
+			var section = await DocumentTextAsync(
+				opened.WorkspaceId,
+				Assert.Single(structures, node => node.Label == "Section #0: .text").Id);
+			Assert.Contains("VirtualAddress:", section, StringComparison.Ordinal);
+			Assert.Contains("0x60000020", section, StringComparison.Ordinal);
+			Assert.Contains("CNT_CODE", section, StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	/// <summary>
+	/// The smallest ELF64 image that has all three tables: a header, a loadable segment and the stack marker
+	/// as program headers, and four sections whose names live in a string table. It is what an ordinary Linux
+	/// executable looks like to the reader, with a few bytes standing in for the section contents.
+	/// </summary>
+	static byte[] MinimalElf64Image() {
+		var data = new byte[0x400];
+		void U8(int offset, byte value) => data[offset] = value;
+		void U16(int offset, ushort value) {
+			data[offset] = (byte)value;
+			data[offset + 1] = (byte)(value >> 8);
+		}
+		void U32(int offset, uint value) {
+			for (var i = 0; i < 4; i++)
+				data[offset + i] = (byte)(value >> (8 * i));
+		}
+		void U64(int offset, ulong value) {
+			for (var i = 0; i < 8; i++)
+				data[offset + i] = (byte)(value >> (8 * i));
+		}
+
+		data[0] = 0x7F;
+		data[1] = (byte)'E';
+		data[2] = (byte)'L';
+		data[3] = (byte)'F';
+		U8(4, 2);                   // ELFCLASS64
+		U8(5, 1);                   // ELFDATA2LSB
+		U8(6, 1);                   // EV_CURRENT
+		U8(7, 0);                   // ELFOSABI_SYSV
+		U16(0x10, 2);               // e_type: ET_EXEC
+		U16(0x12, 62);              // e_machine: EM_X86_64
+		U32(0x14, 1);               // e_version
+		U64(0x18, 0x401000);        // e_entry
+		U64(0x20, 64);              // e_phoff
+		U64(0x28, 0x300);           // e_shoff
+		U32(0x30, 0);               // e_flags
+		U16(0x34, 64);              // e_ehsize
+		U16(0x36, 56);              // e_phentsize
+		U16(0x38, 2);               // e_phnum
+		U16(0x3A, 64);              // e_shentsize
+		U16(0x3C, 4);               // e_shnum
+		U16(0x3E, 3);               // e_shstrndx
+
+		const int program = 64;
+		U32(program, 1);                // PT_LOAD
+		U32(program + 4, 5);            // R | X
+		U64(program + 16, 0x400000);    // p_vaddr
+		U64(program + 24, 0x400000);    // p_paddr
+		U64(program + 32, 0x200);       // p_filesz
+		U64(program + 40, 0x200);       // p_memsz
+		U64(program + 48, 0x1000);      // p_align
+		const int stack = program + 56;
+		U32(stack, 0x6474E551);         // PT_GNU_STACK
+		U32(stack + 4, 6);              // R | W
+		U64(stack + 48, 0x10);          // p_align
+
+		"\0.text\0.data\0.shstrtab\0"u8.ToArray().CopyTo(data, 0x200);
+		const int sections = 0x300;
+		Section(0, 0, 0, 0, 0, 0);                      // section 0 has neither a name nor a type
+		Section(1, 1, 0x6, 0x401000, 0x100, 4);         // .text: SHF_ALLOC | SHF_EXECINSTR
+		Section(2, 7, 0x3, 0x402000, 0x104, 4);         // .data: SHF_WRITE | SHF_ALLOC
+		Section(3, 13, 3, 0, 0x200, 23);                // .shstrtab: SHT_STRTAB
+
+		void Section(int index, uint name, ulong flags, ulong address, ulong offset, ulong size) {
+			var at = sections + index * 64;
+			U32(at, name);
+			U32(at + 4, index == 3 ? 3u : 1u);  // SHT_STRTAB for the name table, SHT_PROGBITS otherwise
+			U64(at + 8, flags);
+			U64(at + 16, address);
+			U64(at + 24, offset);
+			U64(at + 32, size);
+		}
+
+		data[0x100] = 0xC3;
+		return data;
+	}
+
+	/// <summary>
+	/// The same image in the 32-bit layout, where every field after e_ident sits at a different offset and the
+	/// program header keeps its flags at the end.
+	/// </summary>
+	static byte[] MinimalElf32Image() {
+		var data = new byte[0x300];
+		void U16(int offset, ushort value) {
+			data[offset] = (byte)value;
+			data[offset + 1] = (byte)(value >> 8);
+		}
+		void U32(int offset, uint value) {
+			for (var i = 0; i < 4; i++)
+				data[offset + i] = (byte)(value >> (8 * i));
+		}
+
+		data[0] = 0x7F;
+		data[1] = (byte)'E';
+		data[2] = (byte)'L';
+		data[3] = (byte)'F';
+		data[4] = 1;                // ELFCLASS32
+		data[5] = 1;                // ELFDATA2LSB
+		data[6] = 1;                // EV_CURRENT
+		U16(0x10, 2);               // ET_EXEC
+		U16(0x12, 3);               // EM_386
+		U32(0x14, 1);               // e_version
+		U32(0x18, 0x8048000);       // e_entry
+		U32(0x1C, 52);              // e_phoff
+		U32(0x20, 0x200);           // e_shoff
+		U16(0x28, 52);              // e_ehsize
+		U16(0x2A, 32);              // e_phentsize
+		U16(0x2C, 1);               // e_phnum
+		U16(0x2E, 40);              // e_shentsize
+		U16(0x30, 2);               // e_shnum
+		U16(0x32, 1);               // e_shstrndx
+
+		const int program = 52;
+		U32(program, 1);            // PT_LOAD
+		U32(program + 8, 0x8048000);    // p_vaddr
+		U32(program + 16, 0x100);       // p_filesz
+		U32(program + 20, 0x100);       // p_memsz
+		U32(program + 24, 5);           // p_flags: R | X
+		U32(program + 28, 0x1000);      // p_align
+
+		"\0.shstrtab\0"u8.ToArray().CopyTo(data, 0x100);
+		const int sections = 0x200;
+		for (var index = 1; index <= 1; index++) {
+			var at = sections + index * 40;
+			U32(at, 1);             // sh_name: ".shstrtab", the only name in the table
+			U32(at + 4, 3);         // SHT_STRTAB
+			U32(at + 16, 0x100);    // sh_offset
+			U32(at + 20, 11);       // sh_size
+		}
+		return data;
+	}
+
+	/// <summary>Writes a synthesized ELF image to a temp file and opens it; the caller deletes the file.</summary>
+	async Task<(OpenWorkspaceResponse Opened, string Path)> OpenElfAsync(byte[] bytes) {
+		var elfPath = Path.Combine(Path.GetTempPath(), $"dnspy-elf-{Guid.NewGuid():N}.elf");
+		await File.WriteAllBytesAsync(elfPath, bytes, TestContext.Current.CancellationToken);
+		try {
+			return (await manager.OpenAsync(new OpenWorkspaceRequest([elfPath]), TestContext.Current.CancellationToken), elfPath);
+		}
+		catch {
+			File.Delete(elfPath);
+			throw;
+		}
+	}
+
+	[Fact]
+	public async Task AnElfFileGetsAnElfNodeWithItsHeaders() {
+		var (opened, path) = await OpenElfAsync(MinimalElf64Image());
+		try {
+			var root = Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+			Assert.Equal("elfdocument", root.Kind);
+			Assert.Equal(Path.GetFileName(path), root.Label);
+			Assert.Equal(path, root.Description);
+			Assert.Equal("binary", root.Icon);
+			Assert.True(root.HasChildren);
+
+			var elf = Assert.Single(await ChildrenAsync(opened.WorkspaceId, root.Id));
+			Assert.Equal("elf", elf.Kind);
+			Assert.Equal("ELF", elf.Label);
+			Assert.True(elf.HasChildren);
+
+			// readelf's order: the file header, the program headers, then the section headers.
+			var structures = await ChildrenAsync(opened.WorkspaceId, elf.Id);
+			Assert.Equal("ELF Header", structures[0].Label);
+			Assert.Equal("Program Header #0", structures[1].Label);
+			Assert.Equal("Program Header #1", structures[2].Label);
+			// Section 0 carries no name, which is how the file itself stores it.
+			Assert.Equal("Section #0", structures[3].Label);
+			Assert.Equal("Section #1: .text", structures[4].Label);
+			Assert.Equal("Section #2: .data", structures[5].Label);
+			Assert.Equal("Section #3: .shstrtab", structures[6].Label);
+
+			Assert.All(structures, node => Assert.Equal("elfstructure", node.Kind));
+			Assert.All(structures, node => Assert.False(node.HasChildren));
+			Assert.All(structures, node => Assert.Equal(path, node.Description));
+			Assert.All(structures, node => Assert.Equal("binary", node.Icon));
+
+			// There is nothing to edit or write, and the answer says so rather than naming the wrong thing.
+			var save = await Assert.ThrowsAsync<RpcException>(() => manager.SaveModuleInPlaceAsync(
+				new SaveModuleInPlaceRequest(opened.WorkspaceId, root.Id),
+				TestContext.Current.CancellationToken));
+			Assert.Equal(ErrorCodes.NodeNotFound, save.Code);
+			Assert.Contains("not a managed assembly", save.Message, StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public async Task AnElfStructureDocumentListsItsFields() {
+		var (opened, path) = await OpenElfAsync(MinimalElf64Image());
+		try {
+			var root = Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+			var elf = Assert.Single(await ChildrenAsync(opened.WorkspaceId, root.Id));
+			var structures = await ChildrenAsync(opened.WorkspaceId, elf.Id);
+
+			// The document the file itself opens as lists every structure, like the PE document does.
+			var whole = await DocumentTextAsync(opened.WorkspaceId, root.Id);
+			Assert.Contains($"// ELF File: {Path.GetFileName(path)}", whole, StringComparison.Ordinal);
+			Assert.Contains("ELF Header", whole, StringComparison.Ordinal);
+			Assert.Contains("Section #1: .text", whole, StringComparison.Ordinal);
+
+			var header = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "ELF Header").Id);
+			Assert.Contains("Class:", header, StringComparison.Ordinal);
+			Assert.Contains("64-bit (ELFCLASS64)", header, StringComparison.Ordinal);
+			Assert.Contains("Little endian (ELFDATA2LSB)", header, StringComparison.Ordinal);
+			Assert.Contains("System V (ELFOSABI_SYSV)", header, StringComparison.Ordinal);
+			Assert.Contains("Executable file (ET_EXEC)", header, StringComparison.Ordinal);
+			Assert.Contains("x86-64 (EM_X86_64)", header, StringComparison.Ordinal);
+			Assert.Contains("EntryPointAddress:", header, StringComparison.Ordinal);
+			Assert.Contains("0x0000000000401000", header, StringComparison.Ordinal);
+			Assert.Contains("NumberOfSectionHeaders:", header, StringComparison.Ordinal);
+
+			var segment = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "Program Header #0").Id);
+			Assert.Contains("Loadable segment (PT_LOAD)", segment, StringComparison.Ordinal);
+			// The flags of a loadable segment read as a permission string, the way readelf prints them.
+			Assert.Contains("(RX)", segment, StringComparison.Ordinal);
+			Assert.Contains("VirtualAddress:", segment, StringComparison.Ordinal);
+
+			var section = await DocumentTextAsync(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "Section #1: .text").Id);
+			Assert.Contains("Name:", section, StringComparison.Ordinal);
+			Assert.Contains(".text", section, StringComparison.Ordinal);
+			Assert.Contains("Program data (SHT_PROGBITS)", section, StringComparison.Ordinal);
+			Assert.Contains("Occupies memory (SHF_ALLOC)", section, StringComparison.Ordinal);
+			Assert.Contains("Executable (SHF_EXECINSTR)", section, StringComparison.Ordinal);
+
+			// An ELF structure is a header, not code: the IL view names the node and says so.
+			var il = await manager.DecompileAsync(
+				new DecompileRequest(opened.WorkspaceId, Assert.Single(structures, node => node.Label == "ELF Header").Id, DecompilerLanguage.ILWithCSharp),
+				TestContext.Current.CancellationToken);
+			Assert.Equal("// ELF Header", il.Text);
+			Assert.Contains(il.Diagnostics, diagnostic => diagnostic.Message.Contains("no IL", StringComparison.Ordinal));
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public async Task A32BitElfImageReportsItsOwnLayout() {
+		var (opened, path) = await OpenElfAsync(MinimalElf32Image());
+		try {
+			var root = Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+			Assert.Equal("elfdocument", root.Kind);
+			var elf = Assert.Single(await ChildrenAsync(opened.WorkspaceId, root.Id));
+			var structures = await ChildrenAsync(opened.WorkspaceId, elf.Id);
+			Assert.Equal("Program Header #0", structures[1].Label);
+			Assert.Equal("Section #0", structures[2].Label);
+			Assert.Equal("Section #1: .shstrtab", structures[3].Label);
+
+			var header = await DocumentTextAsync(opened.WorkspaceId, structures[0].Id);
+			Assert.Contains("32-bit (ELFCLASS32)", header, StringComparison.Ordinal);
+			Assert.Contains("Intel 80386 (EM_386)", header, StringComparison.Ordinal);
+			// A 32-bit image prints its addresses as eight digits, not sixteen.
+			Assert.Contains("0x08048000", header, StringComparison.Ordinal);
+			Assert.DoesNotContain("0x0000000008048000", header, StringComparison.Ordinal);
+
+			var segment = await DocumentTextAsync(opened.WorkspaceId, structures[1].Id);
+			Assert.Contains("Loadable segment (PT_LOAD)", segment, StringComparison.Ordinal);
+			Assert.Contains("(RX)", segment, StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public async Task AFileThatOnlyLooksLikeAnElfStaysAnUnknownDocument() {
+		// The magic bytes and nothing behind them: some other format, or a damaged file, rather than an ELF.
+		var (opened, path) = await OpenElfAsync([0x7F, 0x45, 0x4C, 0x46, 2, 1, 1, 0]);
+		try {
+			var root = Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+			Assert.Equal("unknowndocument", root.Kind);
+			Assert.False(root.HasChildren);
+			Assert.Contains(
+				$"// {Path.GetFileName(path)}",
+				await DocumentTextAsync(opened.WorkspaceId, root.Id),
+				StringComparison.Ordinal);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
 	[Fact]
 	public async Task AddModules_RejectsWhatTheOpenCommandWouldReject() {
 		var opened = await OpenContractsAssemblyAsync();
 		var missing = Path.Combine(Path.GetDirectoryName(opened.Modules[0].Path)!, "Missing.dll");
 
+		// A path that is not there is still a rejection: dnSpy's Open command is handed paths that exist,
+		// and ExpandPaths is what says so.
 		var notFound = await Assert.ThrowsAsync<RpcException>(() => manager.AddModulesAsync(
 			new AddModulesRequest(opened.WorkspaceId, [missing]),
 			TestContext.Current.CancellationToken));
 		Assert.Equal(ErrorCodes.FileNotFound, notFound.Code);
 
+		// A file that is there but unreadable is not: it joins the tree as an unknown document, which is
+		// what the Open command does with it too.
 		var junkPath = Path.Combine(Path.GetTempPath(), $"dnspy-not-an-assembly-{Guid.NewGuid():N}.dll");
 		await File.WriteAllTextAsync(junkPath, "not a managed assembly", TestContext.Current.CancellationToken);
 		try {
-			var badImage = await Assert.ThrowsAsync<RpcException>(() => manager.AddModulesAsync(
+			var added = await manager.AddModulesAsync(
 				new AddModulesRequest(opened.WorkspaceId, [junkPath]),
-				TestContext.Current.CancellationToken));
-			Assert.Equal(ErrorCodes.InvalidParams, badImage.Code);
+				TestContext.Current.CancellationToken);
+			Assert.Empty(added.Skipped);
+			Assert.Equal(2, added.Modules.Count);
+			Assert.Contains(added.Modules, module => module.Path == junkPath && module.Name == Path.GetFileName(junkPath));
 		}
 		finally {
 			File.Delete(junkPath);
@@ -1583,6 +2178,25 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	async Task<OpenWorkspaceResponse> OpenContractsAssemblyAsync() => await manager.OpenAsync(
 		new OpenWorkspaceRequest([typeof(HelloRequest).Assembly.Location]),
 		TestContext.Current.CancellationToken);
+
+	async Task<IReadOnlyList<TreeNodeDto>> ChildrenAsync(string workspaceId, string nodeId) =>
+		(await manager.GetChildrenAsync(new NodeRequest(workspaceId, nodeId), TestContext.Current.CancellationToken)).Nodes;
+
+	async Task<string> DocumentTextAsync(string workspaceId, string nodeId) =>
+		(await manager.DecompileAsync(
+			new DecompileRequest(workspaceId, nodeId, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken)).Text;
+
+	/// <summary>
+	/// The PE node of an opened assembly. An assembly node sits at the root with the module under it and the
+	/// PE node under that, so a caller walks that far down to reach the structures of the image.
+	/// </summary>
+	async Task<TreeNodeDto> FindPeNodeAsync(string workspaceId) {
+		var assembly = Assert.Single(
+			(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = Assert.Single(await ChildrenAsync(workspaceId, assembly.Id));
+		return Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "pe");
+	}
 
 	/// <summary>
 	/// A throwaway copy of the test output, for the saves that write back over the file they read: the
