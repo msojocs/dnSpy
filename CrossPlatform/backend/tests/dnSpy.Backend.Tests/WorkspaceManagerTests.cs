@@ -1818,6 +1818,34 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	[Fact]
+	public async Task ResolvingAHexTargetOnAnElfFileAnswersWithTheFileAndNoTarget() {
+		var (opened, path) = await OpenElfAsync(MinimalElf64Image());
+		try {
+			var root = Assert.Single(
+				(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+			var elf = Assert.Single(await ChildrenAsync(opened.WorkspaceId, root.Id));
+			var length = new FileInfo(path).Length;
+
+			// Selecting an ELF node asks the same question a managed module does. It answers with the file
+			// and no member target rather than failing the query, so the edit menu simply has no hex
+			// command to show and the renderer never has to swallow an error.
+			foreach (var node in new[] { root, elf }) {
+				var target = await manager.ResolveHexTargetAsync(
+					new HexTargetRequest(opened.WorkspaceId, node.Id), TestContext.Current.CancellationToken);
+				// Both the document and its structure name the file itself, as a managed member names its module.
+				Assert.Equal(root.Id, target.ModuleId);
+				Assert.Equal(length, target.FileLength);
+				Assert.Null(target.Method);
+				Assert.Null(target.FieldInitialValue);
+				Assert.Null(target.Resource);
+			}
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Fact]
 	public async Task AnElfStructureDocumentListsItsFields() {
 		var (opened, path) = await OpenElfAsync(MinimalElf64Image());
 		try {

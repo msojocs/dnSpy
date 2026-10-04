@@ -1961,9 +1961,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// </summary>
 		public HexTargetResponse ResolveHexTarget(string nodeId) {
 			var node = GetNode(nodeId);
-			// PE-only modules don't support member-level hex operations
-			var moduleEntry = node.AsModuleEntry
-				?? throw new RpcException(ErrorCodes.UnsupportedDocument, "PE-only modules do not support hex operations.");
+			// Member-level hex targets only exist in a managed module. A node of a PE-only, ELF or unknown
+			// file answers with the file it lives in and no target, which is what leaves the hex commands
+			// off the menu for it; the query is an ordinary "nothing here" rather than an error the caller
+			// has to swallow.
+			var moduleEntry = node.Module as IModuleEntry
+				?? throw new RpcException(ErrorCodes.NodeNotFound, "The selected tree node no longer exists.");
 			HexMethodTargetDto? method = null;
 			HexRangeDto? fieldInitialValue = null;
 			HexRangeDto? resource = null;

@@ -1,4 +1,4 @@
-import { TabNode, type Model } from 'flexlayout-react'
+import { TabNode, TabSetNode, type Model } from 'flexlayout-react'
 import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
@@ -2285,10 +2285,18 @@ export function orderedDocumentKeys(model: Model): { order: string[]; active?: s
     if (documentId)
       order.push(documentId)
   })
-  const selected = model.getActiveTabset()?.getSelectedNode()
-  const active = selected?.getComponent() === 'document'
-    ? (selected.getConfig() as { documentId?: string } | undefined)?.documentId
+  const documentIdOf = (tab: TabNode | undefined): string | undefined => tab?.getComponent() === 'document'
+    ? (tab.getConfig() as { documentId?: string } | undefined)?.documentId
     : undefined
+  let active = documentIdOf(model.getActiveTabset()?.getSelectedNode())
+  // Clicking a tool window makes its tab set the active one, and it holds no document. The selected tab
+  // of the first group that does stand in, so the session keeps the document that was being read.
+  if (active === undefined) {
+    model.visitNodes((node) => {
+      if (active === undefined && node instanceof TabSetNode)
+        active = documentIdOf(node.getSelectedNode())
+    })
+  }
   return { order, active }
 }
 

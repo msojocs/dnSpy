@@ -256,7 +256,8 @@ test.describe('the workspace shell', () => {
 
     await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' }).last().click({ button: 'right' })
     await page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' }).click()
-    await expect(page.locator('.flexlayout__tabset')).toHaveCount(2)
+    // Three: the editor group, the one the split added, and the tool window dock under them both.
+    await expect(page.locator('.flexlayout__tabset')).toHaveCount(3)
 
     await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' }).click({ button: 'right' })
     await expect(page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' })).toBeVisible()
@@ -1117,6 +1118,9 @@ test.describe('opening more than one assembly', () => {
     // A file that is already open is reported as such, and adds nothing a second time.
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(modules).toHaveCount(2)
+    // Locals is the tool window that shows by default, so the message is read from the tab the command
+    // wrote to, not from whichever pane happens to be on top.
+    await page.getByRole('tab', { name: 'Output' }).click()
     await expect(page.getByRole('tabpanel', { name: 'Output' })).toContainText('already open')
   })
 })
@@ -1146,6 +1150,7 @@ test.describe('opening a file that is not a managed assembly', () => {
     await expect(root).toHaveAttribute('data-kind', 'unknowndocument')
 
     // The command did what it was asked, so nothing reports a failure — and no dialog is left behind.
+    await page.getByRole('tab', { name: 'Output' }).click()
     const output = page.getByRole('tabpanel', { name: 'Output' })
     await expect(output).toContainText('Opened 1 module(s).')
     await expect(output).not.toContainText('Open failed')

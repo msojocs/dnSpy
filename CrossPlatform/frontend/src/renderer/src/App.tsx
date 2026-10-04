@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, type IJsonModel } from 'flexlayout-react'
+import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, TabSetNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
 import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, useAppStore, type SavedSession } from './app-store'
@@ -28,6 +28,30 @@ const DocumentView = lazy(async () => {
   return { default: module.DocumentView }
 })
 
+/** The tab set the editor's documents live in, and the one the tool windows dock to. dnSpy keeps the
+ * Assembly Explorer down the left edge and splits what is left between the editor and the tool windows,
+ * so neither of these is a border: a border spans the whole window and would run under the explorer. */
+const DOCUMENT_TABSET_ID = 'documents'
+const TOOL_WINDOW_TABSET_ID = 'toolwindows'
+
+/** The tabs the View menu can bring back, with the label and component each one needs. The explorer
+ * docks to the left border; everything else belongs to the tool window tab set. */
+const restorableTabs: Record<string, { name: string; component: string }> = {
+  explorer: { name: 'Assembly Explorer', component: 'explorer' },
+  output: { name: 'Output', component: 'output' },
+  'csharp-interactive': { name: 'C# Interactive', component: 'csharp-interactive' },
+  search: { name: 'Search', component: 'search' },
+  analysis: { name: 'Analyzer', component: 'analysis' },
+  locals: { name: 'Locals', component: 'locals' },
+  'exception-settings': { name: 'Exception Settings', component: 'exception-settings' },
+  watch: { name: 'Watch', component: 'watch' },
+  callstack: { name: 'Call Stack', component: 'callstack' },
+  breakpoints: { name: 'Breakpoints', component: 'breakpoints' },
+  bookmarks: { name: 'Bookmarks', component: 'bookmarks' },
+  threads: { name: 'Threads', component: 'threads' },
+  modules: { name: 'Modules', component: 'modules' },
+}
+
 const createDefaultLayout = (): IJsonModel => ({
   global: {
     tabEnableRename: false,
@@ -46,69 +70,66 @@ const createDefaultLayout = (): IJsonModel => ({
       selected: 0,
       children: [{ type: 'tab', id: 'explorer', name: translate('Assembly Explorer'), component: 'explorer', enableClose: false }],
     },
-    {
-      type: 'border',
-      location: 'bottom',
-      size: 220,
-      selected: 0,
-      children: [
-        { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: true },
-        { type: 'tab', id: 'csharp-interactive', name: translate('C# Interactive'), component: 'csharp-interactive', enableClose: true },
-        { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
-        { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
-        { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
-        { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: true },
-        { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
-        { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: true },
-        { type: 'tab', id: 'bookmarks', name: translate('Bookmarks'), component: 'bookmarks', enableClose: true },
-        { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: true },
-        { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: true },
-      ],
-    },
   ],
   layout: {
+    // A row's orientation alternates with its depth, so the outer row lays out horizontally and the row
+    // inside it stacks the editor over the tool windows.
     type: 'row',
     children: [{
-      type: 'tabset',
-      id: 'documents',
-      weight: 100,
-      selected: 0,
-      children: [{ type: 'tab', id: 'start', name: translate('Start'), component: 'start', enableClose: false }],
+      type: 'row',
+      children: [
+        {
+          type: 'tabset',
+          id: DOCUMENT_TABSET_ID,
+          weight: 100,
+          selected: 0,
+          // Kept when its last tab closes: a tab set of its own is where a document always lands, and one
+          // flexlayout makes on the fly comes back with an id nothing here knows.
+          enableDeleteWhenEmpty: false,
+          children: [{ type: 'tab', id: 'start', name: translate('Start'), component: 'start', enableClose: false }],
+        },
+        {
+          type: 'tabset',
+          id: TOOL_WINDOW_TABSET_ID,
+          weight: 40,
+          selected: 0,
+          // dnSpy's docked tool windows read left to right along the bottom edge of their panel, in this
+          // order, with the Locals grid showing until a debugger session says otherwise.
+          tabLocation: 'bottom',
+          enableDeleteWhenEmpty: false,
+          children: [
+            { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
+            { type: 'tab', id: 'exception-settings', name: translate('Exception Settings'), component: 'exception-settings', enableClose: true },
+            { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
+            { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
+            { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
+            { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: true },
+            { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: true },
+            { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: true },
+            { type: 'tab', id: 'csharp-interactive', name: translate('C# Interactive'), component: 'csharp-interactive', enableClose: true },
+            { type: 'tab', id: 'bookmarks', name: translate('Bookmarks'), component: 'bookmarks', enableClose: true },
+            { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: true },
+            { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: true },
+          ],
+        },
+      ],
     }],
   },
 })
 
-interface RestorableBorderTab {
-  name: string
-  component: string
-  borderId: string
-  location: DockLocation
-}
-
-const restorableBorderTabs: Record<string, RestorableBorderTab> = {
-  explorer: { name: 'Assembly Explorer', component: 'explorer', borderId: 'border_left', location: DockLocation.LEFT },
-  output: { name: 'Output', component: 'output', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  'csharp-interactive': { name: 'C# Interactive', component: 'csharp-interactive', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  search: { name: 'Search', component: 'search', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  analysis: { name: 'Analyzer', component: 'analysis', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  locals: { name: 'Locals', component: 'locals', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  watch: { name: 'Watch', component: 'watch', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  callstack: { name: 'Call Stack', component: 'callstack', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  breakpoints: { name: 'Breakpoints', component: 'breakpoints', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  bookmarks: { name: 'Bookmarks', component: 'bookmarks', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  threads: { name: 'Threads', component: 'threads', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-  modules: { name: 'Modules', component: 'modules', borderId: 'border_bottom', location: DockLocation.BOTTOM },
-}
+const layoutStorageKey = 'dnspy.layout.v2'
 
 const loadLayout = (): Model => {
   try {
-    const saved = localStorage.getItem('dnspy.layout.v1')
+    const saved = localStorage.getItem(layoutStorageKey)
     const model = Model.fromJson(saved ? JSON.parse(saved) as IJsonModel : createDefaultLayout())
-    if (!model.getFirstTabSet())
+    // Everything the shell adds a tab to is one of these two; a layout without them is from before this
+    // shape and has nothing left to restore, so the default layout takes its place.
+    if (!(model.getNodeById(DOCUMENT_TABSET_ID) instanceof TabSetNode) || !(model.getNodeById(TOOL_WINDOW_TABSET_ID) instanceof TabSetNode))
       return Model.fromJson(createDefaultLayout())
     model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true }))
-    // Migrate older layouts where the tool window tabs were marked non-closable.
-    for (const id of Object.keys(restorableBorderTabs)) {
+    // Migrate older layouts where the docked tabs were marked non-closable.
+    for (const id of Object.keys(restorableTabs)) {
       const node = model.getNodeById(id)
       if (node && !node.isCloseable())
         model.doAction(Actions.updateNodeAttributes(id, { enableClose: true }))
@@ -119,7 +140,15 @@ const loadLayout = (): Model => {
   }
 }
 
-const getTargetDocumentTabSet = (model: Model) => model.getActiveTabset() ?? model.getFirstTabSet()
+/** Where a new document tab goes. The active tab set can be the tool window dock — clicking one of its
+ * tabs makes it the active one — so it is only taken while it is not that. */
+const getTargetDocumentTabSet = (model: Model): TabSetNode | undefined => {
+  const active = model.getActiveTabset()
+  if (active && active.getId() !== TOOL_WINDOW_TABSET_ID)
+    return active
+  const documents = model.getNodeById(DOCUMENT_TABSET_ID)
+  return documents instanceof TabSetNode ? documents : model.getFirstTabSet()
+}
 
 // The second key of a Ctrl+K chord, as dnSpy binds it: Ctrl+K Ctrl+K toggles, Ctrl+K Ctrl+P and Ctrl+K
 // Ctrl+N walk the bookmarks, Ctrl+K Ctrl+L clears them, Ctrl+K Ctrl+E enables or disables the one under
@@ -182,7 +211,7 @@ export const App = (): React.JSX.Element => {
   const startupHandled = useRef(false)
   const visibleToolWindows = useMemo(() => {
     const visible = new Set<string>()
-    for (const id of Object.keys(restorableBorderTabs)) {
+    for (const id of Object.keys(restorableTabs)) {
       if (model.getNodeById(id))
         visible.add(id)
     }
@@ -327,8 +356,7 @@ export const App = (): React.JSX.Element => {
 
   useEffect(() => {
     const locals = model.getNodeById('locals')
-    const border = locals?.getParent() as { isShowing?: () => boolean; getSelectedNode?: () => { getId(): string } | undefined } | undefined
-    if (debugState === 'stopped' && locals && (!border?.isShowing?.() || border.getSelectedNode?.()?.getId() !== 'locals')) {
+    if (debugState === 'stopped' && locals instanceof TabNode && !locals.isSelected()) {
       model.doAction(Actions.selectTab('locals'))
       forceLayoutUpdate((value) => value + 1)
     }
@@ -380,30 +408,35 @@ export const App = (): React.JSX.Element => {
       if (node instanceof TabNode && node.getName() !== name)
         model.doAction(Actions.renameTab(id, name))
     }
-    localStorage.setItem('dnspy.layout.v1', JSON.stringify(model.toJson()))
+    localStorage.setItem(layoutStorageKey, JSON.stringify(model.toJson()))
     forceLayoutUpdate((value) => value + 1)
   }, [locale, model, t])
 
-  const showBorderTab = (tabId: string): void => {
+  /** Brings a docked tab forward, adding it back when it has been closed. The explorer docks to the left
+   * border, where selecting its tab also opens the border; every other tool window lives in the tab set
+   * under the editor, where selecting a tab is all there is to it. */
+  const showToolWindow = (tabId: string): void => {
     const tab = model.getNodeById(tabId)
-    if (tab) {
+    if (tab instanceof TabNode) {
       const border = tab.getParent() as { isShowing?: () => boolean; getSelectedNode?: () => { getId(): string } | undefined } | undefined
-      if (!border?.isShowing?.() || border.getSelectedNode?.()?.getId() !== tabId) {
-        model.doAction(Actions.selectTab(tabId))
-        forceLayoutUpdate((value) => value + 1)
-      }
+      if (tabId === 'explorer' && border?.isShowing?.() && border.getSelectedNode?.()?.getId() === tabId)
+        return
+      model.doAction(Actions.selectTab(tabId))
+      forceLayoutUpdate((value) => value + 1)
       return
     }
-    const spec = restorableBorderTabs[tabId]
+    const spec = restorableTabs[tabId]
     if (!spec) return
-    if (!model.getNodeById(spec.borderId)) return
+    const explorer = tabId === 'explorer'
+    const target = explorer ? 'border_left' : TOOL_WINDOW_TABSET_ID
+    if (!model.getNodeById(target)) return
     model.doAction(Actions.addNode({
       type: 'tab',
       id: tabId,
       name: t(spec.name),
       component: spec.component,
       enableClose: true,
-    }, spec.borderId, spec.location, -1, true))
+    }, target, explorer ? DockLocation.LEFT : DockLocation.CENTER, -1, true))
     forceLayoutUpdate((value) => value + 1)
   }
 
@@ -510,10 +543,10 @@ export const App = (): React.JSX.Element => {
         void showCode()
       } else if (event.ctrlKey && event.altKey && event.code === 'KeyN') {
         event.preventDefault()
-        showBorderTab('csharp-interactive')
+        showToolWindow('csharp-interactive')
       } else if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'k' && workspaceId) {
         event.preventDefault()
-        showBorderTab('search')
+        showToolWindow('search')
       } else if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'f' && activeDocument === 'code') {
         event.preventDefault()
         findInActiveDocumentEditor()
@@ -564,7 +597,7 @@ export const App = (): React.JSX.Element => {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveAllModules, saveCode, saveModule, saveModuleAs, selectedNode, showBorderTab, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
+  }, [activeDocument, canRedo, canUndo, chooseAndOpen, collapseTreeViewNodes, continueDebug, debugState, deleteAllBreakpoints, deleteSelected, model, openEditNode, redoEdit, saveAllModules, saveCode, saveModule, saveModuleAs, selectedNode, showToolWindow, showCode, stepDebug, stopDebug, toggleBreakpointHere, undoEdit, workspaceId])
 
   // Closing the workspace's documents is also the first thing a restore does, so the two share it.
   const closeDocumentTabs = (): void => {
@@ -740,11 +773,11 @@ export const App = (): React.JSX.Element => {
 
   // The store cannot open tabs or tool windows itself, so it calls back into the shell. Handlers are
   // read through a ref because both close over the current workspace and layout.
-  const shellCallbacksRef = useRef({ openBookmarkTarget, showBorderTab, restoreSession })
-  shellCallbacksRef.current = { openBookmarkTarget, showBorderTab, restoreSession }
+  const shellCallbacksRef = useRef({ openBookmarkTarget, showToolWindow, restoreSession })
+  shellCallbacksRef.current = { openBookmarkTarget, showToolWindow, restoreSession }
   useEffect(() => {
     setOpenNodeById((nodeId) => shellCallbacksRef.current.openBookmarkTarget(nodeId))
-    setOpenToolWindow((tabId) => shellCallbacksRef.current.showBorderTab(tabId))
+    setOpenToolWindow((tabId) => shellCallbacksRef.current.showToolWindow(tabId))
     return () => {
       setOpenNodeById(undefined)
       setOpenToolWindow(undefined)
@@ -795,7 +828,7 @@ export const App = (): React.JSX.Element => {
 
   const openAnalysis = async (node: TreeNode): Promise<void> => {
     await analyzeNode(node)
-    showBorderTab('analysis')
+    showToolWindow('analysis')
   }
 
   // A module node and the module a hex command names are the same node id, but a command only has the
@@ -875,6 +908,7 @@ export const App = (): React.JSX.Element => {
       case 'hex': return <HexView moduleId={(node.getConfig() as { moduleId: string }).moduleId} />
       case 'module-info': return <ModuleInfoView moduleId={(node.getConfig() as { moduleId: string }).moduleId} />
       case 'locals': return <LocalsPane />
+      case 'exception-settings': return <DebugPlaceholder label={t('Exception Settings')} />
       case 'watch': return <WatchPane />
       case 'callstack': return <CallStackPane />
       case 'breakpoints': return <BreakpointsPane />
@@ -918,7 +952,7 @@ export const App = (): React.JSX.Element => {
         onReloadAll={() => void reloadAllAssemblies()}
         onSortAssemblies={() => void sortAssemblies()}
         onFind={() => { findInActiveDocumentEditor() }}
-        onSearchAssemblies={() => showBorderTab('search')}
+        onSearchAssemblies={() => showToolWindow('search')}
         onUndo={() => void undoEdit()}
         onRedo={() => void redoEdit()}
         onEditMethodBody={() => { if (selectedNode?.kind === 'method') setEditMethodNode(selectedNode) }}
@@ -970,17 +1004,17 @@ export const App = (): React.JSX.Element => {
         onNextBookmarkInDocument={() => stepBookmark(1, 'document')}
         onClearBookmarks={clearBookmarks}
         onClearBookmarksInDocument={clearBookmarksInDocument}
-        onShowExplorer={() => showBorderTab('explorer')}
-        onShowOutput={() => showBorderTab('output')}
-        onShowCSharpInteractive={() => showBorderTab('csharp-interactive')}
-        onShowLocals={() => showBorderTab('locals')}
-        onShowWatch={() => showBorderTab('watch')}
-        onShowCallStack={() => showBorderTab('callstack')}
-        onShowBreakpoints={() => showBorderTab('breakpoints')}
-        onShowThreads={() => showBorderTab('threads')}
-        onShowModules={() => showBorderTab('modules')}
+        onShowExplorer={() => showToolWindow('explorer')}
+        onShowOutput={() => showToolWindow('output')}
+        onShowCSharpInteractive={() => showToolWindow('csharp-interactive')}
+        onShowLocals={() => showToolWindow('locals')}
+        onShowWatch={() => showToolWindow('watch')}
+        onShowCallStack={() => showToolWindow('callstack')}
+        onShowBreakpoints={() => showToolWindow('breakpoints')}
+        onShowThreads={() => showToolWindow('threads')}
+        onShowModules={() => showToolWindow('modules')}
         onShowModuleBreakpoints={() => undefined}
-        onShowExceptionSettings={() => undefined}
+        onShowExceptionSettings={() => showToolWindow('exception-settings')}
         onShowAutos={() => undefined}
         onShowStaticFields={() => undefined}
         onShowProcesses={() => undefined}
@@ -1002,7 +1036,7 @@ export const App = (): React.JSX.Element => {
         onShowOptions={(category) => setOptionsDialogCategory(category ?? 'environment')}
       />
       <ToolBar
-        hasWorkspace={Boolean(workspaceId)} busy={busy} onOpen={() => void chooseAndOpen()} onSave={() => void saveModuleAs()} onSearch={() => showBorderTab('search')}
+        hasWorkspace={Boolean(workspaceId)} busy={busy} onOpen={() => void chooseAndOpen()} onSave={() => void saveModuleAs()} onSearch={() => showToolWindow('search')}
         canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.items.length - 1} onBack={goBack} onForward={goForward}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true} debugState={debugState}
         onStart={() => setDebugProgramDialogOpen(true)} onContinue={() => void continueDebug()} onPause={() => void pauseDebug()}

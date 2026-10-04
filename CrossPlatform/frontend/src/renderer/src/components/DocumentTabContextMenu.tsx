@@ -51,6 +51,20 @@ export const getDocumentTabSet = (tab: TabNode): TabSetNode | undefined => {
   return parent instanceof TabSetNode ? parent : undefined
 }
 
+/** The components that make up the document area. Every other tab is a tool window, and the tool windows
+ *  share the layout root with the editor — the explorer is a border and stays out of it. */
+const DOCUMENT_TAB_COMPONENTS = new Set(['document', 'hex', 'module-info', 'start'])
+
+const isDocumentTab = (tab: TabNode): boolean => DOCUMENT_TAB_COMPONENTS.has(tab.getComponent() ?? '')
+
+/** A tab set of tool windows and nothing else. Without this the commands below would treat the tool
+ *  window dock as an editor group: the tab menu would be offered for it, "Close All Tabs" would close
+ *  the tool windows too, and the split commands would count it as a document group. */
+const isToolWindowTabSet = (tabSet: TabSetNode): boolean => {
+  const tabs = allTabs(tabSet)
+  return tabs.length > 0 && tabs.every((tab) => !isDocumentTab(tab))
+}
+
 export const getDocumentTabSets = (model: Model): TabSetNode[] => {
   const root = model.getRootRow()
   if (!root) return []
@@ -62,7 +76,7 @@ export const getDocumentTabSets = (model: Model): TabSetNode[] => {
       node.getChildren().forEach(visit)
   }
   root.getChildren().forEach(visit)
-  return tabSets
+  return tabSets.filter((tabSet) => !isToolWindowTabSet(tabSet))
 }
 
 const belongsToDocumentLayout = (model: Model, tabSet: TabSetNode): boolean =>
