@@ -855,7 +855,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 					continue;
 				}
 				var entry = new ModuleEntry(fullPath, module);
-				var root = GetOrAddNode($"module:{fullPath}", NodeKind.Module, module, entry);
+				// Create Assembly node as root, Module will be its child
+				var assemblyDef = module.Assembly;
+				var root = GetOrAddNode($"assembly:{fullPath}", NodeKind.Assembly, assemblyDef ?? (object)module, entry);
 				entry.Id = root.Id;
 				modules.Add(entry.Id, entry);
 				rootOrder.Add(entry.Id);
@@ -926,8 +928,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		public TreeNodesResponse GetChildren(string nodeId) {
 			var node = GetNode(nodeId);
 			var children = node.Kind switch {
+				NodeKind.Assembly => GetAssemblyChildren(node),
 				NodeKind.Module => GetModuleChildren(node),
+				NodeKind.PE => GetPEChildren(node),
 				NodeKind.Namespace => GetNamespaceChildren(node),
+				NodeKind.TypeReferencesGroup => GetTypeReferenceChildren(node),
 				NodeKind.ReferencesGroup => GetReferenceChildren(node),
 				NodeKind.AssemblyReference => GetAssemblyReferenceChildren(node),
 				NodeKind.ResourcesGroup => GetResourceChildren(node),
@@ -940,14 +945,36 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		public TreeNodeDto GetNodeDto(string nodeId) => ToDto(GetNode(nodeId));
 
+		IReadOnlyList<NodeEntry> GetAssemblyChildren(NodeEntry node) {
+			// Assembly node contains the Module node as its only child
+			var module = node.Module.Module;
+			var moduleNode = GetOrAddNode($"module:{node.Module.Path}", NodeKind.Module, module, node.Module);
+			return new[] { moduleNode };
+		}
+
 		IReadOnlyList<NodeEntry> GetModuleChildren(NodeEntry node) {
 			var module = (ModuleDefMD)node.Value;
 			var result = new List<NodeEntry>();
+
+			// Order matches WPF version:
+			// 1. PE node (if applicable)
+			if (module.Metadata?.PEImage != null)
+				result.Add(GetOrAddNode($"{node.Key}:pe", NodeKind.PE, module, node.Module));
+
+			// 2. Type References folder
+			result.Add(GetOrAddNode($"{node.Key}:typerefs", NodeKind.TypeReferencesGroup, module, node.Module));
+
+			// 3. Assembly References folder
 			if (module.GetAssemblyRefs().Any())
 				result.Add(GetOrAddNode($"{node.Key}:references", NodeKind.ReferencesGroup, module, node.Module));
+
+			// 4. Resources folder
 			if (module.Resources.Count != 0)
 				result.Add(GetOrAddNode($"{node.Key}:resources", NodeKind.ResourcesGroup, module, node.Module));
+
+			// 5. Namespaces (including empty namespace shown as "-")
 			result.AddRange(GetNamespaceNodes(node.Key, node.Module));
+
 			return result;
 		}
 
@@ -977,6 +1004,19 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase)
 				.Select(t => GetMemberNode(t, node.Module))
 				.ToArray();
+		}
+
+		IReadOnlyList<NodeEntry> GetPEChildren(NodeEntry node) {
+			// PE node children are not implemented yet - this is a placeholder
+			// In WPF version, PE node contains sections like .text, .rsrc, etc.
+			return Array.Empty<NodeEntry>();
+		}
+
+		IReadOnlyList<NodeEntry> GetTypeReferenceChildren(NodeEntry node) {
+			var module = (ModuleDefMD)node.Value;
+			// Type references are types that this module references from other assemblies
+			// For now, return empty array as this requires more complex implementation
+			return Array.Empty<NodeEntry>();
 		}
 
 		IReadOnlyList<NodeEntry> GetReferenceChildren(NodeEntry node) => ((ModuleDefMD)node.Value)
@@ -1240,6 +1280,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 					text = DescribeResource((Resource)node.Value);
 				else {
 					var syntaxTree = node.Kind switch {
+						NodeKind.Assembly => decompiler.DecompileWholeModuleAsSingleFile(),
 						NodeKind.Module => decompiler.DecompileWholeModuleAsSingleFile(),
 						NodeKind.Namespace => decompiler.Decompile(((NamespaceValue)node.Value).Types.Select(ToEntityHandle)),
 						NodeKind.Type or NodeKind.Method or NodeKind.Field or NodeKind.Property or NodeKind.Event =>
@@ -2630,18 +2671,44 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			node.Key);
 
 		static string GetLabel(NodeEntry node) => node.Kind switch {
-			NodeKind.Module => ((ModuleDefMD)node.Value).Assembly?.Name.String ?? ((ModuleDefMD)node.Value).Name.String,
+			NodeKind.Assembly => GetAssemblyLabel(node),
+			NodeKind.Module => GetModuleLabel((ModuleDefMD)node.Value),
+			NodeKind.PE => "PE",
 			NodeKind.Namespace => string.IsNullOrEmpty(((NamespaceValue)node.Value).Name) ? "-" : ((NamespaceValue)node.Value).Name,
+			NodeKind.TypeReferencesGroup => "Type References",
 			NodeKind.ReferencesGroup => "Assembly References",
 			NodeKind.ResourcesGroup => "Resources",
-			NodeKind.AssemblyReference => ((AssemblyRef)node.Value).Name.String,
+			NodeKind.AssemblyReference => GetAssemblyReferenceLabel((AssemblyRef)node.Value),
 			NodeKind.Resource => ((Resource)node.Value).Name,
 			NodeKind.ResourceEntry => ((ResourceEntryValue)node.Value).Name,
 			NodeKind.Type or NodeKind.Method or NodeKind.Field or NodeKind.Property or NodeKind.Event => GetMemberDisplayName((IMDTokenProvider)node.Value),
 			_ => node.Kind.ToString(),
 		};
 
+		static string GetAssemblyLabel(NodeEntry node) {
+			// Assembly node's value could be AssemblyDef or ModuleDefMD (for modules without assembly)
+			if (node.Value is AssemblyDef assembly) {
+				var name = assembly.Name.String;
+				var version = assembly.Version;
+				return version != null ? $"{name} ({version})" : name;
+			}
+			// Fallback to module label for modules without assembly
+			return GetModuleLabel((ModuleDefMD)node.Value);
+		}
+
+		static string GetModuleLabel(ModuleDefMD module) {
+			// Module node shows just the file name (e.g., mscorlib.dll)
+			return module.Name.String;
+		}
+
+		static string GetAssemblyReferenceLabel(AssemblyRef reference) {
+			var name = reference.Name.String;
+			var version = reference.Version;
+			return version != null ? $"{name} ({version})" : name;
+		}
+
 		static string? GetDescription(NodeEntry node) => node.Kind switch {
+			NodeKind.Assembly => node.Module.Path,
 			NodeKind.Module => node.Module.Path,
 			NodeKind.AssemblyReference => ((AssemblyRef)node.Value).FullName,
 			NodeKind.Resource => DescribeResource((Resource)node.Value),
@@ -2653,7 +2720,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		};
 
 		bool HasChildren(NodeEntry node) => node.Kind switch {
-			NodeKind.Module or NodeKind.Namespace or NodeKind.ReferencesGroup or NodeKind.ResourcesGroup => true,
+			NodeKind.Assembly or NodeKind.Module or NodeKind.PE or NodeKind.Namespace or NodeKind.TypeReferencesGroup or NodeKind.ReferencesGroup or NodeKind.ResourcesGroup => true,
 			NodeKind.AssemblyReference => HasAssemblyReferenceChildren(node),
 			NodeKind.Resource => node.Value is EmbeddedResource resource && resource.Name.EndsWith(".resources", StringComparison.OrdinalIgnoreCase),
 			NodeKind.Type => ((TypeDef)node.Value).NestedTypes.Count + ((TypeDef)node.Value).Fields.Count + ((TypeDef)node.Value).Properties.Count + ((TypeDef)node.Value).Events.Count + ((TypeDef)node.Value).Methods.Count != 0,
@@ -2661,8 +2728,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		};
 
 		static string GetIcon(NodeEntry node) => node.Kind switch {
+			NodeKind.Assembly => "assembly",
 			NodeKind.Module => "assembly",
+			NodeKind.PE => "binary",
 			NodeKind.Namespace => "namespace",
+			NodeKind.TypeReferencesGroup => "reference",
 			NodeKind.ReferencesGroup or NodeKind.AssemblyReference => "reference",
 			NodeKind.ResourcesGroup or NodeKind.Resource or NodeKind.ResourceEntry => "resource",
 			NodeKind.Type => ((TypeDef)node.Value).IsInterface ? "interface" : ((TypeDef)node.Value).IsEnum ? "enum" : "class",
@@ -3179,8 +3249,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		enum NodeKind {
+			Assembly,
 			Module,
+			PE,
 			Namespace,
+			TypeReferencesGroup,
 			ReferencesGroup,
 			ResourcesGroup,
 			AssemblyReference,

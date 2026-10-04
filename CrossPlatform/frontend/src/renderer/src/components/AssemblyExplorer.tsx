@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { showPopupMenu, type IPopupMenuItem, type PopupMenuEntry } from 'flexlayout-react'
 import {
   Box,
@@ -124,16 +123,7 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModu
 
 export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps): React.JSX.Element => {
   const roots = useAppStore((state) => state.roots)
-  const expanded = useAppStore((state) => state.expanded)
-  const expandNode = useAppStore((state) => state.expandNode)
   const { t } = useLanguage()
-
-  useEffect(() => {
-    for (const root of roots) {
-      if (!expanded[root.id])
-        void expandNode(root)
-    }
-  }, [roots]) // Expanding freshly loaded roots is intentional.
 
   if (roots.length === 0)
     return <div className="pane-empty">{t('No assemblies loaded')}</div>
