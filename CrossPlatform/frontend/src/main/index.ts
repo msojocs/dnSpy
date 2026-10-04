@@ -1,10 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
 import { DialogPathHistory } from './dialog-path-history'
+import { waitForElevatedStart } from './elevated-start'
 import type { BackendStatus, DebugLaunchOptions, UiLocale } from '../shared/protocol'
 
 let mainWindow: BrowserWindow | undefined
@@ -12,9 +13,11 @@ let backend: BackendClient | undefined
 let dialogPathHistory: DialogPathHistory | undefined
 let lastBackendStatus: BackendStatus = { state: 'starting' }
 let uiLocale: UiLocale = 'en'
-// Set while a restart-as-administrator request waits on the window actually closing; see the IPC
-// handler that sets it.
-let restartPending = false
+// True while a restart-as-administrator request is being carried out, so a second one is ignored.
+let restartInFlight = false
+// True only for the close a successful restart asks for. The renderer's unsaved-edits guard must not
+// stand in its way — that question was already answered before the request was made.
+let closingForRestart = false
 const initialPaths = parseInitialPaths(process.argv)
 // dnSpy spells it `--dont-load-files`; both are accepted so a script written against either works.
 const noLoadFiles = process.argv.includes('--no-load-files') || process.argv.includes('--dont-load-files')
@@ -34,6 +37,7 @@ const nativeMessages = {
     dotNetPrograms: '.NET 程序',
     selectWorkingDirectory: '选择工作目录',
     restartFailed: '无法以管理员身份重启',
+    restartNoResponse: '以管理员身份启动的窗口始终没有出现',
   },
   en: {
     openAssembly: 'Open Assembly',
@@ -49,6 +53,7 @@ const nativeMessages = {
     dotNetPrograms: '.NET Programs',
     selectWorkingDirectory: 'Select Working Directory',
     restartFailed: 'Could not restart with elevated rights',
+    restartNoResponse: 'The window started with elevated rights never appeared',
   },
 } as const
 
@@ -58,18 +63,126 @@ const nativeText = () => nativeMessages[uiLocale]
 // process is elevated when it owns uid 0.
 const isRunningAsAdministrator = (): boolean => process.getuid?.() === 0
 
-// dnSpy restarts itself by starting Constants.ExecutablePath through the shell's "runas" verb, the
-// UAC prompt. Linux has no such verb — pkexec is the PolicyKit equivalent, asking for the same
-// credentials before running the command. Unpackaged, the executable is Electron itself and the app
-// directory is its argument; packaged, execPath is dnSpy and takes no arguments, which is also how
-// dnSpy relaunches (no file arguments — the remembered session reopens what was open).
-const relaunchElevated = (): void => {
+// Set on the elevated copy so it can report back that it came up; see relaunchElevated.
+const elevatedMarkerVariable = 'DNSPY_ELEVATED_MARKER'
+// How long the polkit prompt and the elevated copy's startup get before the restart is called off.
+const elevatedStartTimeoutMs = 30_000
+
+// pkexec hands its command a stripped environment — HOME becomes the target user's, and the display
+// and session variables are dropped — so an elevated GUI would start and die at once for want of a
+// display. Put back the ones a desktop app needs, through env(1).
+//
+// WAYLAND_DISPLAY is left out on purpose, and the copy is sent to X11 instead (see relaunchElevated):
+// a Wayland compositor authenticates its clients by uid, so the one running as root would be refused
+// the user's socket. X11 authenticates by cookie, and XAUTHORITY is a file root can read.
+const sessionEnvironment = (): string[] =>
+  ['DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']
+    .flatMap((name) => process.env[name] ? [`${name}=${process.env[name]}`] : [])
+const relaunchElevated = async (): Promise<string | undefined> => {
+  // The marker goes in a directory of this process's own making: the elevated copy writes the file
+  // as root, and /tmp's sticky bit would leave an unprivileged process unable to clear it away.
+  // The directory must be readable by root so it can access the Xauthority copy inside.
+  const markerDirectory = mkdtempSync(path.join(app.getPath('temp'), 'dnspy-elevated-'))
+  chmodSync(markerDirectory, 0o755)
+  const marker = path.join(markerDirectory, 'ready')
+  const discardMarker = (): void => {
+    try {
+      rmSync(markerDirectory, { recursive: true, force: true })
+    }
+    catch {
+      // A leftover directory under the temp path is not worth failing a restart over.
+    }
+  }
   const args = app.isPackaged ? [] : [app.getAppPath()]
-  const child = spawn('pkexec', [process.execPath, ...args], { detached: true, stdio: 'ignore' })
-  child.on('error', (error) => {
-    dialog.showErrorBox('dnSpy', `${nativeText().restartFailed}: ${error.message}`)
-  })
+  // The copy's own output goes to a file rather than a pipe: it outlives this process, and a pipe
+  // whose reader has gone would hand it a broken stdout. It is also the only account of what a copy
+  // that never puts a window up was doing.
+  const logPath = path.join(markerDirectory, 'elevated.log')
+  const logHandle = openSync(logPath, 'a')
+  // pkexec strips most environment variables before passing control to the target program — only a
+  // small allowlist (PATH, HOME, SHELL, etc.) survives the transition. Wrap everything in env(1) to
+  // restore the session variables the elevated copy needs: DISPLAY and XAUTHORITY for X11, and the
+  // DNSPY_ELEVATED_MARKER so the elevated copy can announce it came up.
+  //
+  // XAUTHORITY is a cookie file the user owns — pkexec's target runs as root and cannot read it.
+  // Copy it into the marker directory (which root will be writing to anyway) so the elevated copy
+  // has something to point XAUTHORITY at.
+  const envVars = sessionEnvironment()
+  const xauthorityIndex = envVars.findIndex((e) => e.startsWith('XAUTHORITY='))
+  if (xauthorityIndex !== -1) {
+    const originalXauthority = envVars[xauthorityIndex].split('=')[1]
+    if (originalXauthority && existsSync(originalXauthority)) {
+      const elevatedXauthority = path.join(markerDirectory, '.Xauthority')
+      try {
+        const xauthContent = readFileSync(originalXauthority)
+        writeFileSync(elevatedXauthority, xauthContent, { mode: 0o644 })
+        envVars[xauthorityIndex] = `XAUTHORITY=${elevatedXauthority}`
+      }
+      catch {
+        // If we cannot copy the Xauthority, the elevated copy will fall back to software rendering.
+      }
+    }
+  }
+  const child = spawn('pkexec', [
+    '--disable-internal-agent',
+    '--keep-cwd',
+    'env',
+    ...envVars,
+    `${elevatedMarkerVariable}=${marker}`,
+    process.execPath,
+    '--no-sandbox',
+    '--ozone-platform=x11',
+    ...args,
+  ], { detached: true, stdio: ['ignore', logHandle, logHandle] })
+  closeSync(logHandle)
+  let spawnError = ''
+  child.on('error', (error) => { spawnError += error.message })
+
+  const failure = await waitForElevatedStart(
+    child,
+    marker,
+    elevatedStartTimeoutMs,
+    spawnError || nativeText().restartFailed,
+    nativeText().restartNoResponse,
+  )
+
+  if (failure !== undefined) {
+    if (child.pid !== undefined) {
+      try {
+        // The copy has this process group to itself, so this reaches whatever it started too.
+        process.kill(-child.pid, 'SIGTERM')
+      }
+      catch {
+        child.kill()
+      }
+    }
+    const log = readFileSync(logPath, 'utf8').trim()
+    if (log)
+      console.error('[elevated restart]', log)
+    discardMarker()
+    // Whatever the copy said on its way out goes with the message: there is no window of its own to
+    // look at, so this is the only account of why it never put one up.
+    return log ? `${failure}\n\n${log.slice(-1500)}` : failure
+  }
+  discardMarker()
   child.unref()
+  return undefined
+}
+
+// The elevated copy says hello this way, which is what tells the app that asked for it to stand down.
+// It does so once its window is on screen rather than once the window object exists: the window is
+// built hidden and only shown from ready-to-show, so announcing any earlier would let the app that
+// asked for the restart quit out from under a copy the user cannot see yet.
+const announceElevatedStart = (): void => {
+  const marker = process.env[elevatedMarkerVariable]
+  if (!marker)
+    return
+  try {
+    writeFileSync(marker, String(process.pid))
+  }
+  catch {
+    // Nothing to do about it here; the copy that is waiting will time out and say so.
+  }
 }
 
 protocol.registerSchemesAsPrivileged([{
@@ -113,7 +226,9 @@ const createWindow = (): void => {
   })
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
+    mainWindow?.focus()
     mainWindow?.webContents.send('backend:status', lastBackendStatus)
+    announceElevatedStart()
   })
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) void shell.openExternal(url)
@@ -124,6 +239,11 @@ const createWindow = (): void => {
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('[renderer process gone]', details)
+    // If this is an elevated restart, the old window will be gone soon anyway — no need to treat it
+    // as an unexpected crash of a process the user is still using.
+    if (details.reason === 'clean-exit' || closingForRestart)
+      return
+    dialog.showErrorBox('dnSpy', `The renderer process exited unexpectedly: ${details.reason}`)
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const current = mainWindow?.webContents.getURL()
@@ -132,16 +252,14 @@ const createWindow = (): void => {
   })
   mainWindow.on('closed', () => {
     mainWindow = undefined
-    if (restartPending) {
-      restartPending = false
-      relaunchElevated()
-    }
+    restartInFlight = false
+    closingForRestart = false
   })
   // Restarting closes the window like any other quit, so a document still unsaved would normally
-  // hold it open. The renderer has already asked about that before requesting the restart, so once
-  // one is pending the unload is let through rather than blocked a second time.
+  // hold it open a second time over. That question was already put to the user once, before the
+  // restart was asked for, so this one close is let through.
   mainWindow.webContents.on('will-prevent-unload', (event) => {
-    if (restartPending)
+    if (closingForRestart)
       event.preventDefault()
   })
   const sendMaximizedState = (): void => {
@@ -477,13 +595,22 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('app:quit', () => app.quit())
   ipcMain.handle('app:isRunningAsAdministrator', () => isRunningAsAdministrator())
-  ipcMain.handle('app:restartAsAdministrator', () => {
-    // dnSpy's RestartAsAdministratorCommand closes the main window and restarts from its closing
-    // handler, so the restart rides the ordinary quit path rather than racing it. The renderer has
-    // already settled the unsaved-edits question by the time it asks for this.
-    if (!mainWindow || restartPending)
+  ipcMain.handle('app:restartAsAdministrator', async () => {
+    // The renderer has already settled the unsaved-edits question by the time it asks for this.
+    // Only once the elevated copy is up does this window go — unlike dnSpy, which closes first and
+    // has nothing left to say if the elevation is refused. A restart that doesn't come off leaves
+    // the app exactly as it was, with a dialog saying why.
+    if (!mainWindow || restartInFlight)
       return
-    restartPending = true
+    restartInFlight = true
+    const failure = await relaunchElevated()
+    if (failure !== undefined || !mainWindow) {
+      restartInFlight = false
+      if (failure !== undefined)
+        dialog.showErrorBox('dnSpy', failure)
+      return
+    }
+    closingForRestart = true
     mainWindow.close()
   })
 }
