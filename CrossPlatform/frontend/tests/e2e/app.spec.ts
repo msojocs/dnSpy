@@ -53,6 +53,19 @@ const closeApp = async (options: { keepUserData?: boolean } = {}): Promise<void>
     rmSync(userDataDirectory, { recursive: true, force: true })
 }
 
+/** The Bookmarks window and Output are not among the tool windows a fresh layout opens with — it carries
+ * only the six dnSpy's own does — so each is brought up from the View menu before it is read from. */
+const showBookmarksWindow = async (): Promise<void> => {
+  await page.getByRole('menuitem', { name: 'View' }).click()
+  await page.getByRole('menuitem', { name: 'Bookmarks', exact: true }).hover()
+  await page.getByRole('menuitem', { name: /^Bookmarks Window/ }).click()
+}
+
+const showOutput = async (): Promise<void> => {
+  await page.getByRole('menuitem', { name: 'View' }).click()
+  await page.getByRole('menuitem', { name: /^Output/ }).click()
+}
+
 const openAssemblyAndNamespace = async (): Promise<void> => {
   await page.getByRole('button', { name: 'Open Assembly' }).first().click()
   await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
@@ -80,7 +93,7 @@ test.describe('the workspace shell', () => {
     await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
     await expect(page.getByText('Ready', { exact: true })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Assembly Explorer' }).first()).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Output' })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Locals' })).toBeVisible()
   })
 
   test('opens and closes the in-app About dialog', async () => {
@@ -256,8 +269,8 @@ test.describe('the workspace shell', () => {
 
     await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' }).last().click({ button: 'right' })
     await page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' }).click()
-    // Three: the editor group, the one the split added, and the tool window dock under them both.
-    await expect(page.locator('.flexlayout__tabset')).toHaveCount(3)
+    // Four: the explorer's column, the editor group, the one the split added, and the tool window dock.
+    await expect(page.locator('.flexlayout__tabset')).toHaveCount(4)
 
     await page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' }).click({ button: 'right' })
     await expect(page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'New Horizontal Tab Group' })).toBeVisible()
@@ -619,7 +632,7 @@ test.describe('the workspace shell', () => {
     const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
     await expect(bodyLine).toBeVisible()
 
-    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await showBookmarksWindow()
     const rows = page.locator('.bookmark-row')
     const glyphs = page.locator('.bookmark-glyph')
     await expect(rows).toHaveCount(0)
@@ -667,7 +680,7 @@ test.describe('the workspace shell', () => {
       throw new Error('The editor is not laid out yet.')
     await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
 
-    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await showBookmarksWindow()
     const rows = page.locator('.bookmark-row')
     await expect(rows).toHaveCount(1)
     const saved = await rows.first().textContent()
@@ -679,7 +692,7 @@ test.describe('the workspace shell', () => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
 
-    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await showBookmarksWindow()
     await expect(rows).toHaveCount(1)
     await expect(rows.first()).toHaveText(saved)
   })
@@ -700,7 +713,7 @@ test.describe('the workspace shell', () => {
       throw new Error('The editor is not laid out yet.')
     await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
 
-    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await showBookmarksWindow()
     const rows = page.locator('.bookmark-row')
     const status = page.locator('.bookmarks-status')
     await expect(rows).toHaveCount(1)
@@ -740,7 +753,7 @@ test.describe('the workspace shell', () => {
     await page.keyboard.press('Control+k')
     await page.keyboard.press('Control+k')
 
-    await page.getByRole('tab', { name: 'Bookmarks' }).click()
+    await showBookmarksWindow()
     await expect(page.locator('.bookmark-row')).toHaveCount(1)
 
     // A second chord on the same statement takes it away again, as the second click in the gutter does.
@@ -1120,7 +1133,7 @@ test.describe('opening more than one assembly', () => {
     await expect(modules).toHaveCount(2)
     // Locals is the tool window that shows by default, so the message is read from the tab the command
     // wrote to, not from whichever pane happens to be on top.
-    await page.getByRole('tab', { name: 'Output' }).click()
+    await showOutput()
     await expect(page.getByRole('tabpanel', { name: 'Output' })).toContainText('already open')
   })
 })
@@ -1150,7 +1163,7 @@ test.describe('opening a file that is not a managed assembly', () => {
     await expect(root).toHaveAttribute('data-kind', 'unknowndocument')
 
     // The command did what it was asked, so nothing reports a failure — and no dialog is left behind.
-    await page.getByRole('tab', { name: 'Output' }).click()
+    await showOutput()
     const output = page.getByRole('tabpanel', { name: 'Output' })
     await expect(output).toContainText('Opened 1 module(s).')
     await expect(output).not.toContainText('Open failed')

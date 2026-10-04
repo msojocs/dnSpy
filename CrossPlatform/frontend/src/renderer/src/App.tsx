@@ -28,14 +28,21 @@ const DocumentView = lazy(async () => {
   return { default: module.DocumentView }
 })
 
-/** The tab set the editor's documents live in, and the one the tool windows dock to. dnSpy keeps the
- * Assembly Explorer down the left edge and splits what is left between the editor and the tool windows,
- * so neither of these is a border: a border spans the whole window and would run under the explorer. */
+/** The three columns the window is made of: the Assembly Explorer down the left edge, and — beside it —
+ * the editor with the tool windows under it. None of them is a border: a border carries its tabs down the
+ * outer edge of the window, while dnSpy's explorer wears its title across the top of its own column. */
+const EXPLORER_TABSET_ID = 'explorer-dock'
 const DOCUMENT_TABSET_ID = 'documents'
 const TOOL_WINDOW_TABSET_ID = 'toolwindows'
+/** The column the editor and the tool windows share. The explorer goes back in to the left of it, which
+ * is the only way to ask for a column the height of both of them. */
+const EDITOR_COLUMN_ID = 'editor-column'
+/** What the explorer's column weighs against the 100 the rest of the window weighs — a little under a
+ * third of the width. */
+const EXPLORER_WEIGHT = 43
 
-/** The tabs the View menu can bring back, with the label and component each one needs. The explorer
- * docks to the left border; everything else belongs to the tool window tab set. */
+/** The tabs the View menu can bring back, with the label and component each one needs. The explorer opens
+ * in the column on the left; everything else belongs to the tool window tab set. */
 const restorableTabs: Record<string, { name: string; component: string }> = {
   explorer: { name: 'Assembly Explorer', component: 'explorer' },
   output: { name: 'Output', component: 'output' },
@@ -44,7 +51,7 @@ const restorableTabs: Record<string, { name: string; component: string }> = {
   analysis: { name: 'Analyzer', component: 'analysis' },
   locals: { name: 'Locals', component: 'locals' },
   'exception-settings': { name: 'Exception Settings', component: 'exception-settings' },
-  watch: { name: 'Watch', component: 'watch' },
+  watch: { name: 'Watch 1', component: 'watch' },
   callstack: { name: 'Call Stack', component: 'callstack' },
   breakpoints: { name: 'Breakpoints', component: 'breakpoints' },
   bookmarks: { name: 'Bookmarks', component: 'bookmarks' },
@@ -52,6 +59,8 @@ const restorableTabs: Record<string, { name: string; component: string }> = {
   modules: { name: 'Modules', component: 'modules' },
 }
 
+// The default window, laid out the way dnSpy's is: the Assembly Explorer fills the left edge top to
+// bottom, and what is left splits between the editor over the tool windows.
 const createDefaultLayout = (): IJsonModel => ({
   global: {
     tabEnableRename: false,
@@ -60,71 +69,71 @@ const createDefaultLayout = (): IJsonModel => ({
     tabSetEnableDeleteWhenEmpty: true,
     tabSetMinWidth: 120,
     tabSetMinHeight: 80,
-    borderMinSize: 120,
   },
-  borders: [
-    {
-      type: 'border',
-      location: 'left',
-      size: 250,
-      selected: 0,
-      children: [{ type: 'tab', id: 'explorer', name: translate('Assembly Explorer'), component: 'explorer', enableClose: false }],
-    },
-  ],
   layout: {
-    // A row's orientation alternates with its depth, so the outer row lays out horizontally and the row
-    // inside it stacks the editor over the tool windows.
+    // A row's orientation alternates with its depth, so the outer row lays the explorer beside everything
+    // else and the row inside it stacks the editor over the tool windows.
     type: 'row',
-    children: [{
-      type: 'row',
-      children: [
-        {
-          type: 'tabset',
-          id: DOCUMENT_TABSET_ID,
-          weight: 100,
-          selected: 0,
-          // Kept when its last tab closes: a tab set of its own is where a document always lands, and one
-          // flexlayout makes on the fly comes back with an id nothing here knows.
-          enableDeleteWhenEmpty: false,
-          children: [{ type: 'tab', id: 'start', name: translate('Start'), component: 'start', enableClose: false }],
-        },
-        {
-          type: 'tabset',
-          id: TOOL_WINDOW_TABSET_ID,
-          weight: 40,
-          selected: 0,
-          // dnSpy's docked tool windows read left to right along the bottom edge of their panel, in this
-          // order, with the Locals grid showing until a debugger session says otherwise.
-          tabLocation: 'bottom',
-          enableDeleteWhenEmpty: false,
-          children: [
-            { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
-            { type: 'tab', id: 'exception-settings', name: translate('Exception Settings'), component: 'exception-settings', enableClose: true },
-            { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
-            { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
-            { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
-            { type: 'tab', id: 'watch', name: translate('Watch'), component: 'watch', enableClose: true },
-            { type: 'tab', id: 'breakpoints', name: translate('Breakpoints'), component: 'breakpoints', enableClose: true },
-            { type: 'tab', id: 'output', name: translate('Output'), component: 'output', enableClose: true },
-            { type: 'tab', id: 'csharp-interactive', name: translate('C# Interactive'), component: 'csharp-interactive', enableClose: true },
-            { type: 'tab', id: 'bookmarks', name: translate('Bookmarks'), component: 'bookmarks', enableClose: true },
-            { type: 'tab', id: 'threads', name: translate('Threads'), component: 'threads', enableClose: true },
-            { type: 'tab', id: 'modules', name: translate('Modules'), component: 'modules', enableClose: true },
-          ],
-        },
-      ],
-    }],
+    children: [
+      {
+        type: 'tabset',
+        id: EXPLORER_TABSET_ID,
+        weight: EXPLORER_WEIGHT,
+        selected: 0,
+        // Not kept when its tab closes: the column would be a hole the width of the explorer with nothing
+        // in it, so closing it hands that width back to the editor. The View menu builds it again.
+        children: [{ type: 'tab', id: 'explorer', name: translate('Assembly Explorer'), component: 'explorer', enableClose: true }],
+      },
+      {
+        type: 'row',
+        id: EDITOR_COLUMN_ID,
+        weight: 100,
+        children: [
+          {
+            type: 'tabset',
+            id: DOCUMENT_TABSET_ID,
+            weight: 100,
+            selected: 0,
+            // Kept when its last tab closes: a tab set of its own is where a document always lands, and one
+            // flexlayout makes on the fly comes back with an id nothing here knows.
+            enableDeleteWhenEmpty: false,
+            children: [{ type: 'tab', id: 'start', name: translate('Start'), component: 'start', enableClose: false }],
+          },
+          {
+            type: 'tabset',
+            id: TOOL_WINDOW_TABSET_ID,
+            // The tool windows hold the lower two fifths of the column, as they do in dnSpy's window.
+            weight: 65,
+            selected: 0,
+            // dnSpy's docked tool windows read left to right along the bottom edge of their panel, in this
+            // order, with the Locals grid showing until a debugger session says otherwise. Only these six
+            // open with the window; the View menu carries the rest.
+            tabLocation: 'bottom',
+            enableDeleteWhenEmpty: false,
+            children: [
+              { type: 'tab', id: 'locals', name: translate('Locals'), component: 'locals', enableClose: true },
+              { type: 'tab', id: 'exception-settings', name: translate('Exception Settings'), component: 'exception-settings', enableClose: true },
+              { type: 'tab', id: 'callstack', name: translate('Call Stack'), component: 'callstack', enableClose: true },
+              { type: 'tab', id: 'search', name: translate('Search'), component: 'search', enableClose: true },
+              { type: 'tab', id: 'analysis', name: translate('Analyzer'), component: 'analysis', enableClose: true },
+              { type: 'tab', id: 'watch', name: translate('Watch 1'), component: 'watch', enableClose: true },
+            ],
+          },
+        ],
+      },
+    ],
   },
 })
 
-const layoutStorageKey = 'dnspy.layout.v2'
+const layoutStorageKey = 'dnspy.layout.v3'
 
 const loadLayout = (): Model => {
   try {
     const saved = localStorage.getItem(layoutStorageKey)
     const model = Model.fromJson(saved ? JSON.parse(saved) as IJsonModel : createDefaultLayout())
     // Everything the shell adds a tab to is one of these two; a layout without them is from before this
-    // shape and has nothing left to restore, so the default layout takes its place.
+    // shape and has nothing left to restore, so the default layout takes its place. The explorer's column
+    // is not asked for: closing the explorer takes it away, and that is a layout worth keeping.
     if (!(model.getNodeById(DOCUMENT_TABSET_ID) instanceof TabSetNode) || !(model.getNodeById(TOOL_WINDOW_TABSET_ID) instanceof TabSetNode))
       return Model.fromJson(createDefaultLayout())
     model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true }))
@@ -140,11 +149,11 @@ const loadLayout = (): Model => {
   }
 }
 
-/** Where a new document tab goes. The active tab set can be the tool window dock — clicking one of its
- * tabs makes it the active one — so it is only taken while it is not that. */
+/** Where a new document tab goes. The active tab set can be either of the docks — clicking one of their
+ * tabs makes it the active one — so it is only taken while it is neither of them. */
 const getTargetDocumentTabSet = (model: Model): TabSetNode | undefined => {
   const active = model.getActiveTabset()
-  if (active && active.getId() !== TOOL_WINDOW_TABSET_ID)
+  if (active && active.getId() !== TOOL_WINDOW_TABSET_ID && active.getId() !== EXPLORER_TABSET_ID)
     return active
   const documents = model.getNodeById(DOCUMENT_TABSET_ID)
   return documents instanceof TabSetNode ? documents : model.getFirstTabSet()
@@ -395,7 +404,7 @@ export const App = (): React.JSX.Element => {
       search: t('Search'),
       analysis: t('Analyzer'),
       locals: t('Locals'),
-      watch: t('Watch'),
+      watch: t('Watch 1'),
       callstack: t('Call Stack'),
       breakpoints: t('Breakpoints'),
       bookmarks: t('Bookmarks'),
@@ -412,31 +421,48 @@ export const App = (): React.JSX.Element => {
     forceLayoutUpdate((value) => value + 1)
   }, [locale, model, t])
 
-  /** Brings a docked tab forward, adding it back when it has been closed. The explorer docks to the left
-   * border, where selecting its tab also opens the border; every other tool window lives in the tab set
-   * under the editor, where selecting a tab is all there is to it. */
+  /** Brings a docked tab forward, adding it back when it has been closed. The explorer returns to a column
+   * of its own on the left, the height of everything beside it; every other tool window lives in the tab
+   * set under the editor. */
   const showToolWindow = (tabId: string): void => {
     const tab = model.getNodeById(tabId)
     if (tab instanceof TabNode) {
-      const border = tab.getParent() as { isShowing?: () => boolean; getSelectedNode?: () => { getId(): string } | undefined } | undefined
-      if (tabId === 'explorer' && border?.isShowing?.() && border.getSelectedNode?.()?.getId() === tabId)
-        return
       model.doAction(Actions.selectTab(tabId))
       forceLayoutUpdate((value) => value + 1)
       return
     }
     const spec = restorableTabs[tabId]
     if (!spec) return
-    const explorer = tabId === 'explorer'
-    const target = explorer ? 'border_left' : TOOL_WINDOW_TABSET_ID
-    if (!model.getNodeById(target)) return
+    if (tabId === 'explorer') {
+      // Docking to the left of the editor's column rather than of its tab set: a tab set would put the
+      // explorer beside the editor instead of beside both the editor and the tool windows.
+      const column = model.getNodeById(EDITOR_COLUMN_ID) ?? model.getNodeById(DOCUMENT_TABSET_ID)
+      if (!column) return
+      model.doAction(Actions.addNode({
+        type: 'tab',
+        id: tabId,
+        name: t(spec.name),
+        component: spec.component,
+        enableClose: true,
+      }, column.getId(), DockLocation.LEFT, 0, true))
+      const restored = model.getNodeById(tabId)?.getParent()
+      // Splitting a column wraps it in a row of its own, so both sides are looked up again — by what they
+      // hold, not by the ids they started with — and put back to the shares the default layout gives
+      // them: the explorer's 43 against the editor column's 100.
+      const beside = restored?.getParent()?.getChildren().find((child) => child.getId() !== restored.getId())
+      if (restored) model.doAction(Actions.updateNodeAttributes(restored.getId(), { weight: EXPLORER_WEIGHT }))
+      if (beside) model.doAction(Actions.updateNodeAttributes(beside.getId(), { weight: 100 }))
+      forceLayoutUpdate((value) => value + 1)
+      return
+    }
+    if (!model.getNodeById(TOOL_WINDOW_TABSET_ID)) return
     model.doAction(Actions.addNode({
       type: 'tab',
       id: tabId,
       name: t(spec.name),
       component: spec.component,
       enableClose: true,
-    }, target, explorer ? DockLocation.LEFT : DockLocation.CENTER, -1, true))
+    }, TOOL_WINDOW_TABSET_ID, DockLocation.CENTER, -1, true))
     forceLayoutUpdate((value) => value + 1)
   }
 

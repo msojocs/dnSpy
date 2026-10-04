@@ -367,7 +367,7 @@ export const MenuBar = ({
           { label: t('Output'), shortcut: 'Alt+2', checked: visibleToolWindows.has('output'), action: onShowOutput },
           ...(isDebugging ? [
             { separator: true },
-            { label: t('Watch'), checked: visibleToolWindows.has('watch'), action: onShowWatch },
+            { label: t('Watch 1'), checked: visibleToolWindows.has('watch'), action: onShowWatch },
             { label: t('Autos'), shortcut: 'Ctrl+Alt+V, A', checked: visibleToolWindows.has('autos'), action: onShowAutos },
             { label: t('Locals'), shortcut: 'Alt+4', checked: visibleToolWindows.has('locals'), action: onShowLocals },
             { label: t('Static Fields'), checked: visibleToolWindows.has('static-fields'), action: onShowStaticFields },

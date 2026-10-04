@@ -168,6 +168,7 @@ const zhCN: Record<string, string> = {
   'Analyzer': '分析器',
   'Locals': '局部变量',
   'Watch': '监视',
+  'Watch 1': '监视 1',
   'Call Stack': '调用堆栈',
   'Breakpoints': '断点',
   'Module Breakpoints': '模块断点',
