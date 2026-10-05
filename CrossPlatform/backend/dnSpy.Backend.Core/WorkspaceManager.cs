@@ -1200,8 +1200,13 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// </summary>
 		IReadOnlyList<NodeEntry> GetAssemblyReferenceChildren(NodeEntry node) {
 			var reference = (AssemblyRef)node.Value;
-			if (FindOpenModuleByName(reference.Name.String) is { } open)
-				return GetModuleChildren(nodes[open.Id]);
+			if (FindOpenModuleByName(reference.Name.String) is { } open) {
+				// The workspace root is an assembly node whose value is AssemblyDef. The
+				// module children are owned by the separate module node, so do not pass the
+				// assembly root to GetModuleChildren (it expects ModuleDefMD).
+				var moduleNode = GetOrAddNode($"module:{open.Path}", NodeKind.Module, open.Module, open);
+				return GetModuleChildren(moduleNode);
+			}
 			return LoadReferenceModule(node.AsModuleEntry!, reference) is { } module
 				? [.. GetNamespaceNodes(node.Key, module)]
 				: Array.Empty<NodeEntry>();

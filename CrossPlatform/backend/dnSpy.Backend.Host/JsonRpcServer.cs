@@ -78,7 +78,17 @@ internal sealed class JsonRpcServer {
 				continue;
 			}
 
-			var task = ProcessRequestAsync(request, cancellationToken);
+			// Keep the pre-handshake checks ordered: the first request must be system/hello,
+			// and a later request must not race the hello task on the thread pool. Once the
+			// handshake is complete, ProcessRequestAsync can enter a synchronous, CPU-heavy
+			// operation before its first await (for example, ILSpy decompiling a whole
+			// assembly), so run it away from this loop so that the host can continue reading
+			// cancellation and other RPC messages.
+			// Do not pass the server token to Task.Run: a shutdown must still let a request
+			// which has already been accepted finish its response/cleanup path.
+			var task = !handshakeComplete
+				? ProcessRequestAsync(request, cancellationToken)
+				: Task.Run(() => ProcessRequestAsync(request, cancellationToken), CancellationToken.None);
 			lock (activeTasks)
 				activeTasks.Add(task);
 			_ = task.ContinueWith(

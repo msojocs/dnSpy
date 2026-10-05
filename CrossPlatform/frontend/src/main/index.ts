@@ -373,9 +373,17 @@ const registerIpc = (): void => {
   ipcMain.handle('workspace:reload', (_event, workspaceId: string) => requireBackend().invoke('workspace/reload', { workspaceId }))
   ipcMain.handle('workspace:sortAssemblies', (_event, workspaceId: string) => requireBackend().invoke('workspace/sortAssemblies', { workspaceId }))
   ipcMain.handle('tree:roots', (_event, workspaceId: string) => requireBackend().invoke('tree/getRoots', { workspaceId }))
-  ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }))
+  // A tree request can wait for a whole-assembly decompile because both operations use the
+  // workspace's serialized model. Give it the same deadline as decompilation so a valid request
+  // is not canceled merely because it was queued behind a long-running document operation.
+  ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) =>
+    requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }, 600_000))
   ipcMain.handle('tree:node', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getNode', { workspaceId, nodeId }))
-  ipcMain.handle('document:decompile', (_event, workspaceId: string, nodeId: string, language: string) => requireBackend().invoke('document/decompile', { workspaceId, nodeId, language }))
+  // Decompiling an assembly root requires ILSpy to walk every type and build source/IL mappings. Large
+  // assemblies can legitimately take several minutes; the generic RPC deadline is intentionally shorter
+  // for interactive tree operations, so give this operation its own deadline.
+  ipcMain.handle('document:decompile', (_event, workspaceId: string, nodeId: string, language: string) =>
+    requireBackend().invoke('document/decompile', { workspaceId, nodeId, language }, 600_000))
   ipcMain.handle('document:findMember', (_event, workspaceId: string, modulePath: string, metadataToken: number) => requireBackend().invoke('document/findMember', { workspaceId, modulePath, metadataToken }))
   ipcMain.handle('search:run', (_event, workspaceId: string, query: string, kinds?: string[]) => requireBackend().invoke('search/run', { workspaceId, query, kinds }))
   ipcMain.handle('analyze:references', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('analyze/references', { workspaceId, nodeId }))

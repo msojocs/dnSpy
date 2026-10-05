@@ -15,8 +15,10 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var opened = await OpenContractsAssemblyAsync();
 		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 
-		var module = Assert.Single(roots.Nodes);
-		Assert.Equal(opened.Modules[0].Id, module.Id);
+		var assembly = Assert.Single(roots.Nodes);
+		Assert.Equal(opened.Modules[0].Id, assembly.Id);
+		Assert.Equal("assembly", assembly.Kind);
+		var module = Assert.Single(await ChildrenAsync(opened.WorkspaceId, assembly.Id), node => node.Kind == "module");
 		Assert.Equal("module", module.Kind);
 		Assert.True(module.HasChildren);
 
@@ -372,7 +374,8 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			new OpenWorkspaceRequest([typeof(HelloRequest).Assembly.Location, typeof(WorkspaceManager).Assembly.Location]),
 			TestContext.Current.CancellationToken);
 		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
-		var contractsRoot = Assert.Single(roots.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
+		var contractsAssembly = Assert.Single(roots.Nodes, node => node.Label.StartsWith("dnSpy.Backend.Contracts", StringComparison.Ordinal));
+		var contractsRoot = Assert.Single(await ChildrenAsync(opened.WorkspaceId, contractsAssembly.Id), node => node.Kind == "module");
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, contractsRoot.Id), TestContext.Current.CancellationToken);
 		var contractsNamespace = Assert.Single(moduleChildren.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
 		var types = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, contractsNamespace.Id), TestContext.Current.CancellationToken);
@@ -480,6 +483,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			new OpenWorkspaceRequest([typeof(WorkspaceManagerTests).Assembly.Location]),
 			TestContext.Current.CancellationToken);
 		var moduleId = Assert.Single(opened.Modules).Id;
+		var moduleNode = await FindModuleAsync(opened.WorkspaceId);
 
 		// The compiler's own static data lives in the global namespace, and its field is the one kind of
 		// field with an RVA and an initial value to point a hex editor at.
@@ -501,7 +505,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.InRange(value.Offset, 1, (await manager.GetHexLengthAsync(new HexLengthRequest(opened.WorkspaceId, moduleId), TestContext.Current.CancellationToken)).Length - value.Length);
 
 		var resources = Assert.Single(
-			(await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, moduleId), TestContext.Current.CancellationToken)).Nodes,
+			(await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, moduleNode.Id), TestContext.Current.CancellationToken)).Nodes,
 			node => node.Kind == "resourcesgroup");
 		var resource = Assert.Single(
 			(await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, resources.Id), TestContext.Current.CancellationToken)).Nodes,
@@ -787,7 +791,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var opened = await manager.OpenAsync(
 			new OpenWorkspaceRequest([typeof(WorkspaceManagerTests).Assembly.Location]),
 			TestContext.Current.CancellationToken);
-		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var root = await FindModuleAsync(opened.WorkspaceId);
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, root.Id), TestContext.Current.CancellationToken);
 		var resources = Assert.Single(moduleChildren.Nodes, node => node.Kind == "resourcesgroup");
 		var resourceNodes = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, resources.Id), TestContext.Current.CancellationToken);
@@ -959,7 +963,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			"..", "..", "..", "..", "BamlTarget", "bin", TestConfiguration, "net10.0-windows", "BamlTarget.dll"));
 		Assert.True(File.Exists(target), $"BAML fixture was not built: {target}");
 		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
-		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var root = await FindModuleAsync(opened.WorkspaceId);
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, root.Id), TestContext.Current.CancellationToken);
 		var resources = Assert.Single(moduleChildren.Nodes, node => node.Kind == "resourcesgroup");
 		var resourceNodes = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, resources.Id), TestContext.Current.CancellationToken);
@@ -2088,19 +2092,24 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			var request = new WorkspaceRequest(opened.WorkspaceId);
 
 			var before = (await manager.GetRootsAsync(request, TestContext.Current.CancellationToken)).Nodes;
-			Assert.Equal(["dnSpy.Backend.Tests", "dnSpy.Backend.Contracts"], before.Select(node => node.Label));
+			Assert.Equal(["dnSpy.Backend.Tests", "dnSpy.Backend.Contracts"], before.Select(AssemblyName));
 
 			var sorted = await manager.SortAssembliesAsync(request, TestContext.Current.CancellationToken);
-			Assert.Equal(["dnSpy.Backend.Contracts", "dnSpy.Backend.Tests"], sorted.Nodes.Select(node => node.Label));
+			Assert.Equal(["dnSpy.Backend.Contracts", "dnSpy.Backend.Tests"], sorted.Nodes.Select(AssemblyName));
 			// Sorting is a view order, not a reopen: the nodes keep the ids the client already has, and the
 			// order the sort produced is the one later reads of the tree see.
 			Assert.Equal(before.Select(node => node.Id).OrderBy(id => id), sorted.Nodes.Select(node => node.Id).OrderBy(id => id));
-			Assert.Equal(sorted.Nodes.Select(node => node.Label), (await manager.GetRootsAsync(request, TestContext.Current.CancellationToken)).Nodes.Select(node => node.Label));
+			Assert.Equal(sorted.Nodes.Select(AssemblyName), (await manager.GetRootsAsync(request, TestContext.Current.CancellationToken)).Nodes.Select(AssemblyName));
 			// The root list and the module list are the same order, which is what the client's explorer and
 			// its per-module commands both walk.
-			Assert.Equal(sorted.Nodes.Select(node => node.Label), opened.Modules
+			Assert.Equal(sorted.Nodes.Select(AssemblyName), opened.Modules
 				.Select(module => module.Name)
 				.OrderBy(name => name, StringComparer.OrdinalIgnoreCase));
+
+			static string AssemblyName(TreeNodeDto node) {
+				var versionStart = node.Label.IndexOf(" (", StringComparison.Ordinal);
+				return versionStart < 0 ? node.Label : node.Label[..versionStart];
+			}
 		}
 		finally {
 			Directory.Delete(directory, recursive: true);
@@ -2127,21 +2136,21 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			try {
 				var keys = new List<string>();
 				var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
-				foreach (var root in roots.Nodes) {
-					keys.Add(root.Key!);
-					var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, root.Id), TestContext.Current.CancellationToken);
-					foreach (var child in moduleChildren.Nodes) {
-						keys.Add(child.Key!);
-						// One level further covers the shapes that are not built from the module path alone:
-						// namespaces, the references group, and — through the resources group — resources.
-						var grandchildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, child.Id), TestContext.Current.CancellationToken);
-						keys.AddRange(grandchildren.Nodes.Select(node => node.Key!));
-					}
-				}
+				foreach (var root in roots.Nodes)
+					await CollectKeysAsync(root.Id);
 				// A resource node is what the key stability of the resources tree turns on, and the fixture
 				// has one; without it this test could pass while the resource keys still embedded an id.
 				Assert.Contains(keys, key => key.StartsWith("resource:", StringComparison.Ordinal));
 				return [.. keys];
+
+				async Task CollectKeysAsync(string nodeId) {
+					var node = await manager.GetNodeAsync(new NodeRequest(opened.WorkspaceId, nodeId), TestContext.Current.CancellationToken);
+					keys.Add(node.Key!);
+					if (!node.HasChildren)
+						return;
+					foreach (var child in await ChildrenAsync(opened.WorkspaceId, node.Id))
+						await CollectKeysAsync(child.Id);
+				}
 			}
 			finally {
 				manager.Close(new WorkspaceRequest(opened.WorkspaceId));
@@ -2161,8 +2170,12 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		return (path, opened, node, document);
 	}
 
-	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) => Assert.Single(
-		(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) {
+		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		return root.Kind == "assembly"
+			? Assert.Single(await ChildrenAsync(workspaceId, root.Id), node => node.Kind == "module")
+			: root;
+	}
 
 	async Task<TreeNodeDto> FindNamespaceAsync(string workspaceId, string namespaceName) {
 		var root = await FindModuleAsync(workspaceId);
@@ -2180,8 +2193,11 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	async Task<TreeNodeDto> FindTypeInModuleAsync(string workspaceId, string moduleLabel, string namespaceName, string typeName) {
 		var root = Assert.Single(
 			(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes,
-			node => node.Label == moduleLabel);
-		var rootChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, root.Id), TestContext.Current.CancellationToken);
+			node => node.Label == moduleLabel || node.Label.StartsWith(moduleLabel + " (", StringComparison.Ordinal));
+		var module = root.Kind == "assembly"
+			? Assert.Single(await ChildrenAsync(workspaceId, root.Id), node => node.Kind == "module")
+			: root;
+		var rootChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
 		var @namespace = Assert.Single(rootChildren.Nodes, node => node.Label == namespaceName);
 		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
 		return Assert.Single(types.Nodes, node => node.Label == typeName);

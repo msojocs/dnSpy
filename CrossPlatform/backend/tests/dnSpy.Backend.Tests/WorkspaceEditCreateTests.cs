@@ -112,7 +112,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		var created = await CreateAsync(workspaceId, type.Id, renamed);
 
 		Assert.Equal("Other.Place.Widget", created.Label);
-		var module = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = await FindModuleAsync(workspaceId);
 		var @namespace = Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "namespace" && node.Label == "Other.Place");
 		Assert.Single(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == created.NodeId);
 	}
@@ -213,7 +213,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 	[Fact]
 	public async Task ACreationThatCannotBeAppliedIsRejectedBeforeAnythingIsBuilt() {
 		var workspaceId = await OpenContractsAssemblyAsync();
-		var module = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = await FindModuleAsync(workspaceId);
 		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts.RpcException");
 		var options = await NewOptionsAsync(workspaceId, NodeOptionKinds.Method, type.Id);
 		var transaction = await manager.BeginEditAsync(new BeginEditRequest(workspaceId), TestContext.Current.CancellationToken);
@@ -356,7 +356,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		Assert.Single(await MembersAsync(workspaceId, typeNodeId), node => node.Label.StartsWith("get_Code", StringComparison.Ordinal));
 
 	async Task<TreeNodeDto> FindTypeAsync(string workspaceId, string fullName) {
-		var module = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = await FindModuleAsync(workspaceId);
 		var @namespace = fullName[..fullName.LastIndexOf('.')];
 		foreach (var node in await ChildrenAsync(workspaceId, module.Id)) {
 			if (node.Kind != "namespace" || node.Label != @namespace)
@@ -367,7 +367,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 	}
 
 	async Task<TreeNodeDto> NamespaceOfAsync(string workspaceId, TreeNodeDto type) {
-		var module = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = await FindModuleAsync(workspaceId);
 		var @namespace = type.Label[..type.Label.LastIndexOf('.')];
 		return Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "namespace" && node.Label == @namespace);
 	}
@@ -377,6 +377,13 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 			new OpenWorkspaceRequest([typeof(HelloRequest).Assembly.Location]),
 			TestContext.Current.CancellationToken);
 		return opened.WorkspaceId;
+	}
+
+	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) {
+		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		return root.Kind == "assembly"
+			? Assert.Single(await ChildrenAsync(workspaceId, root.Id), node => node.Kind == "module")
+			: root;
 	}
 
 	public void Dispose() => manager.Dispose();

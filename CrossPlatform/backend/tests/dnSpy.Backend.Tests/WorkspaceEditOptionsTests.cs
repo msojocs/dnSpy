@@ -181,6 +181,9 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		new GetNodeOptionsRequest(workspaceId, kind, OwnerNodeId: ownerNodeId, IsNew: true, Nested: nested),
 		TestContext.Current.CancellationToken);
 
+	async Task<IReadOnlyList<TreeNodeDto>> ChildrenAsync(string workspaceId, string nodeId) =>
+		(await manager.GetChildrenAsync(new NodeRequest(workspaceId, nodeId), TestContext.Current.CancellationToken)).Nodes;
+
 	async Task<string> OpenTestAssemblyAsync() {
 		var opened = await manager.OpenAsync(
 			new OpenWorkspaceRequest([typeof(WorkspaceEditOptionsTests).Assembly.Location]),
@@ -188,12 +191,21 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		return opened.WorkspaceId;
 	}
 
-	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) => Assert.Single(
-		(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+	async Task<TreeNodeDto> FindModuleAsync(string workspaceId) {
+		var root = Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes);
+		return root.Kind == "assembly"
+			? Assert.Single(await ChildrenAsync(workspaceId, root.Id), node => node.Kind == "module")
+			: root;
+	}
 
-	async Task<TreeNodeDto> FindModuleAsync(string workspaceId, string label) => Assert.Single(
-		(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes,
-		node => node.Label == label);
+	async Task<TreeNodeDto> FindModuleAsync(string workspaceId, string label) {
+		var root = Assert.Single(
+			(await manager.GetRootsAsync(new WorkspaceRequest(workspaceId), TestContext.Current.CancellationToken)).Nodes,
+			node => node.Label == label || node.Label.StartsWith(label + " (", StringComparison.Ordinal));
+		return root.Kind == "assembly"
+			? Assert.Single(await ChildrenAsync(workspaceId, root.Id), node => node.Kind == "module")
+			: root;
+	}
 
 	/// <summary>The reference node the module is listed under, by the simple name it names.</summary>
 	async Task<TreeNodeDto> FindReferenceAsync(string workspaceId, string assemblyName, TreeNodeDto? module = null) {
@@ -201,7 +213,8 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		var children = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
 		var references = Assert.Single(children.Nodes, node => node.Kind == "referencesgroup");
 		var referenceNodes = await manager.GetChildrenAsync(new NodeRequest(workspaceId, references.Id), TestContext.Current.CancellationToken);
-		var reference = Assert.Single(referenceNodes.Nodes, node => node.Kind == "assemblyreference" && node.Label == assemblyName);
+		var reference = Assert.Single(referenceNodes.Nodes, node =>
+			node.Kind == "assemblyreference" && (node.Label == assemblyName || node.Label.StartsWith(assemblyName + " (", StringComparison.Ordinal)));
 		return reference;
 	}
 
