@@ -22,6 +22,8 @@ interface PendingRequest {
   resolve(value: unknown): void
   reject(error: Error): void
   timeout: NodeJS.Timeout
+  /** The shutdown acknowledgement is the only request that must settle while the client is disposing. */
+  settleDuringDispose: boolean
 }
 
 export class BackendClient {
@@ -30,6 +32,7 @@ export class BackendClient {
   private nextRequestId = 0
   private readonly pending = new Map<number, PendingRequest>()
   private readonly nonce = randomBytes(32).toString('hex')
+  private disposing = false
 
   constructor(
     private readonly onStatus: (status: BackendStatus) => void,
@@ -37,6 +40,7 @@ export class BackendClient {
   ) {}
 
   async start(): Promise<HelloResponse> {
+    this.disposing = false
     this.onStatus({ state: 'starting' })
     const command = this.resolveCommand()
     this.process = spawn(command.executable, command.args, {
@@ -79,6 +83,10 @@ export class BackendClient {
   }
 
   invoke<T>(method: string, params: unknown, timeoutMs = 60_000): Promise<T> {
+    return this.invokeInternal(method, params, timeoutMs, false)
+  }
+
+  private invokeInternal<T>(method: string, params: unknown, timeoutMs: number, settleDuringDispose: boolean): Promise<T> {
     if (!this.process || this.process.exitCode !== null)
       return Promise.reject(new Error('The backend is not running.'))
     const id = ++this.nextRequestId
@@ -94,6 +102,7 @@ export class BackendClient {
         resolve: (value) => resolve(value as T),
         reject,
         timeout,
+        settleDuringDispose,
       })
       this.process?.stdin.write(Buffer.concat([header, payload]), (error) => {
         if (error) {
@@ -109,14 +118,31 @@ export class BackendClient {
     const child = this.process
     if (!child)
       return
+    this.disposing = true
+    // Requests belong to the renderer that is closing. The shutdown notification cancels them in the
+    // host, so keeping their IPC promises alive until those cancellation responses arrive only turns an
+    // expected shutdown into "Error occurred in handler" messages from Electron. Abandon them here;
+    // their renderer is going away and no result can be used anymore.
+    this.abandonPending()
     try {
-      await this.invoke('system/shutdown', {}, 1_000)
+      await this.invokeDuringDispose('system/shutdown', {}, 1_000)
     } catch {
       // The host may close stdout before the acknowledgement is observed.
     }
     if (child.exitCode === null)
       child.kill('SIGTERM')
     this.process = undefined
+  }
+
+  private invokeDuringDispose<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
+    return this.invokeInternal(method, params, timeoutMs, true)
+  }
+
+  private abandonPending(): void {
+    for (const [id, request] of this.pending) {
+      clearTimeout(request.timeout)
+      this.pending.delete(id)
+    }
   }
 
   private sendNotification(method: string, params: unknown): void {
@@ -165,6 +191,11 @@ export class BackendClient {
     const request = this.pending.get(response.id)
     if (!request)
       return
+    if (this.disposing && !request.settleDuringDispose) {
+      clearTimeout(request.timeout)
+      this.pending.delete(response.id)
+      return
+    }
     clearTimeout(request.timeout)
     this.pending.delete(response.id)
     if (response.error)

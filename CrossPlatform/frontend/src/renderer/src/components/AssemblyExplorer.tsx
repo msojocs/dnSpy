@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { showPopupMenu, type IPopupMenuItem, type PopupMenuEntry } from 'flexlayout-react'
 import {
   Binary,
@@ -50,7 +51,7 @@ export const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
 
 const contextMenuItem = (key: string, label: string, onSelect: () => void): IPopupMenuItem => ({ key, label, onSelect })
 
-const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps & { node: TreeNode; depth: number }): React.JSX.Element => {
+const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps & { node: TreeNode; depth: number }): React.JSX.Element => {
   const children = useAppStore((state) => state.children[node.id])
   const expanded = useAppStore((state) => state.expanded[node.id] ?? false)
   const loading = useAppStore((state) => state.loadingNodes[node.id] ?? false)
@@ -125,7 +126,7 @@ const TreeRow = ({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModu
       ))}
     </>
   )
-}
+})
 
 export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps): React.JSX.Element => {
   const roots = useAppStore((state) => state.roots)

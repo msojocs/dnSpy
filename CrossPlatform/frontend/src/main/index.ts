@@ -651,5 +651,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   flushSessionStorage()
+})
+
+// `before-quit` can still be canceled by a renderer before its window closes (for example, by the
+// unsaved-edits guard). Stop the backend only once Electron has committed to quitting, so canceling that
+// guard leaves the current session usable.
+app.on('will-quit', () => {
   void backend?.dispose()
 })

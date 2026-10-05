@@ -2272,6 +2272,41 @@ function saveSession(session: SavedSession): void {
   }
 }
 
+// Expanding a branch updates the store twice: once to show the spinner and once when the backend
+// returns its children. Serialising the complete cached tree synchronously for both updates makes a
+// large assembly appear to hang, even though the tree itself is ready to paint. Coalesce these writes
+// and do the tree walk after the current render has had a chance to finish.
+let pendingSessionSource: SessionSource | undefined
+let sessionSaveTimer: ReturnType<typeof setTimeout> | undefined
+
+const scheduleSessionSave = (state: SessionSource): void => {
+  // Small trees are cheap and keeping this path synchronous preserves the immediate persistence
+  // semantics used when the workspace is being opened or restored. Defer only once the cached tree is
+  // large enough for serialisation to compete with painting the expanded branch.
+  let cachedNodeCount = 0
+  for (const children of Object.values(state.children))
+    cachedNodeCount += children.length
+  if (cachedNodeCount <= 100) {
+    if (sessionSaveTimer !== undefined) {
+      clearTimeout(sessionSaveTimer)
+      sessionSaveTimer = undefined
+    }
+    pendingSessionSource = undefined
+    saveSession(buildSession(state))
+    return
+  }
+  pendingSessionSource = state
+  if (sessionSaveTimer !== undefined)
+    return
+  sessionSaveTimer = setTimeout(() => {
+    sessionSaveTimer = undefined
+    const source = pendingSessionSource
+    pendingSessionSource = undefined
+    if (source)
+      saveSession(buildSession(source))
+  }, 50)
+}
+
 /**
  * The document tabs of a layout in the order they appear, and the selected one, both named by document
  * id. The shell reports these through `setDocumentOrder` because the layout is the shell's to read.
@@ -2366,7 +2401,7 @@ useAppStore.subscribe((state, previous) => {
     || state.activeDocumentId !== previous.activeDocumentId
     || state.restoringSession !== previous.restoringSession
   if (changed)
-    saveSession(buildSession(state))
+    scheduleSessionSave(state)
 })
 
 function loadRecentWorkspaces(): string[][] {
