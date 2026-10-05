@@ -3223,8 +3223,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			|| type.Methods.Count != 0;
 
 		static string GetIcon(NodeEntry node) => node.Kind switch {
-			NodeKind.Assembly => "assembly",
-			NodeKind.Module => "assembly",
+			// WPF uses different images for the assembly container and its module. An executable
+			// gets the small gold overlay used by AssemblyExe.
+			NodeKind.Assembly => IsExecutable(node) ? "assembly-exe" : "assembly",
+			NodeKind.Module => "module",
 			// Every hex structure node dnSpy creates uses DsImages.BinaryFile.
 			NodeKind.PE or NodeKind.PeStructure => "binary",
 			NodeKind.PEDocument => "binary",
@@ -3236,13 +3238,20 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			NodeKind.Namespace => "namespace",
 			NodeKind.TypeReferencesGroup => "reference",
 			NodeKind.ReferencesGroup or NodeKind.AssemblyReference => "reference",
-			NodeKind.ResourcesGroup or NodeKind.Resource or NodeKind.ResourceEntry => "resource",
+			NodeKind.ResourcesGroup => "folder",
+			NodeKind.Resource or NodeKind.ResourceEntry => "resource",
 			NodeKind.Type => ((TypeDef)node.Value).IsInterface ? "interface" : ((TypeDef)node.Value).IsEnum ? "enum" : "class",
 			NodeKind.Method => "method",
 			NodeKind.Field => "field",
 			NodeKind.Property => "property",
 			NodeKind.Event => "event",
 			_ => "item",
+		};
+
+		static bool IsExecutable(NodeEntry node) => node.Value switch {
+			AssemblyDef assembly => assembly.ManifestModule is { } module && (module.Characteristics & dnlib.PE.Characteristics.Dll) == 0,
+			ModuleDefMD module => (module.Characteristics & dnlib.PE.Characteristics.Dll) == 0,
+			_ => false,
 		};
 
 		static string DescribeResource(Resource resource) => resource switch {

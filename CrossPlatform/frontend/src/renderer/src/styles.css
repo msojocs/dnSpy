@@ -434,6 +434,19 @@ select:focus-visible,
   color: var(--accent-hover);
 }
 
+.icon-assembly { color: #8f969c; }
+.icon-assembly-exe { color: #d39a47; }
+.icon-module { color: #a77bd4; }
+.icon-namespace { color: #8f969c; }
+.icon-reference { color: #c7a34d; }
+.icon-folder { color: #c49a4d; }
+.icon-binary { color: #9ca3aa; }
+.icon-error { color: var(--danger); }
+.icon-resource { color: #c49a4d; }
+.icon-class { color: #62a9df; }
+.icon-interface { color: #4a9be8; }
+.icon-enum { color: #c0a05a; }
+
 .kind-method { color: #bd8dcc; }
 .kind-field { color: #72b8a0; }
 .kind-property { color: #6cafe0; }

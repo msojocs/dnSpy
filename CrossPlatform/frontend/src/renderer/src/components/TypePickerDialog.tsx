@@ -100,7 +100,7 @@ const PickerRow = ({ node, parents, mode, children, expanded, loading, selectedI
         >
           {loading[node.id] ? <LoaderCircle className="spin" size={13} /> : node.hasChildren ? open ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
         </button>
-        <span className={`tree-icon kind-${node.kind}`}><NodeIcon icon={node.icon} /></span>
+        <span className={`tree-icon kind-${node.kind} icon-${node.icon ?? 'item'}`}><NodeIcon icon={node.icon} expanded={open} /></span>
         <span className="tree-label">{label}</span>
       </div>
       {open && children[node.id]?.map((child) => (

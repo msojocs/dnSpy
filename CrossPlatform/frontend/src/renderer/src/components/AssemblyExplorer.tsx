@@ -4,13 +4,17 @@ import {
   Binary,
   Box,
   Braces,
+  Brackets,
   ChevronDown,
   ChevronRight,
   CircleAlert,
   CircleDot,
   Code2,
   FileBox,
+  FileCode2,
+  Files,
   Folder,
+  FolderOpen,
   Library,
   LoaderCircle,
   Network,
@@ -29,17 +33,22 @@ interface AssemblyExplorerProps {
 }
 
 /** The tree's icon for a node, shared with the dialogs that show the same tree — the type picker. */
-export const NodeIcon = ({ icon }: { icon?: string }): React.JSX.Element => {
+export const NodeIcon = ({ icon, expanded = false }: { icon?: string; expanded?: boolean }): React.JSX.Element => {
   const props = { size: 15, strokeWidth: 1.6, 'aria-hidden': true as const }
   switch (icon) {
-    case 'assembly': return <Package {...props} />
+    // These shapes follow dnSpy's WPF image set: assemblies are stacked documents, while a
+    // module is the purple package shown beneath them in the tree.
+    case 'assembly': return <Files {...props} />
+    case 'assembly-exe': return <FileCode2 {...props} />
+    case 'module': return <Package {...props} />
     // A file that is not a managed assembly: dnSpy shows a PE document with the assembly icon, an ELF image
     // and the structures read out of either with the binary one, and a file it could not read with the error.
     case 'binary': return <Binary {...props} />
     case 'error': return <CircleAlert {...props} />
-    case 'namespace': return <Folder {...props} />
+    case 'namespace': return <Brackets {...props} />
     case 'reference': return <Library {...props} />
     case 'resource': return <FileBox {...props} />
+    case 'folder': return expanded ? <FolderOpen {...props} /> : <Folder {...props} />
     case 'method': return <Code2 {...props} />
     case 'field': return <Variable {...props} />
     case 'property': return <Braces {...props} />
@@ -119,7 +128,7 @@ const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onSho
         >
           {loading ? <LoaderCircle className="spin" size={13} /> : node.hasChildren ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
         </button>
-        <span className={`tree-icon kind-${node.kind}`}><NodeIcon icon={node.icon} /></span>
+        <span className={`tree-icon kind-${node.kind} icon-${node.icon ?? 'item'}`}><NodeIcon icon={node.icon} expanded={expanded} /></span>
         <span className="tree-label">{label}</span>
       </div>
       {expanded && children?.map((child) => (
