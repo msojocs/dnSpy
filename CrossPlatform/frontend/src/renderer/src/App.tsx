@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, TabSetNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
@@ -959,10 +959,25 @@ export const App = (): React.JSX.Element => {
       void window.dnSpy.restartAsAdministrator()
   }
 
+  // App subscribes to the complete tree cache because the menus need to know about the selected node and
+  // its ancestors. Keep the explorer's command props stable across those updates so TreeRow.memo can
+  // skip every row outside the branch that changed. The ref keeps these wrappers current without making
+  // their identity follow the shell's render cycle.
+  const explorerActions = useRef({
+    open: addDocumentTab,
+    analyze: openAnalysis,
+    hex: addSpecialTab,
+  })
+  explorerActions.current = { open: addDocumentTab, analyze: openAnalysis, hex: addSpecialTab }
+  const openExplorerNode = useCallback((item: TreeNode): void => { void explorerActions.current.open(item) }, [])
+  const analyzeExplorerNode = useCallback((item: TreeNode): void => { void explorerActions.current.analyze(item) }, [])
+  const showExplorerHex = useCallback((item: TreeNode): void => { explorerActions.current.hex('hex', item) }, [])
+  const showExplorerModuleInfo = useCallback((item: TreeNode): void => { explorerActions.current.hex('module-info', item) }, [])
+
   /** What a tab's component draws, before the caption a docked pane wears is put round it. */
   const paneContent = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
-      case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} onShowHex={(item) => addSpecialTab('hex', item)} onShowModuleInfo={(item) => addSpecialTab('module-info', item)} />
+      case 'explorer': return <AssemblyExplorer onOpenNode={openExplorerNode} onAnalyzeNode={analyzeExplorerNode} onShowHex={showExplorerHex} onShowModuleInfo={showExplorerModuleInfo} />
       case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
       case 'output': return <OutputPane />
       case 'csharp-interactive': return <CSharpInteractive theme={theme} />

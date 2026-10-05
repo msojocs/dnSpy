@@ -2273,20 +2273,19 @@ function saveSession(session: SavedSession): void {
 }
 
 // Expanding a branch updates the store twice: once to show the spinner and once when the backend
-// returns its children. Serialising the complete cached tree synchronously for both updates makes a
-// large assembly appear to hang, even though the tree itself is ready to paint. Coalesce these writes
-// and do the tree walk after the current render has had a chance to finish.
+// returns its children. Serialising the complete cached tree synchronously for either update blocks the
+// renderer before it can paint the expanded branch. Coalesce writes once a real tree is present and do
+// the tree walk after the current render has had a chance to finish. Tiny states stay synchronous so a
+// freshly opened workspace is persisted immediately.
 let pendingSessionSource: SessionSource | undefined
 let sessionSaveTimer: ReturnType<typeof setTimeout> | undefined
+const MAX_SYNC_SESSION_CHILDREN = 16
 
 const scheduleSessionSave = (state: SessionSource): void => {
-  // Small trees are cheap and keeping this path synchronous preserves the immediate persistence
-  // semantics used when the workspace is being opened or restored. Defer only once the cached tree is
-  // large enough for serialisation to compete with painting the expanded branch.
   let cachedNodeCount = 0
   for (const children of Object.values(state.children))
     cachedNodeCount += children.length
-  if (cachedNodeCount <= 100) {
+  if (cachedNodeCount <= MAX_SYNC_SESSION_CHILDREN) {
     if (sessionSaveTimer !== undefined) {
       clearTimeout(sessionSaveTimer)
       sessionSaveTimer = undefined

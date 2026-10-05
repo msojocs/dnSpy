@@ -76,7 +76,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetNodeDto(request.NodeId), cancellationToken);
 
 	public Task<DecompileResponse> DecompileAsync(DecompileRequest request, CancellationToken cancellationToken) =>
-		GetWorkspace(request.WorkspaceId).RunAsync(w => w.DecompileAsync(request, cancellationToken), cancellationToken);
+		GetWorkspace(request.WorkspaceId).DecompileDocumentAsync(request, cancellationToken);
 
 	public Task<FindMemberResponse> FindMemberAsync(FindMemberRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.FindMember(request.ModulePath, request.MetadataToken), cancellationToken);
@@ -819,6 +819,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		// Where a reference resolved to, keyed by the referencing module and the simple name. A null value
 		// records one that nothing on this machine provides, so the search is not run again for it.
 		readonly Dictionary<string, string?> referencePaths = new(StringComparer.Ordinal);
+		// Namespace membership is requested once for the module row and again for whichever namespace the
+		// user opens. Keep the grouping for the current edit state so expanding a namespace does not rescan
+		// every top-level TypeDef in a large module. The state id changes on every edit/reload.
+		readonly Dictionary<string, NamespaceIndex> namespaceIndexes = new(StringComparer.Ordinal);
 		readonly Dictionary<string, NodeEntry> nodes = new(StringComparer.Ordinal);
 		readonly Dictionary<string, string> nodeIdsByKey = new(StringComparer.Ordinal);
 		readonly Dictionary<string, EditTransaction> transactions = new(StringComparer.Ordinal);
@@ -1060,24 +1064,36 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// list two sets of namespaces; that is why a reference to a module the workspace already has open
 		/// hands back that module's own children instead of building its own.
 		/// </summary>
-		IEnumerable<NodeEntry> GetNamespaceNodes(string parentKey, ModuleEntry module) => module.Module.Types
-			.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType)
-			.GroupBy(t => t.Namespace.String ?? string.Empty, StringComparer.Ordinal)
+		IEnumerable<NodeEntry> GetNamespaceNodes(string parentKey, ModuleEntry module) => GetNamespaceIndex(module)
+			.Groups
 			.OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
 			.Select(g => GetOrAddNode(
 				$"{parentKey}:namespace:{g.Key}",
 				NodeKind.Namespace,
-				new NamespaceValue(g.Key, g.ToArray()),
+				new NamespaceValue(g.Key, g.Value),
 				module));
+
+		NamespaceIndex GetNamespaceIndex(ModuleEntry module) {
+			if (namespaceIndexes.TryGetValue(module.Path, out var cached) && cached.StateId == stateId)
+				return cached;
+			var groups = module.Module.Types
+				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType)
+				.GroupBy(t => t.Namespace.String ?? string.Empty, StringComparer.Ordinal)
+				.ToDictionary(g => g.Key, g => (IReadOnlyList<TypeDef>)g.ToArray(), StringComparer.Ordinal);
+			var index = new NamespaceIndex(stateId, groups);
+			namespaceIndexes[module.Path] = index;
+			return index;
+		}
 
 		IReadOnlyList<NodeEntry> GetNamespaceChildren(NodeEntry node) {
 			// Derived live from the module rather than from the node's NamespaceValue snapshot: a delete
 			// or a namespace rename mutates the module while this node stays cached, so a snapshot would
 			// keep listing types that no longer belong here.
-			var name = ((NamespaceValue)node.Value).Name;
 			var moduleEntry = node.AsModuleEntry!;
-			return moduleEntry.Module.Types
-				.Where(t => t.DeclaringType is null && !t.IsGlobalModuleType && (t.Namespace.String ?? string.Empty) == name)
+			var value = (NamespaceValue)node.Value;
+			if (!GetNamespaceIndex(moduleEntry).Groups.TryGetValue(value.Name, out var types))
+				return Array.Empty<NodeEntry>();
+			return types
 				.OrderBy(t => t.Name.String, StringComparer.OrdinalIgnoreCase)
 				.Select(t => GetMemberNode(t, moduleEntry))
 				.ToArray();
@@ -1392,6 +1408,69 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			return result;
 		}
 
+		// ILSpy owns its metadata and syntax tree. Only preparing the snapshot and publishing references
+		// need the workspace gate; holding it through DecompileWholeModuleAsSingleFile makes a tree click
+		// wait for an unrelated document (including a document restored at startup) to finish.
+		public async Task<DecompileResponse> DecompileDocumentAsync(DecompileRequest request, CancellationToken cancellationToken) {
+			if (request.Language is not (DecompilerLanguage.CSharp or DecompilerLanguage.VisualBasic))
+				return await RunAsync(w => w.DecompileAsync(request, cancellationToken), cancellationToken).ConfigureAwait(false);
+
+			try {
+				var prepared = await RunAsync(w => w.PrepareCSharpDecompilation(request.NodeId, cancellationToken), cancellationToken).ConfigureAwait(false);
+				if (prepared is null)
+					return await RunAsync(w => w.DecompileAsync(request, cancellationToken), cancellationToken).ConfigureAwait(false);
+				using var session = prepared.Session;
+				var syntaxTree = await Task.Run(() => prepared.WholeModule
+					? session.Decompiler.DecompileWholeModuleAsSingleFile()
+					: session.Decompiler.Decompile(prepared.Handles), cancellationToken).ConfigureAwait(false);
+				var csharp = await RunAsync(w => {
+					// An edit, reload or close while ILSpy worked must not publish spans or a statement map
+					// against different metadata. Shared dnlib objects and node dictionaries remain protected.
+					if (stateId != prepared.StateId)
+						throw new OperationCanceledException("The workspace changed while the document was decompiled.");
+					cancellationToken.ThrowIfCancellationRequested();
+					return w.FinishCSharpDecompilation(GetNode(request.NodeId), session.Decompiler, syntaxTree, prepared.Settings, cancellationToken);
+				}, cancellationToken).ConfigureAwait(false);
+				return request.Language == DecompilerLanguage.VisualBasic
+					? await ConvertToVisualBasicAsync(csharp, cancellationToken).ConfigureAwait(false)
+					: csharp;
+			}
+			catch (OperationCanceledException) {
+				throw;
+			}
+			catch (RpcException) {
+				throw;
+			}
+			catch (Exception ex) {
+				throw new RpcException(ErrorCodes.UnsupportedDocument, "The selected item could not be decompiled.", null, ex);
+			}
+		}
+
+		CSharpDecompilation? PrepareCSharpDecompilation(string nodeId, CancellationToken cancellationToken) {
+			var node = GetNode(nodeId);
+			if (node.AsModuleEntry is not { } module || node.Kind is not (NodeKind.Assembly or NodeKind.Module or NodeKind.Namespace or NodeKind.Type or NodeKind.Method or NodeKind.Field or NodeKind.Property or NodeKind.Event))
+				return null;
+			var wholeModule = node.Kind is NodeKind.Assembly or NodeKind.Module;
+			var handles = node.Kind == NodeKind.Namespace
+				? GetNamespaceIndex(module).Groups.GetValueOrDefault(((NamespaceValue)node.Value).Name, Array.Empty<TypeDef>()).Select(ToEntityHandle).ToArray()
+				: wholeModule ? Array.Empty<System.Reflection.Metadata.EntityHandle>() : [ToEntityHandle((IMDTokenProvider)node.Value)];
+			var settings = new DecompilerSettings();
+			return new CSharpDecompilation(stateId, wholeModule, handles, settings, CreateCSharpDecompilerSession(module, settings, cancellationToken));
+		}
+
+		DecompileResponse FinishCSharpDecompilation(NodeEntry node, CSharpDecompiler decompiler, SyntaxTree syntaxTree, DecompilerSettings settings, CancellationToken cancellationToken) {
+			var module = node.AsModuleEntry!;
+			var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, module));
+			RenderWithLocations(syntaxTree, output, settings);
+			var statements = BuildCodeStatements(syntaxTree, decompiler, module, cancellationToken);
+			RefreshStatementCache();
+			codeStatementsByNode[$"{node.Id}:{stateId}"] = statements;
+			return new DecompileResponse(GetLabel(node), "csharp", output.ToString(), output.Spans,
+				decompiler.Errors.Select(e => new DiagnosticDto("warning", e.ToString())).ToArray()) { CodeStatements = statements };
+		}
+
+		sealed record CSharpDecompilation(string StateId, bool WholeModule, System.Reflection.Metadata.EntityHandle[] Handles, DecompilerSettings Settings, CSharpDecompilerSession Session);
+
 		public async Task<DecompileResponse> DecompileAsync(DecompileRequest request, CancellationToken cancellationToken) {
 			var node = GetNode(request.NodeId);
 			cancellationToken.ThrowIfCancellationRequested();
@@ -1463,8 +1542,6 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				var decompiler = session.Decompiler;
 
 				string text;
-				IReadOnlyList<TextSpanDto> spans = Array.Empty<TextSpanDto>();
-				IReadOnlyList<CodeStatementDto>? codeStatements = null;
 				if (node.Kind == NodeKind.AssemblyReference)
 					text = ((AssemblyRef)node.Value).FullName;
 				else if (node.Kind == NodeKind.Resource)
@@ -1473,25 +1550,17 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 					var syntaxTree = node.Kind switch {
 						NodeKind.Assembly => decompiler.DecompileWholeModuleAsSingleFile(),
 						NodeKind.Module => decompiler.DecompileWholeModuleAsSingleFile(),
-						NodeKind.Namespace => decompiler.Decompile(((NamespaceValue)node.Value).Types.Select(ToEntityHandle)),
+						NodeKind.Namespace => decompiler.Decompile(GetNamespaceIndex(moduleEntry).Groups.GetValueOrDefault(((NamespaceValue)node.Value).Name, Array.Empty<TypeDef>()).Select(ToEntityHandle)),
 						NodeKind.Type or NodeKind.Method or NodeKind.Field or NodeKind.Property or NodeKind.Event =>
 							decompiler.Decompile([ToEntityHandle((IMDTokenProvider)node.Value)]),
 						_ => throw new RpcException(ErrorCodes.UnsupportedDocument, "This tree node cannot be decompiled."),
 					};
-					var output = new SpanTextOutput(reference => ResolveDecompilerReference(reference, moduleEntry));
-					RenderWithLocations(syntaxTree, output, settings);
-					text = output.ToString();
-					spans = output.Spans;
-					codeStatements = BuildCodeStatements(syntaxTree, decompiler, moduleEntry, cancellationToken);
+					return FinishCSharpDecompilation(node, decompiler, syntaxTree, settings, cancellationToken);
 				}
 				var diagnostics = decompiler.Errors
 					.Select(e => new DiagnosticDto("warning", e.ToString()))
 					.ToArray();
-				if (codeStatements is not null) {
-					RefreshStatementCache();
-					codeStatementsByNode[$"{node.Id}:{stateId}"] = codeStatements;
-				}
-				return new DecompileResponse(GetLabel(node), "csharp", text, spans, diagnostics) { CodeStatements = codeStatements };
+				return new DecompileResponse(GetLabel(node), "csharp", text, Array.Empty<TextSpanDto>(), diagnostics);
 			}
 			catch (OperationCanceledException) {
 				throw;
@@ -1853,6 +1922,10 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		async Task<DecompileResponse> DecompileVisualBasicAsync(NodeEntry node, CancellationToken cancellationToken) {
 			var csharp = DecompileCSharp(node, cancellationToken);
+			return await ConvertToVisualBasicAsync(csharp, cancellationToken).ConfigureAwait(false);
+		}
+
+		static async Task<DecompileResponse> ConvertToVisualBasicAsync(DecompileResponse csharp, CancellationToken cancellationToken) {
 			var conversion = await CodeConverter.ConvertAsync(
 				new CodeWithOptions(csharp.Text).WithTypeReferences(),
 				cancellationToken).ConfigureAwait(false);
@@ -2808,6 +2881,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			referenceModules.Clear();
 			referenceResolvers.Clear();
 			referencePaths.Clear();
+			namespaceIndexes.Clear();
 			nodes.Clear();
 			nodeIdsByKey.Clear();
 			transactions.Clear();
@@ -3138,9 +3212,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			NodeKind.Elf => true,
 			NodeKind.AssemblyReference => HasAssemblyReferenceChildren(node),
 			NodeKind.Resource => node.Value is EmbeddedResource resource && resource.Name.EndsWith(".resources", StringComparison.OrdinalIgnoreCase),
-			NodeKind.Type => ((TypeDef)node.Value).NestedTypes.Count + ((TypeDef)node.Value).Fields.Count + ((TypeDef)node.Value).Properties.Count + ((TypeDef)node.Value).Events.Count + ((TypeDef)node.Value).Methods.Count != 0,
+			NodeKind.Type => HasTypeChildren((TypeDef)node.Value),
 			_ => false,
 		};
+
+		static bool HasTypeChildren(TypeDef type) => type.NestedTypes.Count != 0
+			|| type.Fields.Count != 0
+			|| type.Properties.Count != 0
+			|| type.Events.Count != 0
+			|| type.Methods.Count != 0;
 
 		static string GetIcon(NodeEntry node) => node.Kind switch {
 			NodeKind.Assembly => "assembly",
@@ -3397,6 +3477,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				resolver?.Dispose();
 			referenceResolvers.Clear();
 			referencePaths.Clear();
+			namespaceIndexes.Clear();
 			nodes.Clear();
 			nodeIdsByKey.Clear();
 			codeStatementsByNode.Clear();
@@ -3594,6 +3675,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		/// <summary>
 		sealed record NamespaceValue(string Name, IReadOnlyList<TypeDef> Types);
+		sealed record NamespaceIndex(string StateId, IReadOnlyDictionary<string, IReadOnlyList<TypeDef>> Groups);
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
 		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);

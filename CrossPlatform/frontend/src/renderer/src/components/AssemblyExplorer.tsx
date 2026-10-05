@@ -115,6 +115,7 @@ const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onSho
             event.stopPropagation()
             void toggleNode(node)
           }}
+          onDoubleClick={(event) => event.stopPropagation()}
         >
           {loading ? <LoaderCircle className="spin" size={13} /> : node.hasChildren ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
         </button>
