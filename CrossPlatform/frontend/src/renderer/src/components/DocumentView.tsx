@@ -1,5 +1,4 @@
-import Editor from '@monaco-editor/react'
-import '../monaco'
+import Editor from './CodeEditor'
 import { useEffect, useRef } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'

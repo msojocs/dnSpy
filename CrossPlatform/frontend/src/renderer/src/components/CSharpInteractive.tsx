@@ -1,11 +1,10 @@
 import { useEffect, useRef } from 'react'
-import Editor from '@monaco-editor/react'
+import Editor from './CodeEditor'
 import { Eraser, HelpCircle, RotateCcw } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { ScriptOutputEntry } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
-import '../monaco'
 
 /**
  * The C# Interactive window: a log of everything submissions have printed, and a Monaco box that

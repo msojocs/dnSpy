@@ -22,6 +22,10 @@ dotnet test dnSpy.CrossPlatform.slnx
 The debug engine runs inside the backend and loads the CLR's `libdbgshim.so`, which the build brings in
 with the rest of the native assets — there is no separate debugger to install.
 
+C# documents and the interactive editor use Shiki's TextMate grammar through `@shikijs/monaco`.
+The C# grammar, three editor themes and Oniguruma WASM are bundled locally for offline highlighting;
+initialization is shared across editors, with Monaco's built-in highlighting as a fallback.
+
 ```bash
 pnpm install --frozen-lockfile
 pnpm dev
