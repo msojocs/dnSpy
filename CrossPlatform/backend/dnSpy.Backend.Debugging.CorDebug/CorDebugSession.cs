@@ -94,8 +94,9 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		session.awaitingConfiguration = !request.StopAtEntry;
 		Process? child = null;
 		try {
+			var launchCommand = GetLaunchCommand(program);
 			var startInfo = new ProcessStartInfo {
-				FileName = "dotnet",
+				FileName = launchCommand.FileName,
 				WorkingDirectory = request.WorkingDirectory ?? Path.GetDirectoryName(program) ?? Environment.CurrentDirectory,
 				UseShellExecute = false,
 				// The debuggee must not inherit the host's stdio: stdin is the JSON-RPC request
@@ -105,7 +106,8 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 				RedirectStandardOutput = true,
 				RedirectStandardError = true,
 			};
-			startInfo.ArgumentList.Add(program);
+			foreach (var argument in launchCommand.Arguments)
+				startInfo.ArgumentList.Add(argument);
 			foreach (var argument in request.Arguments ?? [])
 				startInfo.ArgumentList.Add(argument);
 			// Suspends the runtime at startup so the debugger can attach before any user code runs.
@@ -139,6 +141,19 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 			await session.DisposeAsync().ConfigureAwait(false);
 			throw;
 		}
+	}
+
+	/// <summary>
+	/// Resolves the process command for a managed debug target. Framework-dependent assemblies are
+	/// launched through the <c>dotnet</c> host; apphosts (including Linux apphosts without an
+	/// extension) must be executed directly. Passing an apphost to <c>dotnet</c> makes the CLI look
+	/// for a managed assembly with that native file name and produces the misleading
+	/// "dotnet-&lt;path&gt; does not exist" error.
+	/// </summary>
+	static (string FileName, IReadOnlyList<string> Arguments) GetLaunchCommand(string program) {
+		if (string.Equals(Path.GetExtension(program), ".dll", StringComparison.OrdinalIgnoreCase))
+			return ("dotnet", [program]);
+		return (program, []);
 	}
 
 	public static async Task<CorDebugSession> AttachAsync(int processId, string? workspaceId, IDebugSymbolResolver? symbols, CancellationToken cancellationToken) {

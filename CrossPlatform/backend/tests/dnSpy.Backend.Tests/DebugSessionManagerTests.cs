@@ -145,6 +145,25 @@ public sealed class DebugSessionManagerTests {
 		}
 	}
 
+	[Fact(Timeout = 60_000)]
+	public async Task LaunchesCoreClrAppHostDirectly() {
+		using var workspaceManager = new WorkspaceManager();
+		var target = FindTarget();
+		var appHost = FindAppHost(target);
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
+		await using var manager = CreateManager(workspaceManager);
+
+		var started = await manager.LaunchAsync(
+			new DebugLaunchRequest(appHost, ["--wait"], StopAtEntry: false, WorkspaceId: opened.WorkspaceId),
+			TestContext.Current.CancellationToken);
+		await manager.RequestAsync(
+			new DebugAdapterRequest(started.SessionId, "configurationDone", JsonSerializer.SerializeToElement(new { })),
+			TestContext.Current.CancellationToken);
+		await manager.DisconnectAsync(
+			new DebugDisconnectRequest(started.SessionId, TerminateDebuggee: true),
+			TestContext.Current.CancellationToken);
+	}
+
 	static DebugEventNotification Dequeue(Queue<DebugEventNotification> events) {
 		lock (events)
 			return events.Dequeue();
@@ -169,6 +188,15 @@ public sealed class DebugSessionManagerTests {
 			AppContext.BaseDirectory,
 			"..", "..", "..", "..", "DebugTarget", "bin", TestConfiguration, "net10.0", "DebugTarget.dll"));
 		return File.Exists(path) ? path : throw new FileNotFoundException("The debug target was not built.", path);
+	}
+
+	static string FindAppHost(string target) {
+		var directory = Path.GetDirectoryName(target) ?? throw new InvalidOperationException("The debug target has no directory.");
+		var name = Path.GetFileNameWithoutExtension(target);
+		string[] candidates = OperatingSystem.IsWindows()
+			? [Path.Combine(directory, name + ".exe"), Path.Combine(directory, name)]
+			: [Path.Combine(directory, name), Path.Combine(directory, name + ".exe")];
+		return candidates.FirstOrDefault(File.Exists) ?? throw new FileNotFoundException("The debug target apphost was not built.", candidates[0]);
 	}
 
 	static string TestConfiguration => new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name
