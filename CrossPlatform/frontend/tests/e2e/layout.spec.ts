@@ -154,6 +154,44 @@ test('brings a layout saved by an earlier run up to the current shape', async ()
   expect(toolsTab.y).toBeGreaterThanOrEqual(toolsPane.y + toolsPane.height - 1)
 })
 
+test('restores the editor tab strip from a saved layout that hid it', async () => {
+  await expect(page.getByText('Ready', { exact: true })).toBeVisible()
+  await page.evaluate(() => {
+    const layout = JSON.parse(localStorage.getItem('dnspy.layout.v3')!)
+    const documents = layout.layout.children[1].children[0]
+    documents.enableTabStrip = false
+    localStorage.setItem('dnspy.layout.v3', JSON.stringify(layout))
+  })
+  await page.reload()
+
+  await expect(page.getByRole('tab', { name: 'Start', exact: true })).toBeVisible()
+  const tab = await page.getByRole('tab', { name: 'Start', exact: true }).boundingBox()
+  const content = await page.getByRole('tabpanel', { name: 'Start', exact: true }).boundingBox()
+  expect(tab!.y + tab!.height).toBeLessThanOrEqual(content!.y)
+})
+
+test('keeps the editor tab strip after closing and reopening the last document', async () => {
+  await expect(page.getByText('Ready', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Open Assembly' }).first().click()
+  const assembly = page.locator('.tree-row[data-kind="assembly"]').first()
+  await expect(assembly).toBeVisible()
+  const title = await assembly.locator('.tree-label').innerText()
+  await assembly.dblclick()
+  const tab = page.getByRole('tab', { name: title, exact: true })
+  await expect(tab).toBeVisible()
+  await tab.locator('.flexlayout__tab_button_trailing').click()
+  await expect(tab).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => {
+    const layout = JSON.parse(localStorage.getItem('dnspy.layout.v3')!)
+    return layout.layout.children[1].children[0].enableTabStrip !== false
+  })).toBe(true)
+
+  await assembly.dblclick()
+  await expect(tab).toBeVisible()
+  await page.reload()
+  await expect(tab).toBeVisible()
+})
+
 // Upstream's docked tool windows carry their tabs along their bottom edge, in this order, with the Locals
 // grid showing until a debugger session asks for another one. The editor's stay on top, above the pane.
 test('docks the tool windows with their tabs along the bottom', async () => {

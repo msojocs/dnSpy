@@ -2370,23 +2370,22 @@ export function orderedDocumentKeys(model: Model): { order: string[]; active?: s
  * only bar over it. Dragging a second window in beside it makes it a group, and the strip comes back along
  * the bottom edge of the pane, where the docks carry it, to switch between the two.
  *
- * The editor's tab sets are left as they are — `documentComponents` names the panes that open as documents
- * rather than docking, and dnSpy's document row shows for a single document too, since it is what says
- * which documents are open.
+ * The editor always shows its strip, including for a single document. Reserved document tab sets keep
+ * it even while empty, for example when closing the last document or rebuilding a saved session.
+ * Explicitly re-enable it for documents so a hidden strip from an older layout or dock is repaired.
  */
-export function syncDockTabStrips(model: Model, documentComponents: readonly string[]): void {
+export function syncDockTabStrips(model: Model, documentComponents: readonly string[], documentTabSetIds: readonly string[] = []): void {
   const hides: string[] = []
   const shows: string[] = []
   model.visitNodes((node) => {
     if (!(node instanceof TabSetNode))
       return
     const children = node.getChildren()
-    if (children.some((child) => {
+    const isDocumentTabSet = documentTabSetIds.includes(node.getId()) || children.some((child) => {
       const component = child instanceof TabNode ? child.getComponent() : undefined
       return component !== undefined && documentComponents.includes(component)
-    }))
-      return
-    const wanted = children.length > 1
+    })
+    const wanted = isDocumentTabSet || children.length > 1
     if (node.isEnableTabStrip() !== wanted)
       (wanted ? shows : hides).push(node.getId())
   })

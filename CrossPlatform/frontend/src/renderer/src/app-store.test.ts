@@ -1574,6 +1574,40 @@ describe('syncDockTabStrips', () => {
     expect(strips(model)['explorer-dock']).toBe(true)
   })
 
+  it.each(documentComponents)('restores a hidden strip for a single %s tab', (component) => {
+    const model = layout()
+    model.doAction(Actions.updateNodeAttributes('documents', { enableTabStrip: false }))
+    model.doAction(Actions.updateNodeAttributes('start', { component }))
+
+    syncDockTabStrips(model, documentComponents)
+
+    expect(strips(model).documents).toBe(true)
+  })
+
+  it('restores the strip when a document is moved into a dock with a hidden strip', () => {
+    const model = layout()
+    syncDockTabStrips(model, documentComponents)
+    model.doAction(Actions.moveNode('start', 'explorer-dock', DockLocation.CENTER, -1, true))
+
+    syncDockTabStrips(model, documentComponents)
+
+    expect(strips(model)['explorer-dock']).toBe(true)
+  })
+
+  it('keeps the reserved editor strip while empty and after reopening a document', () => {
+    const model = layout()
+    model.doAction(Actions.updateNodeAttributes('documents', { enableDeleteWhenEmpty: false }))
+    model.doAction(Actions.deleteTab('start'))
+    model.doAction(Actions.updateNodeAttributes('documents', { enableTabStrip: false }))
+
+    syncDockTabStrips(model, documentComponents, ['documents'])
+
+    expect(strips(model)).toEqual({ 'explorer-dock': false, documents: true })
+    model.doAction(Actions.addNode({ type: 'tab', name: 'Code', component: 'document' }, 'documents', DockLocation.CENTER, -1, true))
+    syncDockTabStrips(model, documentComponents, ['documents'])
+    expect(strips(model).documents).toBe(true)
+  })
+
   it('takes the row away again when the dock is down to one window', () => {
     const model = layout()
     model.doAction(Actions.addNode({

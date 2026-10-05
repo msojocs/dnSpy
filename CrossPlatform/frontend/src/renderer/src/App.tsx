@@ -160,9 +160,9 @@ const loadLayout = (): Model => {
     for (const dock of docks)
       if (dock instanceof TabSetNode)
         model.doAction(Actions.updateNodeAttributes(dock.getId(), { tabLocation: 'bottom' }))
-    // A layout saved by a run that showed a tab row over a single window — or one whose dock has since been
-    // emptied down to one — comes back with the strip it was saved with. Put every dock back to its shape.
-    syncDockTabStrips(model, DOCUMENT_COMPONENTS)
+    // Normalize saved strip visibility. The editor keeps its strip even while empty during restoration;
+    // each tool window dock shows one only when it holds multiple windows.
+    syncDockTabStrips(model, DOCUMENT_COMPONENTS, [DOCUMENT_TABSET_ID])
     // Migrate older layouts where the docked tabs were marked non-closable.
     for (const id of Object.keys(restorableTabs)) {
       const node = model.getNodeById(id)
@@ -397,12 +397,12 @@ export const App = (): React.JSX.Element => {
     }
   }, [debugState, model])
 
-  // A dock's tab row follows what the dock holds: a window on its own is not a group and shows none, and a
+  // The editor keeps its row even when empty. A dock's row follows what it holds: one window shows none, and a
   // second window — dragged in, or brought back by the View menu — is and does. The change this makes comes
   // back through `onModelChange`, which counts as a layout change, and the pass over the model after it
   // finds every dock already the way it should be and stops.
   useEffect(() => {
-    syncDockTabStrips(model, DOCUMENT_COMPONENTS)
+    syncDockTabStrips(model, DOCUMENT_COMPONENTS, [DOCUMENT_TABSET_ID])
   }, [model, layoutVersion])
 
   useEffect(() => {
