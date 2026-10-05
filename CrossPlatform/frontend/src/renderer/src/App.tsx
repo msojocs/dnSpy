@@ -704,6 +704,7 @@ export const App = (): React.JSX.Element => {
   }, [dirty])
 
   const addDocumentTab = async (node: TreeNode, recordHistory = true, language?: DecompilerLanguage): Promise<void> => {
+    const { workspaceId, workspaceGeneration } = useAppStore.getState()
     if (recordHistory) {
       setNavigation((current) => {
         if (current.items[current.index]?.id === node.id)
@@ -713,6 +714,9 @@ export const App = (): React.JSX.Element => {
       })
     }
     const documentId = await openDocument(node, language)
+    const current = useAppStore.getState()
+    if (current.workspaceId !== workspaceId || current.workspaceGeneration !== workspaceGeneration)
+      return
     const tabId = `doc:${documentId}`
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
@@ -738,12 +742,15 @@ export const App = (): React.JSX.Element => {
   const restoreSession = async (session: SavedSession): Promise<void> => {
     if (session.paths.length === 0)
       return
+    const generation = useAppStore.getState().workspaceGeneration
+    const isCurrent = (): boolean => useAppStore.getState().workspaceGeneration === generation
     setRestoringSession(true)
     try {
       // The saved layout still holds tabs from the run that wrote it, named by document ids that died
       // with it. They are rebuilt from the session below instead.
       closeDocumentTabs()
       const paths = await window.dnSpy.filterExistingPaths(session.paths)
+      if (!isCurrent()) return
       if (paths.length < session.paths.length)
         appendOutput(t('{count} file(s) from the previous session are no longer on disk.', { count: session.paths.length - paths.length }))
       if (paths.length === 0) {
@@ -752,6 +759,7 @@ export const App = (): React.JSX.Element => {
         return
       }
       await openPaths(paths)
+      if (!isCurrent()) return
       if (!useAppStore.getState().workspaceId)
         return // openPaths has already reported why
       const byKey = new Map<string, TreeNode>()
@@ -770,6 +778,7 @@ export const App = (): React.JSX.Element => {
           await expandNode(node)
         else
           await loadChildren(node)
+        if (!isCurrent()) return
         for (const child of useAppStore.getState().children[node.id] ?? []) {
           if (child.key)
             byKey.set(child.key, child)
@@ -784,6 +793,7 @@ export const App = (): React.JSX.Element => {
         if (!node)
           continue
         await addDocumentTab(node, false, document.language)
+        if (!isCurrent()) return
         restoredDocuments++
       }
       // Opening a document takes the Start tab away, so one only comes back when nothing was restored
@@ -797,6 +807,7 @@ export const App = (): React.JSX.Element => {
       }
       appendOutput(t('Restored the previous session.'))
     } catch (error) {
+      if (!isCurrent()) return
       const message = error instanceof Error ? error.message : String(error)
       appendOutput(t('Could not restore the previous session: {message}', { message }))
       showStartTab()
@@ -804,8 +815,10 @@ export const App = (): React.JSX.Element => {
     } finally {
       // Enabled before the flag drops: the change that ends the restore is the one write that captures
       // everything it put back.
-      enableSessionPersistence()
-      setRestoringSession(false)
+      if (isCurrent()) {
+        enableSessionPersistence()
+        setRestoringSession(false)
+      }
     }
   }
 

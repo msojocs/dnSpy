@@ -128,6 +128,8 @@ export interface BookmarkEntry {
 interface AppState {
   backendStatus: BackendStatus
   workspaceId?: string
+  /** Closing invalidates work that started before the user's Close All command, including startup. */
+  workspaceGeneration: number
   modules: OpenedModule[]
   roots: TreeNode[]
   children: Record<string, TreeNode[]>
@@ -369,6 +371,7 @@ let bookmarkRevealToken = 0
 
 export const useAppStore = create<AppState>((set, get) => ({
   backendStatus: { state: 'starting' },
+  workspaceGeneration: 0,
   modules: [],
   roots: [],
   children: {},
@@ -419,6 +422,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   openPaths: async (paths) => {
+    const generation = get().workspaceGeneration
+    const isCurrent = (): boolean => get().workspaceGeneration === generation
     set({ busy: true, error: undefined })
     try {
       const previousWorkspace = get().workspaceId
@@ -429,7 +434,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         // and the tabs, expanded branches and undo stack all stay.
         const previousModules = get().modules
         const added = await window.dnSpy.addModules(previousWorkspace, paths)
+        if (!isCurrent()) return
         const roots = await window.dnSpy.getRoots(previousWorkspace)
+        if (!isCurrent()) return
         set((state) => {
           const known = new Set(state.roots.map((root) => root.id))
           return {
@@ -449,7 +456,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         return
       }
       const opened = await window.dnSpy.openWorkspace(paths)
+      if (!isCurrent()) {
+        await window.dnSpy.closeWorkspace(opened.workspaceId)
+        return
+      }
       const roots = await window.dnSpy.getRoots(opened.workspaceId)
+      if (!isCurrent()) {
+        await window.dnSpy.closeWorkspace(opened.workspaceId)
+        return
+      }
       set({
         workspaceId: opened.workspaceId,
         modules: opened.modules,
@@ -473,29 +488,39 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       get().appendOutput(t('Opened {count} module(s).', { count: opened.modules.length }))
     } catch (error) {
+      if (!isCurrent()) return
       const message = error instanceof Error ? error.message : String(error)
       set({ error: message })
       get().appendOutput(t('Open failed: {message}', { message }))
     } finally {
-      set({ busy: false })
+      if (isCurrent())
+        set({ busy: false })
     }
   },
 
   closeWorkspace: async () => {
     const workspaceId = get().workspaceId
-    if (workspaceId)
-      await window.dnSpy.closeWorkspace(workspaceId)
+    // Close All is a user decision, even while startup is rebuilding the session. Save the empty
+    // state now, before backend cleanup, and invalidate every continuation of that old workspace.
+    enableSessionPersistence()
     set({
+      workspaceGeneration: get().workspaceGeneration + 1,
       workspaceId: undefined,
       modules: [],
       roots: [],
       children: {},
       parents: {},
       expanded: {},
+      loadingNodes: {},
       selectedNode: undefined,
       documents: {},
+      documentOrder: [],
+      activeDocumentId: undefined,
+      restoringSession: false,
       searchResults: [],
       references: [],
+      busy: false,
+      error: undefined,
       dirty: false,
       workspaceStateId: undefined,
       savedStateId: undefined,
@@ -503,6 +528,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       canRedo: false,
     })
     get().appendOutput(t('Workspace closed.'))
+    if (workspaceId)
+      await window.dnSpy.closeWorkspace(workspaceId)
   },
 
   toggleNode: async (node) => {
@@ -533,6 +560,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     try {
       const response = await window.dnSpy.getChildren(workspaceId, node.id)
+      if (get().workspaceId !== workspaceId) return
       set((state) => ({
         children: { ...state.children, [node.id]: response.nodes },
         parents: {
@@ -542,6 +570,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         loadingNodes: { ...state.loadingNodes, [node.id]: false },
       }))
     } catch (error) {
+      if (get().workspaceId !== workspaceId) return
       const message = error instanceof Error ? error.message : String(error)
       set((state) => ({
         error: message,
@@ -601,6 +630,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
     try {
       const document = await window.dnSpy.decompile(workspaceId, node.id, language)
+      if (get().workspaceId !== workspaceId) return documentId
       if (get().documents[documentId]?.requestedLanguage === language) {
         set((state) => ({
           documents: {
@@ -618,6 +648,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         attachBookmarks(set, documentId, document.codeStatements)
       }
     } catch (error) {
+      if (get().workspaceId !== workspaceId) return documentId
       const message = error instanceof Error ? error.message : String(error)
       set((state) => ({
         error: message,
