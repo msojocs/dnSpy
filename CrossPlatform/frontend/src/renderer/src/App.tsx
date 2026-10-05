@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, TabSetNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
-import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, useAppStore, type SavedSession } from './app-store'
+import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, syncDockTabStrips, useAppStore, type SavedSession } from './app-store'
 import { clearBookmarks, clearBookmarksInDocument, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from './bookmark-commands'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
@@ -19,6 +19,7 @@ import { AboutDialog } from './components/AboutDialog'
 import { NodeOptionsDialog } from './components/NodeOptionsDialog'
 import { OptionsDialog } from './components/OptionsDialog'
 import { cloneDocumentTab, closeDocumentTab, closeDocumentTabsFor, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
+import { DockPane } from './components/DockPane'
 import type { ActiveDocument, CreatedKind, HexShowKind } from './components/edit-menu'
 import { findInActiveDocumentEditor, focusDocumentEditor } from './editor-registry'
 import { translate, useLanguage } from './localization'
@@ -40,6 +41,10 @@ const EDITOR_COLUMN_ID = 'editor-column'
 /** What the explorer's column weighs against the 100 the rest of the window weighs — a little under a
  * third of the width. */
 const EXPLORER_WEIGHT = 43
+
+/** What the window opens in its editor, as against what it docks: dnSpy's editor gives a document its title
+ * in the tab strip and nothing else, so these are the panes that go without a caption over them. */
+const DOCUMENT_COMPONENTS = ['document', 'hex', 'module-info', 'start']
 
 /** The tabs the View menu can bring back, with the label and component each one needs. The explorer opens
  * in the column on the left; everything else belongs to the tool window tab set. */
@@ -65,7 +70,9 @@ const createDefaultLayout = (): IJsonModel => ({
   global: {
     tabEnableRename: false,
     tabEnableFloat: false,
-    tabSetEnableMaximize: true,
+    // No ⤢ on a tab set: dnSpy's panes wear a caption instead — the pane's title with its own dropdown
+    // and close button at the end of it — so the maximise button has nothing left to do.
+    tabSetEnableMaximize: false,
     tabSetEnableDeleteWhenEmpty: true,
     tabSetMinWidth: 120,
     tabSetMinHeight: 80,
@@ -80,6 +87,11 @@ const createDefaultLayout = (): IJsonModel => ({
         id: EXPLORER_TABSET_ID,
         weight: EXPLORER_WEIGHT,
         selected: 0,
+        // The explorer is one window, so it shows no tab row — a window on its own is not a group; the
+        // caption over the pane carries its title and its dropdown. A second window dragged in beside it
+        // makes it a group, and the strip that comes back with it runs along the bottom edge of the column,
+        // under the pane, where the tool windows' does. See `syncDockTabStrips`.
+        tabLocation: 'bottom',
         // Not kept when its tab closes: the column would be a hole the width of the explorer with nothing
         // in it, so closing it hands that width back to the editor. The View menu builds it again.
         children: [{ type: 'tab', id: 'explorer', name: translate('Assembly Explorer'), component: 'explorer', enableClose: true }],
@@ -136,7 +148,21 @@ const loadLayout = (): Model => {
     // is not asked for: closing the explorer takes it away, and that is a layout worth keeping.
     if (!(model.getNodeById(DOCUMENT_TABSET_ID) instanceof TabSetNode) || !(model.getNodeById(TOOL_WINDOW_TABSET_ID) instanceof TabSetNode))
       return Model.fromJson(createDefaultLayout())
-    model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true }))
+    // A saved layout brings the global attributes of whatever run wrote it, which is how a run from
+    // before the panes grew captions brings the ⤢ back. The two the shell itself relies on are put back
+    // here — no ⤢ on a tab set, and a tab set that outlives its last tab — and the rest of the saved
+    // globals are left as that run set them.
+    model.doAction(Actions.updateModelAttributes({ tabSetEnableDeleteWhenEmpty: true, tabSetEnableMaximize: false }))
+    // Both docks carry their window's tab strip along the bottom edge of the pane, the way dnSpy's do; a
+    // layout from before that, or one whose strip was moved to the top, is put back. Whether the strip
+    // shows at all is settled below by the number of windows the dock holds.
+    const docks = [model.getNodeById('explorer')?.getParent(), model.getNodeById(TOOL_WINDOW_TABSET_ID)]
+    for (const dock of docks)
+      if (dock instanceof TabSetNode)
+        model.doAction(Actions.updateNodeAttributes(dock.getId(), { tabLocation: 'bottom' }))
+    // A layout saved by a run that showed a tab row over a single window — or one whose dock has since been
+    // emptied down to one — comes back with the strip it was saved with. Put every dock back to its shape.
+    syncDockTabStrips(model, DOCUMENT_COMPONENTS)
     // Migrate older layouts where the docked tabs were marked non-closable.
     for (const id of Object.keys(restorableTabs)) {
       const node = model.getNodeById(id)
@@ -371,6 +397,14 @@ export const App = (): React.JSX.Element => {
     }
   }, [debugState, model])
 
+  // A dock's tab row follows what the dock holds: a window on its own is not a group and shows none, and a
+  // second window — dragged in, or brought back by the View menu — is and does. The change this makes comes
+  // back through `onModelChange`, which counts as a layout change, and the pass over the model after it
+  // finds every dock already the way it should be and stops.
+  useEffect(() => {
+    syncDockTabStrips(model, DOCUMENT_COMPONENTS)
+  }, [model, layoutVersion])
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('dnspy.theme', theme)
@@ -448,9 +482,11 @@ export const App = (): React.JSX.Element => {
       const restored = model.getNodeById(tabId)?.getParent()
       // Splitting a column wraps it in a row of its own, so both sides are looked up again — by what they
       // hold, not by the ids they started with — and put back to the shares the default layout gives
-      // them: the explorer's 43 against the editor column's 100.
+      // them: the explorer's 43 against the editor column's 100. The tab set flexlayout made for the tab
+      // is given the explorer's attributes back too, where its strip would run once a second window joins
+      // it; the strip itself stays away while the dock holds this one window.
       const beside = restored?.getParent()?.getChildren().find((child) => child.getId() !== restored.getId())
-      if (restored) model.doAction(Actions.updateNodeAttributes(restored.getId(), { weight: EXPLORER_WEIGHT }))
+      if (restored) model.doAction(Actions.updateNodeAttributes(restored.getId(), { weight: EXPLORER_WEIGHT, tabLocation: 'bottom' }))
       if (beside) model.doAction(Actions.updateNodeAttributes(beside.getId(), { weight: 100 }))
       forceLayoutUpdate((value) => value + 1)
       return
@@ -923,7 +959,8 @@ export const App = (): React.JSX.Element => {
       void window.dnSpy.restartAsAdministrator()
   }
 
-  const factory = (node: TabNode): React.ReactNode => {
+  /** What a tab's component draws, before the caption a docked pane wears is put round it. */
+  const paneContent = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
       case 'explorer': return <AssemblyExplorer onOpenNode={(item) => void addDocumentTab(item)} onAnalyzeNode={(item) => void openAnalysis(item)} onShowHex={(item) => addSpecialTab('hex', item)} onShowModuleInfo={(item) => addSpecialTab('module-info', item)} />
       case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
@@ -950,6 +987,13 @@ export const App = (): React.JSX.Element => {
       )
       default: return null
     }
+  }
+
+  const factory = (node: TabNode): React.ReactNode => {
+    const content = paneContent(node)
+    if (content === null || DOCUMENT_COMPONENTS.includes(node.getComponent() ?? ''))
+      return content
+    return <DockPane tab={node}>{content}</DockPane>
   }
 
   return (
@@ -1080,7 +1124,7 @@ export const App = (): React.JSX.Element => {
           model={model}
           factory={factory}
           onModelChange={(nextModel) => {
-            localStorage.setItem('dnspy.layout.v1', JSON.stringify(nextModel.toJson()))
+            localStorage.setItem(layoutStorageKey, JSON.stringify(nextModel.toJson()))
             // Every layout change comes through here, which makes it the one place that knows the tab
             // order — and the tab order is part of the session the next run restores.
             const { order, active } = orderedDocumentKeys(nextModel)

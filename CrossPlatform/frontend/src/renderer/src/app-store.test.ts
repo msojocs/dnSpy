@@ -1,7 +1,7 @@
-import { Actions, Model } from 'flexlayout-react'
+import { Actions, DockLocation, Model, TabSetNode } from 'flexlayout-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodeStatement, DebugBreakpoint, DecompilerLanguage, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
-import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, useAppStore } from './app-store'
+import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, syncDockTabStrips, useAppStore } from './app-store'
 import type { Bookmark, DocumentState, LineBreakpoint, SessionSource } from './app-store'
 import { translate } from './localization'
 
@@ -1509,6 +1509,100 @@ describe('orderedDocumentKeys', () => {
 
     model.doAction(Actions.selectTab('start'))
     expect(orderedDocumentKeys(model).active).toBeUndefined()
+  })
+})
+
+describe('syncDockTabStrips', () => {
+  // The panes dnSpy opens in the editor rather than docking; the strip rule is about the docks.
+  const documentComponents = ['document', 'hex', 'module-info', 'start']
+
+  const layout = (): Model => Model.fromJson({
+    global: {},
+    layout: {
+      type: 'row',
+      children: [
+        {
+          type: 'tabset',
+          id: 'explorer-dock',
+          children: [{ type: 'tab', id: 'explorer', name: 'Assembly Explorer', component: 'explorer', enableClose: true }],
+        },
+        {
+          type: 'tabset',
+          id: 'documents',
+          // One document, and the editor keeps its row all the same: dnSpy's document row is what says
+          // which documents are open, and the rule about single windows is the docks'.
+          children: [{ type: 'tab', id: 'start', name: 'Start', component: 'start', enableClose: false }],
+        },
+      ],
+    },
+  })
+
+  const strips = (model: Model): Record<string, boolean> => {
+    const shown: Record<string, boolean> = {}
+    model.visitNodes((node) => {
+      if (node instanceof TabSetNode)
+        shown[node.getId()] = node.isEnableTabStrip()
+    })
+    return shown
+  }
+
+  it('leaves a dock of one window without a tab row, and the editor with its own', () => {
+    const model = layout()
+    syncDockTabStrips(model, documentComponents)
+
+    expect(strips(model)).toEqual({ 'explorer-dock': false, documents: true })
+    // The window itself is still there: only the row of tabs goes away, and the pane's caption is what
+    // the window is reached by.
+    expect(model.getNodeById('explorer')).not.toBeUndefined()
+    expect(model.getNodeById('explorer')?.getParent()?.getId()).toBe('explorer-dock')
+  })
+
+  it('brings the row back when a second window is docked into it', () => {
+    const model = layout()
+    syncDockTabStrips(model, documentComponents)
+    expect(strips(model)['explorer-dock']).toBe(false)
+
+    model.doAction(Actions.addNode({
+      type: 'tab',
+      id: 'locals',
+      name: 'Locals',
+      component: 'locals',
+      enableClose: true,
+    }, 'explorer-dock', DockLocation.CENTER, -1, true))
+    syncDockTabStrips(model, documentComponents)
+
+    expect(strips(model)['explorer-dock']).toBe(true)
+  })
+
+  it('takes the row away again when the dock is down to one window', () => {
+    const model = layout()
+    model.doAction(Actions.addNode({
+      type: 'tab',
+      id: 'locals',
+      name: 'Locals',
+      component: 'locals',
+      enableClose: true,
+    }, 'explorer-dock', DockLocation.CENTER, -1, true))
+    syncDockTabStrips(model, documentComponents)
+    expect(strips(model)['explorer-dock']).toBe(true)
+
+    model.doAction(Actions.deleteTab('locals'))
+    syncDockTabStrips(model, documentComponents)
+
+    expect(strips(model)['explorer-dock']).toBe(false)
+  })
+
+  it('changes nothing, and says nothing, when every dock is already right', () => {
+    const model = layout()
+    syncDockTabStrips(model, documentComponents)
+
+    const changes: unknown[] = []
+    model.addChangeListener((action) => { changes.push(action) })
+    syncDockTabStrips(model, documentComponents)
+
+    // What keeps this from running a second time round: the pass over an unchanged layout dispatches
+    // nothing, so the change it would answer with never comes.
+    expect(changes).toEqual([])
   })
 })
 

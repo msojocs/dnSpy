@@ -1,4 +1,4 @@
-import { TabNode, TabSetNode, type Model } from 'flexlayout-react'
+import { Actions, TabNode, TabSetNode, type Model } from 'flexlayout-react'
 import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
@@ -2298,6 +2298,39 @@ export function orderedDocumentKeys(model: Model): { order: string[]; active?: s
     })
   }
   return { order, active }
+}
+
+/**
+ * A dock of one window is not a tab group, so it shows no tab row of its own: the window's caption is the
+ * only bar over it. Dragging a second window in beside it makes it a group, and the strip comes back along
+ * the bottom edge of the pane, where the docks carry it, to switch between the two.
+ *
+ * The editor's tab sets are left as they are — `documentComponents` names the panes that open as documents
+ * rather than docking, and dnSpy's document row shows for a single document too, since it is what says
+ * which documents are open.
+ */
+export function syncDockTabStrips(model: Model, documentComponents: readonly string[]): void {
+  const hides: string[] = []
+  const shows: string[] = []
+  model.visitNodes((node) => {
+    if (!(node instanceof TabSetNode))
+      return
+    const children = node.getChildren()
+    if (children.some((child) => {
+      const component = child instanceof TabNode ? child.getComponent() : undefined
+      return component !== undefined && documentComponents.includes(component)
+    }))
+      return
+    const wanted = children.length > 1
+    if (node.isEnableTabStrip() !== wanted)
+      (wanted ? shows : hides).push(node.getId())
+  })
+  // The walk above reads the tree the actions below change, so the ids are collected first and the tab
+  // sets that are already right are left untouched — which is also what keeps this from running twice.
+  for (const id of hides)
+    model.doAction(Actions.updateNodeAttributes(id, { enableTabStrip: false }))
+  for (const id of shows)
+    model.doAction(Actions.updateNodeAttributes(id, { enableTabStrip: true }))
 }
 
 /**

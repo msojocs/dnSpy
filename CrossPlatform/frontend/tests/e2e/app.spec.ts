@@ -92,7 +92,7 @@ test.describe('the workspace shell', () => {
     await expect(page.getByRole('button', { name: 'Close window' })).toBeVisible()
     await expect(page.getByRole('toolbar', { name: 'Main toolbar' })).toBeVisible()
     await expect(page.getByText('Ready', { exact: true })).toBeVisible()
-    await expect(page.getByRole('tab', { name: 'Assembly Explorer' }).first()).toBeVisible()
+    await expect(page.locator('.dock-caption-title', { hasText: 'Assembly Explorer' })).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Locals' })).toBeVisible()
   })
 
@@ -182,7 +182,7 @@ test.describe('the workspace shell', () => {
 
     await expect(page.getByRole('menuitem', { name: '文件' })).toBeVisible()
     await expect(page.getByText('就绪', { exact: true })).toBeVisible()
-    await expect(page.getByRole('tab', { name: '程序集资源管理器' }).first()).toBeVisible()
+    await expect(page.locator('.dock-caption-title', { hasText: '程序集资源管理器' })).toBeVisible()
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
     await page.getByRole('button', { name: '打开程序集' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')

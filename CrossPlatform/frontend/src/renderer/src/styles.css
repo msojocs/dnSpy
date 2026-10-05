@@ -18,6 +18,12 @@
   --danger: #e46464;
   --warning: #dfb45c;
   --success: #61b978;
+  /* A docked pane's caption, in the colours dnSpy paints the two states: the pane last worked in is the
+     blue one and the rest stay in the surface colour. */
+  --caption: #2d3034;
+  --caption-text: #aab0b6;
+  --caption-active: #007acc;
+  --caption-active-text: #ffffff;
   --menu-height: 26px;
   --toolbar-height: 34px;
   --status-height: 23px;
@@ -36,6 +42,7 @@
   --accent-hover: #69bae8;
   --accent-soft: #255877;
   --selection: #2b668c;
+  --caption-active: var(--accent);
 }
 
 :root[data-theme="light"] {
@@ -55,6 +62,7 @@
   --danger: #b3261e;
   --warning: #926800;
   --success: #28783c;
+  --caption-active: var(--accent);
 }
 
 :root[data-theme="hc"] {
@@ -74,6 +82,10 @@
   --danger: #ff7b7b;
   --warning: #ffff00;
   --success: #00ff7f;
+  --caption: #111;
+  --caption-text: #fff;
+  --caption-active: var(--accent);
+  --caption-active-text: #000;
 }
 
 * {
@@ -1367,6 +1379,84 @@ select:focus-visible,
 .document-tab-menu-shortcut {
   padding-left: 22px;
   color: var(--text-muted);
+}
+
+/* A docked pane's caption: the title, the dotted rule dnSpy runs from it to the pane's own buttons, and
+   those buttons — the pane's window menu and its close. It is as tall as a tab button, so a pane that
+   carries both a caption and a tab strip reads as one piece of chrome either way round. */
+.dock-pane {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.dock-caption {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 25px;
+  padding-left: 8px;
+  background: var(--caption);
+  color: var(--caption-text);
+  user-select: none;
+}
+
+.dock-caption-active {
+  background: var(--caption-active);
+  color: var(--caption-active-text);
+}
+
+.dock-caption-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The dots are the pane's own text colour let through, which is what keeps them legible on both captions. */
+.dock-caption-dots {
+  flex: 1 1 auto;
+  height: 6px;
+  margin: 0 8px;
+  background-image: repeating-linear-gradient(to right, currentColor 0 1px, transparent 1px 5px);
+  opacity: 0.35;
+}
+
+.dock-caption-button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.dock-caption-button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 18%);
+}
+
+.dock-caption-button:disabled {
+  opacity: 0.4;
+}
+
+.dock-pane-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dock-menu-check {
+  display: grid;
+  place-items: center;
+}
+
+.dock-menu-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 760px) {
