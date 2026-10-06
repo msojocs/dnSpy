@@ -1,12 +1,8 @@
 using System.Runtime.CompilerServices;
 
 namespace DebugTarget;
-
 internal static class Program {
-	[ModuleInitializer]
-	internal static void InitializeModule() {
-	}
-
+	[ModuleInitializer] internal static void InitializeModule() { }
 	static void Main(string[] args) {
 		if (args.Contains("--wait", StringComparer.Ordinal)) {
 			Console.WriteLine("READY");
@@ -20,7 +16,6 @@ internal static class Program {
 		Console.WriteLine(result);
 		Console.WriteLine(AddAsync(left, right).GetAwaiter().GetResult());
 	}
-
 	// The accumulator is a real local rather than a single-use temporary: the decompiler inlines a
 	// variable that is assigned once, and a debuggee whose locals all disappear cannot exercise the
 	// Locals window. 2 * 21 keeps the answer the tests expect.
@@ -29,6 +24,7 @@ internal static class Program {
 		var sum = 0;
 		for (var i = 0; i < right; i++)
 			sum += left;
+
 		return sum;
 	}
 

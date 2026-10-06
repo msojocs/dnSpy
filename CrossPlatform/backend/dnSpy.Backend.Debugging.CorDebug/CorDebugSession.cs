@@ -343,11 +343,18 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 						}
 					}
 					var threads = Threads.Snapshot();
-					Stop(StopReasons.CreateProcess, threads.Count == 0 ? null : threads[0].Thread);
+					if (threads.Count > 0) {
+						Stop(StopReasons.CreateProcess, threads[0].Thread);
+					}
+					// else: defer until CreateThread arrives; see the CreateThread handler below.
 				}
 				break;
 			case CreateThreadCorDebugManagedCallbackEventArgs createThread:
 				Threads.Add(createThread.Thread);
+				// If we're breaking at CreateProcess and didn't have a thread yet, emit the stopped event now.
+				if (BreakKind == "CreateProcess" && !IsStopped) {
+					Stop(StopReasons.CreateProcess, createThread.Thread);
+				}
 				break;
 			case ExitThreadCorDebugManagedCallbackEventArgs exitThread:
 				Threads.Remove(exitThread.Thread);
