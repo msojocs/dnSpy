@@ -48,7 +48,7 @@ const launchApp = async (assemblies: string, options: LaunchOptions = {}): Promi
 }
 
 const closeApp = async (options: { keepUserData?: boolean } = {}): Promise<void> => {
-  await application.close()
+  await application?.close()
   if (!options.keepUserData)
     rmSync(userDataDirectory, { recursive: true, force: true })
 }

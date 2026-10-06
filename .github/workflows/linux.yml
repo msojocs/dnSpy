@@ -37,15 +37,24 @@ jobs:
           cache-dependency-path: CrossPlatform/pnpm-lock.yaml
 
       - name: Install Linux test dependencies
+        # openbox is a minimal window manager: xvfb only supplies a frame buffer, so without a manager
+        # mapping and sizing windows the shell's title-bar maximize/restore never takes and BrowserWindow
+        # reports isMaximized() === false, which fails the window tests and leaves panes unlaid-out.
         run: |
           sudo apt-get update
-          sudo apt-get install --yes xvfb libgtk-3-0 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatspi2.0-0 libsecret-1-0
+          sudo apt-get install --yes xvfb openbox libgtk-3-0 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatspi2.0-0 libsecret-1-0
 
       - name: Restore JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and test backend
-        run: dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false --logger "console;verbosity=minimal"
+      - name: Build backend
+        # `dotnet test` only builds test projects and what they reference, so it never builds
+        # dnSpy.Backend.Host. The e2e tests spawn that host from its bin directory; without this
+        # step the shell starts with no backend and every test that waits for "Ready" times out.
+        run: pnpm build:backend
+
+      - name: Test backend
+        run: dotnet test dnSpy.CrossPlatform.slnx --no-build --logger "console;verbosity=minimal"
 
       - name: Audit dependencies
         run: |
@@ -56,7 +65,14 @@ jobs:
         run: pnpm --dir frontend build
 
       - name: Run Electron end-to-end tests
-        run: xvfb-run --auto-servernum pnpm --dir frontend test:e2e
+        # openbox is started inside the Xvfb session before the tests so the shell's windows are managed;
+        # the explicit screen is large enough for the docked panes the tests read from. Clear any
+        # inherited Wayland session variables: Electron otherwise selects Wayland before Xvfb's X11
+        # display, then exits in the runner because there is no DRM device for the Wayland backend.
+        env:
+          WAYLAND_DISPLAY: ''
+          XDG_SESSION_TYPE: x11
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1200x24" bash -c "openbox & sleep 1; pnpm --dir frontend test:e2e"
 
       - name: Build Linux packages
         run: pnpm package:linux
@@ -64,7 +80,9 @@ jobs:
       - name: Test packaged application
         env:
           DNSPY_PACKAGED_EXECUTABLE: ${{ github.workspace }}/CrossPlatform/artifacts/packages/linux-unpacked/dnspy
-        run: xvfb-run --auto-servernum pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts
+          WAYLAND_DISPLAY: ''
+          XDG_SESSION_TYPE: x11
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1200x24" bash -c "openbox & sleep 1; pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts"
 
       - name: Generate checksums
         run: sha256sum artifacts/packages/dnSpy-*.AppImage artifacts/packages/dnSpy-*.deb > artifacts/packages/SHA256SUMS
