@@ -40,6 +40,13 @@ test('packaged application starts its bundled backend and discovers the debugger
       await access(path.join(resourcesPath, 'backend', 'linux-x64', 'libdbgshim.so'))
     }
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+    // The assembly opens as one collapsed root over its module, and the namespaces hang off the module.
+    for (const kind of ['assembly', 'module']) {
+      const row = page.locator(`.tree-row[data-kind="${kind}"]`).first()
+      await expect(row).toBeVisible()
+      if ((await row.getAttribute('aria-expanded')) === 'false')
+        await row.locator('.tree-expander').click({ force: true })
+    }
     const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
     await expect(namespaceRow).toBeVisible()
     await namespaceRow.locator('.tree-expander').click({ force: true })
