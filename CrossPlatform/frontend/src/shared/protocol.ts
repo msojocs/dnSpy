@@ -684,6 +684,8 @@ export interface DebugLaunchOptions {
   environment?: Record<string, string>
   /** `true` arms a breakpoint on the entry point, matching `PredefinedBreakKinds.EntryPoint`. */
   stopAtEntry?: boolean
+  /** WPF-compatible startup break kind; omitted requests the legacy `stopAtEntry` behavior. */
+  breakKind?: 'DontBreak' | 'CreateProcess' | 'EntryPoint' | 'ModuleCctorOrEntryPoint'
   workspaceId?: string
 }
 

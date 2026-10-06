@@ -17,5 +17,6 @@ internal static class StopReasons {
 	public const string Step = "step";
 	public const string Pause = "pause";
 	public const string Entry = "entry";
+	public const string CreateProcess = "create-process";
 	public const string Exception = "exception";
 }

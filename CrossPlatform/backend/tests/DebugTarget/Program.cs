@@ -3,6 +3,10 @@ using System.Runtime.CompilerServices;
 namespace DebugTarget;
 
 internal static class Program {
+	[ModuleInitializer]
+	internal static void InitializeModule() {
+	}
+
 	static void Main(string[] args) {
 		if (args.Contains("--wait", StringComparer.Ordinal)) {
 			Console.WriteLine("READY");

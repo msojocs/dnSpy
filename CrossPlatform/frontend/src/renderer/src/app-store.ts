@@ -1251,7 +1251,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         await syncLineBreakpoints(get, set)
       if (get().exceptionBreakpoints.length > 0)
         await window.dnSpy.setExceptionBreakpoints(sessionId, get().exceptionBreakpoints)
-      // A launch that does not break at the entry point is held by the engine until this lands: the
+      // A launch that does not break during startup is held by the engine until this lands: the
       // debuggee would otherwise run to completion in the time the launch request alone takes.
       await window.dnSpy.configurationDone(sessionId)
       get().appendOutput(t('Started debugging {target}.', { target: options.program }))

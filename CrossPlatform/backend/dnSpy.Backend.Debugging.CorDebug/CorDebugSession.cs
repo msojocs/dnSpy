@@ -18,6 +18,7 @@ internal sealed record SessionEvent(string Event, object? Body);
 /// </summary>
 internal sealed partial class CorDebugSession : IAsyncDisposable {
 	readonly List<string> recentOutput = new();
+	readonly object eventGate = new();
 
 	ICorDebug? corDebug;
 	ICorDebugProcess? process;
@@ -42,18 +43,21 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	/// <summary>Absolute path of the program being launched, used to recognise its module.</summary>
 	public string? LaunchProgram { get; private init; }
 
-	/// <summary>True when the launch asked for a stop before the first user statement runs.</summary>
+	/// <summary>True when the launch asked for a stop during startup.</summary>
 	public bool StopAtEntry { get; private init; }
+
+	/// <summary>The startup location requested by the client, including the WPF-compatible module cctor option.</summary>
+	public string? BreakKind { get; private init; }
 
 	/// <summary>
 	/// True while a launch is being held back until the client has armed its breakpoints.
 	///
-	/// A launch that does not stop at the entry point has no stop of its own before user code, and
+	/// A launch that does not stop during startup has no stop of its own before user code, and
 	/// the debuggee reaches it in the time the launch request itself takes to come back — a client
 	/// that armed breakpoints afterwards would be arming them at a program that had already run.
 	/// So the target is left suspended where the runtime stopped it and released by
-	/// <c>configurationDone</c>. A launch that does break at the entry point needs none of this: the
-	/// entry breakpoint is already a stop the client can arm behind.
+	/// <c>configurationDone</c>. A launch that does break during startup needs none of this: the
+	/// startup breakpoint is already a stop the client can arm behind.
 	/// </summary>
 	bool awaitingConfiguration;
 
@@ -74,7 +78,17 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 
 	public event EventHandler<SessionEvent>? EventReceived;
 
+	SessionEvent? pendingStoppedEvent;
+
 	public bool HasExited { get; private set; }
+
+	internal SessionEvent? TakePendingStoppedEvent() {
+		lock (eventGate) {
+			var pending = pendingStoppedEvent;
+			pendingStoppedEvent = null;
+			return pending;
+		}
+	}
 
 	// ---------------------------------------------------------------- lifecycle
 
@@ -83,15 +97,17 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		if (!File.Exists(program))
 			throw new RpcException(ErrorCodes.FileNotFound, $"Debug target does not exist: {request.Program}");
 
+		var breakKind = GetBreakKind(request);
 		var session = new CorDebugSession {
 			WorkspaceId = request.WorkspaceId,
 			SymbolResolver = symbols,
 			LaunchProgram = program,
-			StopAtEntry = request.StopAtEntry,
+			BreakKind = breakKind,
+			StopAtEntry = breakKind is not null,
 			OwnsDebuggee = true,
 		};
 		// Held until the client is done arming breakpoints; see awaitingConfiguration.
-		session.awaitingConfiguration = !request.StopAtEntry;
+		session.awaitingConfiguration = !session.StopAtEntry;
 		Process? child = null;
 		try {
 			var launchCommand = GetLaunchCommand(program);
@@ -141,6 +157,17 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 			await session.DisposeAsync().ConfigureAwait(false);
 			throw;
 		}
+	}
+
+	static string? GetBreakKind(DebugLaunchRequest request) {
+		return request.BreakKind switch {
+			"DontBreak" => null,
+			"CreateProcess" => "CreateProcess",
+			"EntryPoint" => "EntryPoint",
+			"ModuleCctorOrEntryPoint" => "ModuleCctorOrEntryPoint",
+			_ when request.StopAtEntry => "EntryPoint",
+			_ => null,
+		};
 	}
 
 	/// <summary>
@@ -304,6 +331,21 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	/// </summary>
 	public void HandleEvent(CorDebugManagedCallbackEventArgs e) {
 		switch (e) {
+			case CreateProcessCorDebugManagedCallbackEventArgs:
+				if (BreakKind == "CreateProcess") {
+					if (process is not null) {
+						try {
+							foreach (var thread in process.EnumerateThreads())
+								Threads.Add(thread);
+						}
+						catch (Exception ex) when (ModuleTable.IsComFailure(ex)) {
+							// The runtime may not expose the main thread until the callback has returned.
+						}
+					}
+					var threads = Threads.Snapshot();
+					Stop(StopReasons.CreateProcess, threads.Count == 0 ? null : threads[0].Thread);
+				}
+				break;
 			case CreateThreadCorDebugManagedCallbackEventArgs createThread:
 				Threads.Add(createThread.Thread);
 				break;
@@ -425,7 +467,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		switch (command) {
 			case "configurationDone":
 				// The client's breakpoints are in place, so the target may run: this is the release for
-				// a launch that was held because it does not break at the entry point.
+				// a launch that was held because it does not break during startup.
 				if (awaitingConfiguration) {
 					awaitingConfiguration = false;
 					ResumeProcess();
@@ -580,7 +622,16 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		}
 	}
 
-	void Emit(string eventName, object? body) => EventReceived?.Invoke(this, new SessionEvent(eventName, body));
+	void Emit(string eventName, object? body) {
+		var sessionEvent = new SessionEvent(eventName, body);
+		EventHandler<SessionEvent>? handler;
+		lock (eventGate) {
+			handler = EventReceived;
+			if (handler is null && eventName == DebugEventNames.Stopped)
+				pendingStoppedEvent = sessionEvent;
+		}
+		handler?.Invoke(this, sessionEvent);
+	}
 
 	/// <summary>Records a line of debuggee output for <c>disconnect</c> diagnostics.</summary>
 	public void NoteOutput(string line) {

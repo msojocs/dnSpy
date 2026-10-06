@@ -59,7 +59,7 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
   const [argumentsText, setArgumentsText] = useState('')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [environmentText, setEnvironmentText] = useState('')
-  const [breakAt, setBreakAt] = useState<'dont-break' | 'entry-point'>('dont-break')
+  const [breakAt, setBreakAt] = useState<'dont-break' | 'create-process' | 'entry-point' | 'module-cctor-or-entry-point'>('dont-break')
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
@@ -103,6 +103,11 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
       workingDirectory: workingDirectory.trim() || undefined,
       environment,
       stopAtEntry: breakAt === 'entry-point',
+      ...(breakAt === 'create-process'
+        ? { breakKind: 'CreateProcess' as const }
+        : breakAt === 'module-cctor-or-entry-point'
+          ? { breakKind: 'ModuleCctorOrEntryPoint' as const }
+          : {}),
     })
   }
 
@@ -133,9 +138,14 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
           <textarea id="debug-program-env" className="debug-program-wide" placeholder={t('One KEY=VALUE per line')} value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} />
 
           <label htmlFor="debug-program-break">{t('Break at')}</label>
-          <select id="debug-program-break" className="debug-program-wide" value={breakAt} onChange={(event) => setBreakAt(event.target.value === 'entry-point' ? 'entry-point' : 'dont-break')}>
+          <select id="debug-program-break" className="debug-program-wide" value={breakAt} onChange={(event) => {
+            const value = event.target.value
+            setBreakAt(value === 'create-process' || value === 'entry-point' || value === 'module-cctor-or-entry-point' ? value : 'dont-break')
+          }}>
             <option value="dont-break">{t("Don't Break")}</option>
+            <option value="create-process">{t('CreateProcess')}</option>
             <option value="entry-point">{t('Entry Point')}</option>
+            <option value="module-cctor-or-entry-point">{t('Module .cctor or Entry Point')}</option>
           </select>
         </div>
         <div className="modal-actions">

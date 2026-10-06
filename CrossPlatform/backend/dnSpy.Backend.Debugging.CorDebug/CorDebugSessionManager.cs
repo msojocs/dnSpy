@@ -122,6 +122,8 @@ public sealed class CorDebugSessionManager : IAsyncDisposable {
 			session.EventReceived -= Session_EventReceived;
 			throw new InvalidOperationException("Could not register the debug session.");
 		}
+		if (session.TakePendingStoppedEvent() is { } pending)
+			Session_EventReceived(session, pending);
 	}
 
 	void Session_EventReceived(object? sender, SessionEvent e) {

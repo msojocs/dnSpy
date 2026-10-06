@@ -1,3 +1,6 @@
+using System.Reflection;
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using ICorDebugSharp;
 using ICorDebugSharp.Extensions;
@@ -5,8 +8,8 @@ using ICorDebugSharp.Extensions;
 namespace dnSpy.Backend.Debugging.CorDebug;
 
 /// <summary>
-/// The "break at the entry point" half of a launch. The client always asks for it, so a launch that
-/// ignored the flag would run the debuggee to completion before the user could set anything.
+/// The startup breakpoint half of a launch. The client asks for it before configuration is done, so
+/// ignoring the flag would run the debuggee to completion before the user could set anything.
 /// </summary>
 /// <remarks>
 /// The entry point comes from the PE's CLI header rather than from a metadata walk: the runtime's own
@@ -17,17 +20,20 @@ namespace dnSpy.Backend.Debugging.CorDebug;
 internal sealed partial class CorDebugSession {
 	ICorDebugFunctionBreakpoint? entryBreakpoint;
 
-	/// <summary>Arms the entry-point breakpoint once the module we launched loads.</summary>
+	/// <summary>Arms the requested startup breakpoint once the module we launched loads.</summary>
 	void ArmEntryBreakpoint(ICorDebugModule module) {
-		if (!StopAtEntry || entryBreakpoint is not null || HasExited)
+		if (BreakKind is not ("EntryPoint" or "ModuleCctorOrEntryPoint") || entryBreakpoint is not null || HasExited)
 			return;
 		var modulePath = BreakpointTable.TryGetModulePath(module);
 		if (string.IsNullOrEmpty(modulePath) || LaunchProgram is null || !BreakpointTable.PathsMatch(modulePath, LaunchProgram))
 			return;
-		if (TryReadEntryPointToken(modulePath) is not { } token)
+		var token = BreakKind == "ModuleCctorOrEntryPoint"
+			? TryReadModuleCctorToken(modulePath) ?? TryReadEntryPointToken(modulePath)
+			: TryReadEntryPointToken(modulePath);
+		if (token is not { } methodToken)
 			return;
 		try {
-			entryBreakpoint = module.GetFunctionFromToken(token).ILCode.CreateBreakpoint(0);
+			entryBreakpoint = module.GetFunctionFromToken(methodToken).ILCode.CreateBreakpoint(0);
 			entryBreakpoint.Activate(true);
 		}
 		catch (Exception ex) when (ModuleTable.IsComFailure(ex)) {
@@ -75,5 +81,25 @@ internal sealed partial class CorDebugSession {
 		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or BadImageFormatException) {
 			return null;
 		}
+	}
+
+	static int? TryReadModuleCctorToken(string path) {
+		try {
+			using var stream = File.OpenRead(path);
+			using var pe = new PEReader(stream);
+			var metadata = pe.GetMetadataReader();
+			var moduleType = metadata.GetTypeDefinition(MetadataTokens.TypeDefinitionHandle(1));
+			foreach (var methodHandle in moduleType.GetMethods()) {
+				var method = metadata.GetMethodDefinition(methodHandle);
+				if (!StringComparer.Ordinal.Equals(metadata.GetString(method.Name), ".cctor"))
+					continue;
+				if ((method.Attributes & MethodAttributes.Static) == 0 || (method.Attributes & MethodAttributes.RTSpecialName) == 0)
+					continue;
+				return MetadataTokens.GetToken(methodHandle);
+			}
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or BadImageFormatException or InvalidOperationException) {
+		}
+		return null;
 	}
 }

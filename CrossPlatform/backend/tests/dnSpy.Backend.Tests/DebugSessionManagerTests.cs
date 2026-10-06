@@ -91,6 +91,60 @@ public sealed class DebugSessionManagerTests {
 	}
 
 	[Fact(Timeout = 60_000)]
+	public async Task BreaksAtModuleCctorOrEntryPoint() {
+		using var workspaceManager = new WorkspaceManager();
+		await using var manager = CreateManager(workspaceManager);
+		var target = FindTarget();
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
+		var stopped = new TaskCompletionSource<DebugEventNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+		manager.EventReceived += (_, notification) => {
+			if (notification.Event == "stopped")
+				stopped.TrySetResult(notification);
+		};
+
+		var started = await manager.LaunchAsync(
+			new DebugLaunchRequest(target, BreakKind: "ModuleCctorOrEntryPoint", WorkspaceId: opened.WorkspaceId),
+			TestContext.Current.CancellationToken);
+		var stop = await stopped.Task.WaitAsync(TestContext.Current.CancellationToken);
+		Assert.Equal("entry", stop.Body?.GetProperty("reason").GetString());
+
+		var threadId = stop.Body?.GetProperty("threadId").GetInt32() ?? throw new InvalidOperationException("Stopped event has no thread ID.");
+		var stack = await manager.RequestAsync(
+			new DebugAdapterRequest(started.SessionId, "stackTrace", JsonSerializer.SerializeToElement(new { threadId, startFrame = 0, levels = 20 })),
+			TestContext.Current.CancellationToken);
+		var frames = stack.Body?.GetProperty("stackFrames").EnumerateArray().ToArray() ?? [];
+		Assert.Contains(frames, frame => frame.GetProperty("name").GetString()?.Contains(".cctor", StringComparison.Ordinal) == true);
+
+		await manager.DisconnectAsync(
+			new DebugDisconnectRequest(started.SessionId, TerminateDebuggee: true),
+			TestContext.Current.CancellationToken);
+	}
+
+	[Fact(Timeout = 60_000)]
+	public async Task BreaksAtCreateProcess() {
+		using var workspaceManager = new WorkspaceManager();
+		await using var manager = CreateManager(workspaceManager);
+		var target = FindTarget();
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
+		var stopped = new TaskCompletionSource<DebugEventNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+		manager.EventReceived += (_, notification) => {
+			if (notification.Event == "stopped")
+				stopped.TrySetResult(notification);
+		};
+
+		var started = await manager.LaunchAsync(
+			new DebugLaunchRequest(target, BreakKind: "CreateProcess", WorkspaceId: opened.WorkspaceId),
+			TestContext.Current.CancellationToken);
+		var stop = await stopped.Task.WaitAsync(TestContext.Current.CancellationToken);
+		Assert.Equal("create-process", stop.Body?.GetProperty("reason").GetString());
+		Assert.Equal(JsonValueKind.Number, stop.Body?.GetProperty("threadId").ValueKind);
+
+		await manager.DisconnectAsync(
+			new DebugDisconnectRequest(started.SessionId, TerminateDebuggee: true),
+			TestContext.Current.CancellationToken);
+	}
+
+	[Fact(Timeout = 60_000)]
 	public async Task AttachesToAndDetachesFromExistingCoreClrProcess() {
 		// A workspace has to be open for the engine to resolve the module the process has already loaded:
 		// it is the decompiler, not a symbol file, that names the code a frame is in.

@@ -70,6 +70,30 @@ describe('DebugProgramDialog', () => {
     })
   })
 
+  it('launches with the module cctor startup break kind', () => {
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+
+    fireEvent.change(field('Break at'), { target: { value: 'module-cctor-or-entry-point' } })
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'OK' }))
+
+    expect(launchDebug).toHaveBeenCalledWith(expect.objectContaining({
+      stopAtEntry: false,
+      breakKind: 'ModuleCctorOrEntryPoint',
+    }))
+  })
+
+  it('launches with the CreateProcess startup break kind', () => {
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+
+    fireEvent.change(field('Break at'), { target: { value: 'create-process' } })
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'OK' }))
+
+    expect(launchDebug).toHaveBeenCalledWith(expect.objectContaining({
+      stopAtEntry: false,
+      breakKind: 'CreateProcess',
+    }))
+  })
+
   it('omits a working directory left blank rather than sending an empty string', () => {
     render(<DebugProgramDialog onClose={vi.fn()} />)
 

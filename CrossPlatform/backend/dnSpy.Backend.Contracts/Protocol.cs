@@ -736,7 +736,8 @@ public sealed record DebugLaunchRequest(
 	string? WorkingDirectory = null,
 	bool StopAtEntry = false,
 	IReadOnlyDictionary<string, string>? Environment = null,
-	string? WorkspaceId = null);
+	string? WorkspaceId = null,
+	string? BreakKind = null);
 
 public sealed record DebugProcessDto(int ProcessId, string Name, string? ExecutablePath);
 
