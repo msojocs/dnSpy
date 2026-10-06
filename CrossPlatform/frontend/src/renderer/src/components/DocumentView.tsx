@@ -2,7 +2,7 @@ import Editor from './CodeEditor'
 import { useEffect, useRef } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
-import type { CodeStatement, DecompilerLanguage } from '../../../shared/protocol'
+import type { CodeStatement } from '../../../shared/protocol'
 import { bookmarkMarkers, codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
 import { clearBookmarks, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from '../bookmark-commands'
 import type { Bookmark, LineBreakpoint } from '../app-store'
@@ -54,7 +54,6 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   const wordWrap = useAppStore((state) => state.wordWrap)
   const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const document = useAppStore((state) => state.documents[documentId])
-  const changeLanguage = useAppStore((state) => state.changeDocumentLanguage)
   const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
   const bookmarks = useAppStore((state) => state.bookmarks)
   const bookmarksReveal = useAppStore((state) => state.bookmarksReveal)
@@ -167,18 +166,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   return (
     <div className="document-view" data-reference-count={document.spans.filter((span) => span.targetNodeId).length}>
       <div className="document-toolbar">
-        {['csharp', 'visual-basic', 'il'].includes(document.language) ? (
-          <select
-            aria-label={t('Decompiler language')}
-            value={document.requestedLanguage}
-            onChange={(event) => void changeLanguage(document.nodeId, event.target.value as DecompilerLanguage)}
-          >
-            <option value="cSharp">C#</option>
-            <option value="visualBasic">Visual Basic</option>
-            <option value="il">IL</option>
-            <option value="ilWithCSharp">IL with C#</option>
-          </select>
-        ) : <span className="document-language-label">{document.language === 'xml' ? 'XAML/XML' : document.language}</span>}
+        {!['csharp', 'visual-basic', 'il'].includes(document.language) && <span className="document-language-label">{document.language === 'xml' ? 'XAML/XML' : document.language}</span>}
         {document.diagnostics.length > 0 && (
           <span className="document-diagnostic" title={document.diagnostics.map((diagnostic) => diagnostic.message).join('\n')}>
             <AlertTriangle size={14} /> {document.diagnostics.length}

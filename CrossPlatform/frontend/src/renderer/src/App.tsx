@@ -279,6 +279,9 @@ export const App = (): React.JSX.Element => {
   const canRedo = useAppStore((state) => state.canRedo)
   const undoEdit = useAppStore((state) => state.undoEdit)
   const redoEdit = useAppStore((state) => state.redoEdit)
+  const activeDocumentId = useAppStore((state) => state.activeDocumentId)
+  const activeDocumentLanguage = useAppStore((state) => state.activeDocumentId ? state.documents[state.activeDocumentId]?.requestedLanguage : undefined)
+  const changeDocumentLanguage = useAppStore((state) => state.changeDocumentLanguage)
   const saveModuleAs = useAppStore((state) => state.saveModuleAs)
   const saveModule = useAppStore((state) => state.saveModule)
   const saveAllModules = useAppStore((state) => state.saveAllModules)
@@ -321,6 +324,7 @@ export const App = (): React.JSX.Element => {
   const continueDebug = useAppStore((state) => state.continueDebug)
   const pauseDebug = useAppStore((state) => state.pauseDebug)
   const stepDebug = useAppStore((state) => state.stepDebug)
+  const revealStoppedLocation = useAppStore((state) => state.revealStoppedLocation)
   const stopDebug = useAppStore((state) => state.stopDebug)
   const functionBreakpoints = useAppStore((state) => state.functionBreakpoints)
   const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
@@ -1136,9 +1140,12 @@ export const App = (): React.JSX.Element => {
       <ToolBar
         hasWorkspace={Boolean(workspaceId)} busy={busy} onOpen={() => void chooseAndOpen()} onSave={() => void saveModuleAs()} onSearch={() => showToolWindow('search')}
         canGoBack={navigation.index > 0} canGoForward={navigation.index >= 0 && navigation.index < navigation.items.length - 1} onBack={goBack} onForward={goForward}
+        canUndo={canUndo} canRedo={canRedo} onUndo={() => void undoEdit()} onRedo={() => void redoEdit()}
+        decompilerLanguage={activeDocumentLanguage} onLanguageChange={(language) => { if (activeDocumentId) void changeDocumentLanguage(activeDocumentId, language) }}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true} debugState={debugState}
         onStart={() => setDebugProgramDialogOpen(true)} onContinue={() => void continueDebug()} onPause={() => void pauseDebug()}
-        onStep={() => void stepDebug('next')} onStop={() => void stopDebug()}
+        onShowNextStatement={() => void revealStoppedLocation()} onStepInto={() => void stepDebug('stepIn')}
+        onStepOver={() => void stepDebug('next')} onStepOut={() => void stepDebug('stepOut')} onStop={() => void stopDebug()}
       />
       {error && (
         <div className="error-banner" role="alert">
