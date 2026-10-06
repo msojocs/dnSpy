@@ -42,7 +42,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "44.5.1",
-    "electron-builder": "26.15.3",
+    "electron-builder": "26.17.0",
     "electron-vite": "5.0.0",
     "jsdom": "28.1.0",
     "monaco-editor-core": "npm:monaco-editor@0.57.0",

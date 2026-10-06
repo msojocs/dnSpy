@@ -3,6 +3,7 @@ packages:
 
 overrides:
   dompurify: 3.4.16
+  sprintf-js: npm:@stdlib/string-format@^0.2.2
 
 allowBuilds:
   electron: true
