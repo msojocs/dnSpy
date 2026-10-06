@@ -1144,6 +1144,7 @@ export const App = (): React.JSX.Element => {
         decompilerLanguage={activeDocumentLanguage} onLanguageChange={(language) => { if (activeDocumentId) void changeDocumentLanguage(activeDocumentId, language) }}
         debugAvailable={backendStatus.capabilities?.['debug.coreclr.launch'] === true} debugState={debugState}
         onStart={() => setDebugProgramDialogOpen(true)} onContinue={() => void continueDebug()} onPause={() => void pauseDebug()}
+        onRestart={() => { void stopDebug().then(() => setDebugProgramDialogOpen(true)) }}
         onShowNextStatement={() => void revealStoppedLocation()} onStepInto={() => void stepDebug('stepIn')}
         onStepOver={() => void stepDebug('next')} onStepOut={() => void stepDebug('stepOut')} onStop={() => void stopDebug()}
       />

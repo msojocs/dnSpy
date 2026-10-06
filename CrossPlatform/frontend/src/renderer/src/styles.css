@@ -320,6 +320,13 @@ select:focus-visible,
   color: var(--text);
 }
 
+.toolbar-debug-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  shape-rendering: geometricPrecision;
+}
+
 .toolbar-busy {
   margin-left: 5px;
   color: var(--accent-hover);

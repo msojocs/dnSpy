@@ -137,6 +137,7 @@ const zhCN: Record<string, string> = {
   'English': 'English',
   'Simplified Chinese': '简体中文',
   'Continue': '继续',
+  'Restart': '重新启动',
   'Show Next Statement': '显示下一语句',
   'Start Debugging': '开始调试',
   'Start Debugging...': '开始调试...',
