@@ -3,10 +3,10 @@ name: Linux Cross-Platform CI
 on:
   push:
     branches:
-      - master
+      - linux
   pull_request:
     branches:
-      - master
+      - linux
   workflow_dispatch:
 
 jobs:
