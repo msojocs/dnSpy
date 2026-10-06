@@ -3038,15 +3038,21 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 		}
 
-		ModuleEntry GetModule(string moduleId) => modules.TryGetValue(moduleId, out var module)
-			? module
+		ModuleEntry GetModule(string moduleId) {
+			if (modules.TryGetValue(moduleId, out var module))
+				return module;
+			// Module tools are invoked on the module node, which now sits under the assembly root the entry
+			// is keyed by; the node still carries the ModuleEntry it belongs to, so it resolves the same module.
+			if (nodes.TryGetValue(moduleId, out var node) && node.AsModuleEntry is { } entry)
+				return entry;
 			// A PE-only, ELF or unreadable file is in the tree but has no module to edit or write, and saying
 			// so is more use than reporting that the id is unknown.
-			: throw new RpcException(
+			throw new RpcException(
 				ErrorCodes.NodeNotFound,
 				peModules.ContainsKey(moduleId) || elfFiles.ContainsKey(moduleId) || unknownFiles.ContainsKey(moduleId)
 					? "This file is not a managed assembly, so it cannot be edited or saved."
 					: "The module no longer exists.");
+		}
 
 		NodeEntry GetNode(string nodeId) => nodes.TryGetValue(nodeId, out var node)
 			? node

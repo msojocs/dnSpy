@@ -28,10 +28,10 @@ const SELECTABLE: Record<PickerMode, (node: TreeNode) => boolean> = {
 
 /**
  * The nodes that lead to a selectable one, which is dnSpy's `FilterType.CheckChildren`: a type is
- * only reachable through the module and namespace it lives in, and a member only through its type —
- * so all three stay visible in every mode, as containers rather than as answers.
+ * only reachable through the assembly, module and namespace it lives in, and a member only through its
+ * type — so all of those stay visible in every mode, as containers rather than as answers.
  */
-const CONTAINERS = ['module', 'namespace', 'referencesgroup', 'assemblyreference', 'type']
+const CONTAINERS = ['assembly', 'module', 'namespace', 'referencesgroup', 'assemblyreference', 'type']
 
 /** dnSpy's own titles for the pickers, `Pick_Type` and friends. */
 const PICKER_TITLES: Record<PickerMode, string> = {
@@ -196,8 +196,8 @@ export const TypePickerDialog = ({ workspaceId, mode, title, rootNodeIds, onPick
           return
         const shown = allowed === undefined ? response.nodes : response.nodes.filter((node) => allowed.has(node.id))
         setRoots(shown)
-        // A module's own children are its namespaces, so opening it is what makes the tree usable;
-        // nothing below that is opened for the user, since which namespace holds the type is their call.
+        // The roots are assemblies; opening one shows the module inside it, which is as far as the tree
+        // is opened for the user. Which module, namespace and type hold the answer is their call.
         setExpanded(Object.fromEntries(shown.map((node) => [node.id, true])))
         await Promise.all(shown.filter((node) => node.hasChildren).map(loadChildren))
       }

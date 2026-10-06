@@ -66,6 +66,31 @@ const showOutput = async (): Promise<void> => {
   await page.getByRole('menuitem', { name: /^Output/ }).click()
 }
 
+/** Breakpoints is not one of the six tool windows the default layout docks — dnSpy keeps it on the Debug
+ * menu — so a test that reads the breakpoint list opens the window from there first, the way a user would. */
+const showBreakpoints = async (): Promise<void> => {
+  await page.getByRole('menuitem', { name: 'Debug', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Window', exact: true }).hover()
+  await page.getByRole('menuitem', { name: /^Breakpoints/ }).click()
+}
+
+/** A row's expander is clicked only when the row is still collapsed: the assembly explorer opens an
+ * assembly collapsed, while the type picker opens with its roots already expanded, and a blind click
+ * would fold the picker's instead. */
+const expandRow = async (row: Locator): Promise<void> => {
+  await expect(row).toBeVisible()
+  if ((await row.getAttribute('aria-expanded')) === 'false')
+    await row.locator('.tree-expander').click()
+}
+
+/** An assembly loads as a single collapsed root whose one child is the module; the namespaces and the
+ * reference folders hang off that module, the way dnSpy's own tree nests them. Reaching any of them means
+ * opening those two levels first. The scope is the assembly explorer by default, or a picker dialog. */
+const expandModule = async (scope: Locator | Page = page): Promise<void> => {
+  await expandRow(scope.locator('.tree-row[data-kind="assembly"]').first())
+  await expandRow(scope.locator('.tree-row[data-kind="module"]').first())
+}
+
 const openAssemblyAndNamespace = async (): Promise<void> => {
   await page.getByRole('button', { name: 'Open Assembly' }).first().click()
   await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
@@ -76,6 +101,7 @@ const openAssemblyAndNamespace = async (): Promise<void> => {
   await page.getByRole('menuitem', { name: 'Recent Files' }).click()
   await expect(page.getByRole('menuitem', { name: /dnSpy\.Backend\.Contracts\.dll/ })).toBeVisible()
   await fileMenu.click()
+  await expandModule()
   const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
   await expect(namespaceRow).toBeVisible()
   await namespaceRow.locator('.tree-expander').click()
@@ -186,6 +212,7 @@ test.describe('the workspace shell', () => {
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
     await page.getByRole('button', { name: '打开程序集' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+    await expandModule()
     await expect(page.locator('.tree-row[data-kind="referencesgroup"]')).toContainText('程序集引用')
 
     // The C# Interactive window is named the way the WPF menu names it.
@@ -326,6 +353,7 @@ test.describe('the workspace shell', () => {
   test('opens module tools and commits metadata and IL edits', async () => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
+    await expandModule()
 
     // Module tools live on the module's context menu in the explorer, not in the View menu.
     const moduleRow = page.locator('.tree-row[data-kind="module"]').first()
@@ -410,6 +438,10 @@ test.describe('the workspace shell', () => {
     await getCode.click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Hex Write Empty Body' }).click()
+    // The write narrates itself to the Output window, which the default layout no longer docks, so it is
+    // brought up before the line is read — the pane keeps the backlog, so opening it after the write still
+    // shows the message.
+    await showOutput()
     await expect(page.getByText('Updated method body bytes for get_Code().')).toBeVisible()
     await expect(page.getByText('Modified', { exact: true })).toBeVisible()
     await expect.poll(async () => (await markedBytes()).slice(0, 3)).toEqual(['0A', '16', '2A'])
@@ -510,7 +542,9 @@ test.describe('the workspace shell', () => {
     const parameterTypes = create.locator('details.methodsig-section').filter({ hasText: 'Method Parameter Types' })
     await parameterTypes.getByRole('button', { name: 'Type' }).click()
     const typePicker = page.getByRole('dialog', { name: 'Pick a Type' })
-    // The picker opens the module it is rooted at by itself; the namespace below it is the user's call.
+    // The picker opens with the assembly root already expanded; its module and the namespace below it are
+    // the user's call.
+    await expandModule(typePicker)
     await typePicker.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
     await typePicker.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.WorkspaceRequest$/ }).click()
     await typePicker.getByRole('button', { name: 'OK' }).click()
@@ -523,6 +557,7 @@ test.describe('the workspace shell', () => {
     const attribute = page.getByRole('dialog', { name: 'Edit Custom Attribute' })
     await attribute.getByRole('button', { name: 'Pick a Constructor' }).click()
     const constructorPicker = page.getByRole('dialog', { name: 'Pick a Constructor' })
+    await expandModule(constructorPicker)
     await constructorPicker.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
     await constructorPicker.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.WorkspaceRequest$/ }).locator('.tree-expander').click()
     await constructorPicker.locator('.tree-row[data-kind="method"]').filter({ hasText: /^\.ctor\(/ }).first().click()
@@ -600,7 +635,7 @@ test.describe('the workspace shell', () => {
     const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
     await expect(bodyLine).toBeVisible()
 
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     const breakpointRows = page.locator('.breakpoint-row')
     const glyphs = page.locator('.breakpoint-glyph')
     const lineBox = await bodyLine.boundingBox()
@@ -767,7 +802,8 @@ test.describe('the workspace shell', () => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
 
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
+    await expandModule()
     const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })
     await namespaceRow.locator('.tree-expander').click()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
@@ -846,6 +882,7 @@ test.describe('the in-process debug engine', () => {
   const openDebugTarget = async (): Promise<void> => {
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
     await expect(page.getByRole('treeitem').first()).toContainText('DebugTarget')
+    await expandModule()
     const namespaceRow = page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^DebugTarget$/ })
     await expect(namespaceRow).toBeVisible()
     await namespaceRow.locator('.tree-expander').click()
@@ -876,7 +913,7 @@ test.describe('the in-process debug engine', () => {
     const returnLine = editor.locator('.view-lines .view-line').filter({ hasText: /return\s+\w+\s*;/ }).first()
     await expect(returnLine).toBeVisible()
 
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     const glyphs = page.locator('.breakpoint-glyph')
     const lineBox = await returnLine.boundingBox()
     const marginBox = await editor.locator('.margin').first().boundingBox()
@@ -935,7 +972,7 @@ test.describe('the in-process debug engine', () => {
 
   test('stops on a function breakpoint for a method of the debuggee', async () => {
     await openDebugTarget()
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     await page.getByRole('textbox', { name: 'Function breakpoint', exact: true }).fill('DebugTarget.Program.Calculate')
     await page.getByRole('button', { name: 'Add function breakpoint' }).click()
 
@@ -961,7 +998,7 @@ test.describe('the in-process debug engine', () => {
     // pass counter and the accumulator is visible in the Locals pane.
     const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
     await expect(bodyLine).toBeVisible()
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     const lineBox = await bodyLine.boundingBox()
     const marginBox = await editor.locator('.margin').first().boundingBox()
     if (!lineBox || !marginBox)
@@ -1034,7 +1071,7 @@ test.describe('the in-process debug engine', () => {
     await editor.locator('.view-lines').hover()
     await page.mouse.wheel(0, 400)
     await expect(callLine).toBeVisible()
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     const lineBox = await callLine.boundingBox()
     const marginBox = await editor.locator('.margin').first().boundingBox()
     if (!lineBox || !marginBox)
@@ -1073,7 +1110,7 @@ test.describe('the in-process debug engine', () => {
 
     const sumLine = editor.locator('.view-lines .view-line').filter({ hasText: /=\s*\w+\s*\+\s*\w+\s*;/ }).first()
     await expect(sumLine).toBeVisible()
-    await page.getByRole('tab', { name: 'Breakpoints' }).click()
+    await showBreakpoints()
     const lineBox = await sumLine.boundingBox()
     const marginBox = await editor.locator('.margin').first().boundingBox()
     if (!lineBox || !marginBox)
@@ -1120,17 +1157,17 @@ test.describe('opening more than one assembly', () => {
 
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
 
-    const modules = page.locator('.tree-row[data-kind="module"]')
-    await expect(modules).toHaveCount(2)
-    await expect(modules.nth(0)).toContainText('dnSpy.Backend.Contracts')
-    await expect(modules.nth(1)).toContainText('DebugTarget')
+    const assemblies = page.locator('.tree-row[data-kind="assembly"]')
+    await expect(assemblies).toHaveCount(2)
+    await expect(assemblies.nth(0)).toContainText('dnSpy.Backend.Contracts')
+    await expect(assemblies.nth(1)).toContainText('DebugTarget')
     // Everything the first file had brought up is still there: the branch the user expanded, and the tab.
     await expect(page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ })).toHaveAttribute('aria-expanded', 'true')
     await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })).toBeVisible()
 
     // A file that is already open is reported as such, and adds nothing a second time.
     await page.getByRole('button', { name: 'Open Assembly' }).first().click()
-    await expect(modules).toHaveCount(2)
+    await expect(assemblies).toHaveCount(2)
     // Locals is the tool window that shows by default, so the message is read from the tab the command
     // wrote to, not from whichever pane happens to be on top.
     await showOutput()
