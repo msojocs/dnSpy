@@ -109,6 +109,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		// Held until the client is done arming breakpoints; see awaitingConfiguration.
 		session.awaitingConfiguration = !session.StopAtEntry;
 		Process? child = null;
+		RuntimeStartup.State? startup = null;
 		try {
 			var launchCommand = GetLaunchCommand(program);
 			var startInfo = new ProcessStartInfo {
@@ -138,22 +139,24 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 			session.HookOutput(child);
 
 			// Registration must happen before the runtime is resumed, or the startup callback is lost.
-			var startup = new RuntimeStartup.State();
+			startup = new RuntimeStartup.State();
 			session.unregisterToken = RuntimeStartup.Register((uint)child.Id, startup);
 			await ResumeRuntimeAsync(child.Id, cancellationToken).ConfigureAwait(false);
 
 			var (corDebug, hResult) = await startup.Completion.Task
 				.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
 				.ConfigureAwait(false);
-			startup.Release();
 			if (corDebug is null || hResult < 0)
 				throw new RpcException(ErrorCodes.InternalError, $"The runtime did not start: 0x{hResult:X8}");
 
 			await session.AttachCorDebugAsync(corDebug, child.Id).ConfigureAwait(false);
+			startup.Release();
 			session.Emit(DebugEventNames.Process, new { systemProcessId = child.Id, name = Path.GetFileName(program) });
 			return session;
 		}
 		catch {
+			// Unblock the native startup callback when attach or cancellation fails.
+			startup?.Release();
 			await session.DisposeAsync().ConfigureAwait(false);
 			throw;
 		}

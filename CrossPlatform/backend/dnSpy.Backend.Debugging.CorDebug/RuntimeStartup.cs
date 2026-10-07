@@ -14,11 +14,18 @@ internal static class RuntimeStartup {
 	public sealed class State {
 		public TaskCompletionSource<(ICorDebug? CorDebug, int HResult)> Completion { get; } =
 			new(TaskCreationOptions.RunContinuationsAsynchronously);
+		// RegisterForRuntimeStartup keeps the runtime suspended only until the startup callback
+		// returns. Keep that callback blocked while the launch thread installs the managed callback
+		// and calls DebugActiveProcess, otherwise a fast target can run to completion before the
+		// debugger has a chance to arm its entry breakpoint.
+		public TaskCompletionSource<bool> Ready { get; } =
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
 
 		public GCHandle Handle { get; set; }
 
 		/// <summary>Frees the GC handle that keeps this state alive for the native callback.</summary>
 		public void Release() {
+			Ready.TrySetResult(true);
 			if (Handle.IsAllocated)
 				Handle.Free();
 		}
@@ -53,5 +60,9 @@ internal static class RuntimeStartup {
 			}
 		}
 		state.Completion.TrySetResult((corDebug, hResult));
+		// The launch path performs the COM setup before allowing the runtime to continue.
+		// Never wait when startup failed: the caller may be unwinding without an attach to release us.
+		if (hResult >= 0)
+			state.Ready.Task.GetAwaiter().GetResult();
 	}
 }
