@@ -1,7 +1,7 @@
 import { Actions, DockLocation, Model, TabSetNode } from 'flexlayout-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodeStatement, DebugBreakpoint, DecompilerLanguage, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
-import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, statementIdentity, suggestCodeFilename, syncDockTabStrips, useAppStore } from './app-store'
+import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, breakpointsFile, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointEntries, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, parseLineBreakpointEntries, statementIdentity, suggestCodeFilename, syncDockTabStrips, useAppStore } from './app-store'
 import type { Bookmark, DocumentState, LineBreakpoint, SessionSource } from './app-store'
 import { translate } from './localization'
 
@@ -303,6 +303,7 @@ describe('line breakpoints', () => {
       column: 1,
       modulePath: '/app/DebugTarget.dll',
       metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
       ilOffset: 7,
       description: 'System.Void Ns.Type::M()',
       enabled: breakpoint.enabled,
@@ -339,7 +340,19 @@ describe('line breakpoints', () => {
     expect(breakpoint.line).toBe(9)
     expect(breakpoint.state).toBe('bound')
     expect(breakpoint.identity).toBe(statementIdentity('/app/DebugTarget.dll', 0x06000001, 7))
-    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{ id: breakpoint.id, nodeId: 'method-1', line: 6, enabled: true }])
+    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{
+      id: breakpoint.id,
+      nodeId: 'method-1',
+      line: 6,
+      enabled: true,
+      // The click already knew an IL location — its own guess at the nearest statement — and it is
+      // sent so a breakpoint that outlives its node id can still be resolved. The engine's answer
+      // below overrides it.
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
+      ilOffset: 5,
+    }])
   })
 
   it('adopts the engine’s answer when the document has no IL map of its own', async () => {
@@ -365,7 +378,16 @@ describe('line breakpoints', () => {
     await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
     const [breakpoint] = useAppStore.getState().lineBreakpoints
     await useAppStore.getState().setLineBreakpointEnabled(breakpoint.id, false)
-    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{ id: breakpoint.id, nodeId: 'method-1', line: 9, enabled: false }])
+    expect(setBreakpoints).toHaveBeenLastCalledWith('session', [{
+      id: breakpoint.id,
+      nodeId: 'method-1',
+      line: 9,
+      enabled: false,
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
+      ilOffset: 7,
+    }])
     expect(useAppStore.getState().lineBreakpoints[0].enabled).toBe(false)
   })
 
@@ -383,6 +405,185 @@ describe('line breakpoints', () => {
     await useAppStore.getState().toggleLineBreakpoint('method-1', 9)
     expect(useAppStore.getState().lineBreakpoints).toHaveLength(1)
     expect(setBreakpoints).not.toHaveBeenCalled()
+  })
+})
+
+describe('breakpoint persistence', () => {
+  const statements = [statement(4, 4, { ilOffset: 5 }), statement(9, 9, { ilOffset: 7 })]
+  const setBreakpoints = vi.fn(async (_sessionId: string, requested: { id: string; enabled: boolean }[]): Promise<DebugBreakpoint[]> =>
+    requested.map((breakpoint) => ({
+      id: breakpoint.id,
+      verified: true,
+      state: 'bound',
+      line: 9,
+      endLine: 9,
+      column: 1,
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
+      ilOffset: 7,
+      description: 'System.Void Ns.Type::M()',
+      enabled: breakpoint.enabled,
+    })))
+
+  const document = (codeStatements: CodeStatement[] | undefined): never => ({
+    nodeId: 'method-1',
+    title: 'M',
+    language: 'csharp',
+    text: '',
+    spans: [],
+    diagnostics: [],
+    codeStatements,
+    loading: false,
+    requestedLanguage: 'cSharp',
+  }) as never
+
+  const stored = (): unknown => JSON.parse(localStorage.getItem('dnspy.breakpoints.v1') ?? 'null')
+
+  beforeEach(() => {
+    localStorage.clear()
+    setBreakpoints.mockClear()
+    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, setBreakpoints, setFunctionBreakpoints: vi.fn(async () => ({})), setExceptionBreakpoints: vi.fn(async () => ({})) } })
+    useAppStore.setState({
+      lineBreakpoints: [],
+      functionBreakpoints: [],
+      exceptionBreakpoints: [],
+      debugSessionId: 'session',
+      documents: { 'method-1': document(statements) },
+    })
+  })
+
+  it('writes the IL location a restart needs, and reads it back', async () => {
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+
+    const entry = {
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
+      ilOffset: 7,
+      line: 9,
+      enabled: true,
+      description: 'System.Void Ns.Type::M()',
+    }
+    expect(stored()).toEqual({ version: 1, breakpoints: [entry], functions: [], exceptions: [] })
+    expect(parseLineBreakpointEntries(stored())).toEqual([entry])
+    expect(lineBreakpointEntries(useAppStore.getState().lineBreakpoints)).toEqual([entry])
+  })
+
+  it('leaves out a breakpoint the engine never gave a location', async () => {
+    // Nothing resolved it — no session, and an IL view with no statement table to snap against — so
+    // there is no module or offset to point a restored breakpoint at.
+    useAppStore.setState({ debugSessionId: undefined, documents: { 'method-1': document(undefined) } })
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+
+    expect(useAppStore.getState().lineBreakpoints).toHaveLength(1)
+    expect(stored()).toMatchObject({ breakpoints: [] })
+  })
+
+  it('writes function and exception breakpoints alongside the line ones', async () => {
+    await useAppStore.getState().addFunctionBreakpoint('Ns.Type.M')
+    await useAppStore.getState().setExceptionBreakpoint('uncaught', true)
+
+    expect(stored()).toMatchObject({
+      functions: [{ name: 'Ns.Type.M', enabled: true }],
+      exceptions: ['uncaught'],
+    })
+  })
+
+  it('accepts both the exported wrapper and a bare array when reading a file', () => {
+    const entries = [{
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000001,
+      ilOffset: 7,
+      line: 9,
+      enabled: true,
+      description: 'System.Void Ns.Type::M()',
+    }]
+    expect(parseLineBreakpointEntries({ version: 1, breakpoints: entries })).toEqual(entries)
+    expect(parseLineBreakpointEntries(entries)).toEqual(entries)
+    expect(parseLineBreakpointEntries({ nope: true })).toEqual([])
+    // A row with no module, no token or no offset has no location to bind and is dropped.
+    expect(parseLineBreakpointEntries([{ modulePath: '/a.dll' }, { modulePath: '', metadataToken: 6, ilOffset: 0 }, 'junk', null])).toEqual([])
+  })
+
+  it('defaults the fields a damaged row can do without', () => {
+    const [parsed] = parseLineBreakpointEntries([{ modulePath: '/a.dll', metadataToken: 6, ilOffset: 3 }])
+    // Written before the source method was tracked: the body's own token is the right answer
+    // everywhere except inside a state machine.
+    expect(parsed).toEqual({ modulePath: '/a.dll', metadataToken: 6, sourceMethodToken: 6, ilOffset: 3, line: 0, enabled: true, description: undefined })
+  })
+
+  it('adds imported breakpoints to the ones already there, skipping duplicates', async () => {
+    await useAppStore.getState().toggleLineBreakpoint('method-1', 6)
+    await useAppStore.getState().addFunctionBreakpoint('Ns.Type.M')
+    const file = breakpointsFile(useAppStore.getState())
+
+    // Importing the file that was just exported changes nothing.
+    expect(await useAppStore.getState().importBreakpoints(file)).toBe(0)
+
+    const added = await useAppStore.getState().importBreakpoints({
+      breakpoints: parseLineBreakpointEntries([{ modulePath: '/app/DebugTarget.dll', metadataToken: 0x06000002, sourceMethodToken: 0x06000002, ilOffset: 3, line: 20, enabled: false }]),
+      functions: [{ name: 'Ns.Type.N', enabled: true }],
+      exceptions: ['uncaught'],
+    })
+    expect(added).toBe(3)
+    expect(useAppStore.getState().lineBreakpoints).toHaveLength(2)
+    expect(useAppStore.getState().functionBreakpoints.map((breakpoint) => breakpoint.name)).toEqual(['Ns.Type.M', 'Ns.Type.N'])
+    expect(useAppStore.getState().exceptionBreakpoints).toEqual(['uncaught'])
+  })
+})
+
+// Breakpoints are read while the module is still being evaluated — the same moment the bookmarks are,
+// and the same moment it is easiest to get wrong.
+describe('breakpoints at startup', () => {
+  const seed = (value: unknown): void => localStorage.setItem('dnspy.breakpoints.v1', JSON.stringify(value))
+
+  beforeEach(() => localStorage.clear())
+
+  it('restores line, function and exception breakpoints together', async () => {
+    seed({
+      version: 1,
+      breakpoints: [
+        { modulePath: '/app/DebugTarget.dll', metadataToken: 0x06000001, sourceMethodToken: 0x06000003, ilOffset: 7, line: 9, enabled: false, description: 'System.Void Ns.Type::M()' },
+        { modulePath: '', metadataToken: 0, ilOffset: 0 },
+      ],
+      functions: [{ name: 'Ns.Type.M', enabled: true }, { name: '  ' }],
+      exceptions: ['uncaught', 'uncaught'],
+    })
+    vi.resetModules()
+
+    const reloaded = await import('./app-store')
+
+    const breakpoints = reloaded.useAppStore.getState().lineBreakpoints
+    expect(breakpoints).toHaveLength(1)
+    expect(breakpoints[0]).toMatchObject({
+      // The workspace that issued the node id is gone; the IL identity is what binds it again.
+      nodeId: '',
+      identity: statementIdentity('/app/DebugTarget.dll', 0x06000001, 7),
+      modulePath: '/app/DebugTarget.dll',
+      metadataToken: 0x06000001,
+      sourceMethodToken: 0x06000003,
+      ilOffset: 7,
+      requestedLine: 9,
+      line: 9,
+      state: 'pending',
+      enabled: false,
+      description: 'System.Void Ns.Type::M()',
+    })
+    expect(reloaded.useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.M', enabled: true }])
+    expect(reloaded.useAppStore.getState().exceptionBreakpoints).toEqual(['uncaught'])
+  })
+
+  it('survives a storage entry it cannot parse', async () => {
+    localStorage.setItem('dnspy.breakpoints.v1', '{ not json')
+    vi.resetModules()
+
+    const reloaded = await import('./app-store')
+
+    expect(reloaded.useAppStore.getState().lineBreakpoints).toEqual([])
+    expect(reloaded.useAppStore.getState().functionBreakpoints).toEqual([])
+    expect(reloaded.useAppStore.getState().exceptionBreakpoints).toEqual([])
   })
 })
 

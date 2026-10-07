@@ -23,6 +23,13 @@ internal sealed class BreakpointEntry {
 	public required int MetadataToken { get; init; }
 
 	/// <summary>
+	/// The method a user navigates to, which is <see cref="MetadataToken"/> itself except inside a
+	/// state machine, where the statements belong to <c>MoveNext</c>. The client saves it alongside the
+	/// breakpoint so a restored one can be resolved back to a node without a live node id.
+	/// </summary>
+	public int SourceMethodToken { get; init; }
+
+	/// <summary>
 	/// Where the statement's own code starts, which is the offset a stop is reported at. It is tried
 	/// first, but the runtime does not always accept a breakpoint there (see
 	/// <see cref="SequencePointIlOffset"/>).

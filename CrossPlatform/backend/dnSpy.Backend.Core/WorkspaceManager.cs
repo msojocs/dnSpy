@@ -3295,16 +3295,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		ResolvedBreakpoint ResolveBreakpoint(BreakpointQuery query, CancellationToken cancellationToken) {
-			IReadOnlyList<CodeStatementDto> statements;
-			try {
-				statements = GetCodeStatements(query.NodeId, cancellationToken);
-			}
-			catch (RpcException ex) {
-				return Unbound(query, ex.Message);
-			}
-			var statement = FindStatement(statements, query.Line, query.Column);
+			var statement = FindStatementByNode(query, cancellationToken, out var reason) ?? FindStatementByIlIdentity(query, cancellationToken);
 			if (statement is null)
-				return Unbound(query, "No sequence point on this line.");
+				return Unbound(query, reason ?? "No sequence point on this line.");
 			return new ResolvedBreakpoint(
 				query.Id,
 				true,
@@ -3321,6 +3314,53 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				statement.StartColumn,
 				statement.EndColumn,
 				statement.Description);
+		}
+
+		/// <summary>The statement a live node id and line name, which is what a click in the editor gives.</summary>
+		CodeStatementDto? FindStatementByNode(BreakpointQuery query, CancellationToken cancellationToken, out string? reason) {
+			reason = null;
+			IReadOnlyList<CodeStatementDto> statements;
+			try {
+				statements = GetCodeStatements(query.NodeId, cancellationToken);
+			}
+			catch (RpcException ex) {
+				// The node id is gone — a restored breakpoint naming a node from the workspace that saved
+				// it. Its IL identity gets the next try, and this message only stands if that has none.
+				reason = ex.Message;
+				return null;
+			}
+			return FindStatement(statements, query.Line, query.Column);
+		}
+
+		/// <summary>
+		/// The statement a saved breakpoint's IL identity names, for a breakpoint whose node id died with
+		/// the workspace that issued it. This is the location WPF dnSpy persists — module, token and IL
+		/// offset — so a restored breakpoint binds without its document ever having been opened.
+		/// </summary>
+		CodeStatementDto? FindStatementByIlIdentity(BreakpointQuery query, CancellationToken cancellationToken) {
+			if (query.ModulePath is not string modulePath || query.MetadataToken is not int metadataToken)
+				return null;
+			// Inside a state machine a statement belongs to MoveNext, whose token resolves to a method
+			// nobody navigates to; the source method is the one that owns a node with these statements.
+			var memberToken = query.SourceMethodToken is int source && source != 0 ? source : metadataToken;
+			if (FindMember(modulePath, memberToken).NodeId is not string nodeId)
+				return null;
+			IReadOnlyList<CodeStatementDto> statements;
+			try {
+				statements = GetCodeStatements(nodeId, cancellationToken);
+			}
+			catch (RpcException) {
+				return null;
+			}
+			if (query.IlOffset is int ilOffset) {
+				foreach (var statement in statements) {
+					if (!statement.IsHidden && statement.MetadataToken == metadataToken && statement.IlOffset == ilOffset)
+						return statement;
+				}
+			}
+			// The method is still there but its body moved under the saved offset — the assembly was
+			// recompiled, or edited here. The saved line is the best guess left.
+			return FindStatement(statements, query.Line, null);
 		}
 
 		static ResolvedBreakpoint Unbound(BreakpointQuery query, string reason) => new(

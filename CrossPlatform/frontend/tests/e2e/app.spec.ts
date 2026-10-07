@@ -1289,3 +1289,86 @@ test.describe('the session a run leaves behind', () => {
     await closeApp()
   })
 })
+
+// The same serial shape as the session above, and for the same reason: the breakpoint written by the
+// first launch is the only thing the second one has to go on.
+test.describe('the breakpoints a run leaves behind', () => {
+  test.describe.configure({ mode: 'serial', timeout: 60_000 })
+  const profileDirectory = mkdtempSync(path.join(os.tmpdir(), 'dnspy-e2e-breakpoints-'))
+
+  const storedBreakpoints = async (): Promise<{
+    breakpoints: { modulePath: string; metadataToken: number; sourceMethodToken: number; ilOffset: number; line: number; enabled: boolean; description?: string }[]
+    functions: { name: string; enabled: boolean }[]
+  } | null> => await page.evaluate(() => JSON.parse(localStorage.getItem('dnspy.breakpoints.v1') ?? 'null'))
+
+  test.afterAll(async () => {
+    await application?.close().catch(() => undefined)
+    rmSync(profileDirectory, { recursive: true, force: true })
+  })
+
+  test('are written as an IL location, not as a line in a document', async () => {
+    await launchApp(contractsAssemblyPath, { userDataDirectory: profileDirectory })
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.RpcException$/ })
+    await rpcException.dblclick()
+
+    // Monaco only renders the lines the viewport holds, so the window has to be tall enough to show the
+    // constructor body — the one place in this document a click lands on a sequence point.
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+    const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
+    await expect(bodyLine).toBeVisible()
+
+    await showBreakpoints()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
+    await expect(page.locator('.breakpoint-row')).toContainText('dnSpy.Backend.Contracts.RpcException..ctor')
+
+    await page.getByRole('textbox', { name: 'Function breakpoint', exact: true }).fill('dnSpy.Backend.Contracts.RpcException.get_Code')
+    await page.getByRole('button', { name: 'Add function breakpoint' }).click()
+
+    await expect.poll(async () => (await storedBreakpoints())?.breakpoints.length).toBe(1)
+    const stored = await storedBreakpoints()
+    const [entry] = stored!.breakpoints
+    // What goes to disk is the location WPF dnSpy persists: the module, the method and the offset in it.
+    // The node id the click used is a counter this workspace hands out and is deliberately not there.
+    expect(entry.modulePath).toBe(contractsAssemblyPath)
+    expect(entry.metadataToken).toBeGreaterThan(0)
+    expect(entry.sourceMethodToken).toBeGreaterThan(0)
+    expect(entry.ilOffset).toBeGreaterThanOrEqual(0)
+    expect(entry.enabled).toBe(true)
+    expect(entry.description).toContain('RpcException')
+    expect(stored!.functions).toEqual([{ name: 'dnSpy.Backend.Contracts.RpcException.get_Code', enabled: true }])
+
+    await closeApp({ keepUserData: true })
+  })
+
+  test('come back on the next launch and find their line again', async () => {
+    await launchApp(contractsAssemblyPath, { userDataDirectory: profileDirectory })
+
+    await showBreakpoints()
+    // The row is there before anything is decompiled: the method name and the line it was saved on are
+    // what the pane labels it with, so a restored breakpoint never reads as "Line 0".
+    const breakpointRows = page.locator('.breakpoint-row')
+    await expect(breakpointRows).toHaveCount(2)
+    await expect(breakpointRows.first()).toContainText('dnSpy.Backend.Contracts.RpcException..ctor:')
+    await expect(breakpointRows.nth(1)).toContainText('dnSpy.Backend.Contracts.RpcException.get_Code')
+
+    // The session restores the document, and the restored breakpoint attaches to it by IL identity —
+    // which is what puts the glyph back in the gutter without the user clicking anything.
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+    await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.RpcException' })).toBeVisible()
+    await expect(page.locator('.breakpoint-glyph')).toHaveCount(1)
+
+    // Removing it is what a restored breakpoint has to support too, and it leaves the storage empty.
+    await breakpointRows.first().getByRole('button').click()
+    await expect(page.locator('.breakpoint-glyph')).toHaveCount(0)
+    await expect.poll(async () => (await storedBreakpoints())?.breakpoints.length).toBe(0)
+
+    await closeApp()
+  })
+})

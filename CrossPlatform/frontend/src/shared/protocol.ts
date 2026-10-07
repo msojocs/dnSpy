@@ -626,6 +626,14 @@ export interface DebugBreakpointRequest {
   line: number
   column?: number
   enabled: boolean
+  /**
+   * The IL identity the breakpoint was last resolved to, sent so a breakpoint restored from settings
+   * can be resolved without a live node id — ids are issued per workspace and do not survive a restart.
+   */
+  modulePath?: string
+  metadataToken?: number
+  sourceMethodToken?: number
+  ilOffset?: number
 }
 
 /** The engine's answer: where the breakpoint really is, and whether it is armed. */
@@ -639,6 +647,8 @@ export interface DebugBreakpoint {
   message?: string
   modulePath?: string
   metadataToken: number
+  /** The method a user navigates to — `metadataToken` except inside a state machine. */
+  sourceMethodToken: number
   ilOffset: number
   description?: string
   enabled: boolean
@@ -779,8 +789,11 @@ export interface DnSpyApi {
   /** Writes every modified module back over its own file — dnSpy's Save All. */
   saveAllModules(workspaceId: string): Promise<SaveAllResponse>
   saveCode(suggestedName: string, text: string): Promise<string | undefined>
-  /** Picks a text file and returns its contents, or undefined when the picker was dismissed. Used to import bookmarks. */
-  readTextFile(): Promise<string | undefined>
+  /**
+   * Picks a text file and returns its contents, or undefined when the picker was dismissed. `kind`
+   * only titles the dialog — the two importers that use this read the same kind of JSON file.
+   */
+  readTextFile(kind?: 'bookmarks' | 'breakpoints'): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   chooseDebugDirectory(): Promise<string | undefined>
   listDebugProcesses(): Promise<DebugProcess[]>

@@ -16,8 +16,22 @@ namespace dnSpy.Backend.Debugging.CorDebug;
 /// that holding the COM thread through it would stall the event pump.
 /// </remarks>
 internal sealed partial class CorDebugSession {
-	/// <summary>What the client asked for, in decompiled-source coordinates.</summary>
-	sealed record BreakpointRequest(string Id, string NodeId, string Name, int Line, int? Column, bool Enabled);
+	/// <summary>
+	/// What the client asked for, in decompiled-source coordinates. A breakpoint restored from the
+	/// client's settings also carries the IL identity it was saved with, because the node id it was
+	/// created against died with the workspace that issued it.
+	/// </summary>
+	sealed record BreakpointRequest(
+		string Id,
+		string NodeId,
+		string Name,
+		int Line,
+		int? Column,
+		bool Enabled,
+		string? ModulePath = null,
+		int? MetadataToken = null,
+		int? SourceMethodToken = null,
+		int? IlOffset = null);
 
 	const string NoWorkspaceReason =
 		"This debug session has no workspace, so decompiled source cannot be resolved to IL.";
@@ -71,7 +85,9 @@ internal sealed partial class CorDebugSession {
 			return resolutions;
 		var response = await SymbolResolver.ResolveBreakpointsAsync(
 			WorkspaceId,
-			requests.Select(request => new BreakpointQuery(request.Id, request.NodeId, request.Line, request.Column)).ToArray(),
+			requests.Select(request => new BreakpointQuery(
+				request.Id, request.NodeId, request.Line, request.Column,
+				request.ModulePath, request.MetadataToken, request.SourceMethodToken, request.IlOffset)).ToArray(),
 			cancellationToken).ConfigureAwait(false);
 		foreach (var breakpoint in response.Breakpoints)
 			resolutions[breakpoint.Id] = breakpoint;
@@ -99,6 +115,7 @@ internal sealed partial class CorDebugSession {
 			Id = request.Id,
 			ModulePath = resolved.ModulePath,
 			MetadataToken = resolved.MetadataToken.Value,
+			SourceMethodToken = resolved.SourceMethodToken ?? resolved.MetadataToken.Value,
 			IlOffset = resolved.IlOffset.Value,
 			SequencePointIlOffset = resolved.SequencePointIlOffset,
 			RequestedLine = request.Line,
@@ -155,6 +172,7 @@ internal sealed partial class CorDebugSession {
 		message = entry.Breakpoint is not null ? null : entry.Message ?? ModuleNotLoadedReason,
 		modulePath = entry.ModulePath,
 		metadataToken = entry.MetadataToken,
+		sourceMethodToken = entry.SourceMethodToken,
 		ilOffset = entry.IlOffset,
 		description = entry.Description,
 		enabled = entry.Enabled,
@@ -185,7 +203,11 @@ internal sealed partial class CorDebugSession {
 				GetString(element, "name") ?? string.Empty,
 				GetInt(element, "line") ?? 0,
 				GetInt(element, "column"),
-				GetBool(element, "enabled") ?? true));
+				GetBool(element, "enabled") ?? true,
+				GetString(element, "modulePath"),
+				GetInt(element, "metadataToken"),
+				GetInt(element, "sourceMethodToken"),
+				GetInt(element, "ilOffset")));
 			index++;
 		}
 		return requests;

@@ -55,7 +55,34 @@ export interface LineBreakpoint {
   description?: string
   modulePath?: string
   metadataToken?: number
+  /** The method a user navigates to — `metadataToken` except inside a state machine. */
+  sourceMethodToken?: number
   ilOffset?: number
+}
+
+/**
+ * A line breakpoint as it is written to disk, the port's answer to WPF dnSpy's
+ * `DbgDotNetCodeLocation`: module, token and IL offset, which is everything the engine needs and
+ * nothing the session owns. The node id is deliberately absent — it is issued by a per-workspace
+ * counter — so a restored breakpoint is resolved back from its IL identity instead.
+ */
+export interface LineBreakpointEntry {
+  modulePath: string
+  metadataToken: number
+  sourceMethodToken: number
+  ilOffset: number
+  /** Last known decompiled line, so the pane reads right before the document has been opened again. */
+  line: number
+  enabled: boolean
+  /** The method's signature, which is what the pane labels the row with. */
+  description?: string
+}
+
+/** Everything the breakpoint settings hold, which is also the shape the export file is written in. */
+export interface StoredBreakpoints {
+  breakpoints: LineBreakpointEntry[]
+  functions: FunctionBreakpoint[]
+  exceptions: string[]
 }
 
 /**
@@ -287,6 +314,8 @@ interface AppState {
   removeLineBreakpoint(id: string): Promise<void>
   setLineBreakpointEnabled(id: string, enabled: boolean): Promise<void>
   deleteAllBreakpoints(): Promise<void>
+  /** Merges an imported breakpoint file into the current set, answering how many rows it added. */
+  importBreakpoints(stored: Partial<StoredBreakpoints>): Promise<number>
   setAllLineBreakpointsEnabled(enabled: boolean): Promise<void>
   /**
    * Opens the document a node id names, in a tab. Set by the shell, which owns the tab layout; the
@@ -363,11 +392,17 @@ const loadBool = (key: string, fallback: boolean): boolean => {
 // module is still evaluating, so a `const` further down would still be in its temporal dead zone.
 const bookmarksStorageKey = 'dnspy.bookmarks.v1'
 
+// Where the breakpoints WPF dnSpy would have written to its settings service go. Declared up here for
+// the same reason the bookmark key is.
+const breakpointsStorageKey = 'dnspy.breakpoints.v1'
+
 // Ids and ordering only have to be unique within the running client, so they are handed out from
 // counters rather than derived from the persisted data.
 let bookmarkSequence = 0
 let bookmarkOrder = 0
 let bookmarkRevealToken = 0
+// Up here for the same reason: `loadBreakpoints()` mints ids while the module is still evaluating.
+let lineBreakpointSequence = 0
 
 export const useAppStore = create<AppState>((set, get) => ({
   backendStatus: { state: 'starting' },
@@ -646,6 +681,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         }))
         // The document is what turns a bookmark's IL location back into a line and a node id.
         attachBookmarks(set, documentId, document.codeStatements)
+        // And the same for a breakpoint restored from settings, whose node id died with its workspace.
+        attachLineBreakpoints(set, documentId, document.codeStatements)
       }
     } catch (error) {
       if (get().workspaceId !== workspaceId) return documentId
@@ -1458,6 +1495,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           description: statement?.description,
           modulePath: statement?.modulePath,
           metadataToken: statement?.metadataToken,
+          sourceMethodToken: statement?.sourceMethodToken,
           ilOffset: statement?.ilOffset,
         }],
       }))
@@ -1483,6 +1521,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (get().lineBreakpoints.length === 0 && get().functionBreakpoints.length === 0) return
     set({ lineBreakpoints: [], functionBreakpoints: [] })
     await Promise.all([syncLineBreakpoints(get, set), syncFunctionBreakpoints(get)])
+  },
+
+  importBreakpoints: async (stored) => {
+    // Importing adds to what is already there, the way dnSpy's bookmark import does: an entry already
+    // present — same IL location, same method name — is skipped rather than duplicated.
+    const knownLines = new Set(get().lineBreakpoints.map((breakpoint) => breakpoint.identity))
+    const imported: LineBreakpoint[] = []
+    for (const entry of stored.breakpoints ?? []) {
+      const breakpoint = lineBreakpointFromEntry(entry)
+      if (knownLines.has(breakpoint.identity)) continue
+      knownLines.add(breakpoint.identity)
+      imported.push(breakpoint)
+    }
+    const knownFunctions = new Set(get().functionBreakpoints.map((breakpoint) => breakpoint.name))
+    const functions = (stored.functions ?? []).filter((breakpoint) => !knownFunctions.has(breakpoint.name))
+    const exceptions = (stored.exceptions ?? []).filter((filter) => !get().exceptionBreakpoints.includes(filter))
+    if (imported.length === 0 && functions.length === 0 && exceptions.length === 0)
+      return 0
+    set((state) => ({
+      lineBreakpoints: [...state.lineBreakpoints, ...imported],
+      functionBreakpoints: [...state.functionBreakpoints, ...functions],
+      exceptionBreakpoints: [...state.exceptionBreakpoints, ...exceptions],
+    }))
+    await Promise.all([syncLineBreakpoints(get, set), syncFunctionBreakpoints(get)])
+    return imported.length + functions.length + exceptions.length
   },
 
   setAllLineBreakpointsEnabled: async (enabled) => {
@@ -2045,6 +2108,42 @@ const attachBookmarks = (set: StoreSet, nodeId: string, statements: CodeStatemen
 }
 
 /**
+ * Relinks the line breakpoints to a document that has just been decompiled. A breakpoint restored from
+ * settings has no node id and the line its last run decompiled to; this is what makes the pane read
+ * right and the dot land in the right place again, without waiting for a debug session. Only identity
+ * matches count, so a breakpoint in another method is left alone.
+ */
+const attachLineBreakpoints = (set: StoreSet, nodeId: string, statements: CodeStatement[] | undefined): void => {
+  if (!statements || statements.length === 0)
+    return
+  const byIdentity = new Map<string, CodeStatement>()
+  for (const statement of statements) {
+    // A hidden point's line is 0xFEEFEE, not somewhere a dot can go.
+    if (!statement.isHidden)
+      byIdentity.set(statementIdentity(statement.modulePath, statement.metadataToken, statement.ilOffset), statement)
+  }
+  set((state) => {
+    let changed = false
+    const lineBreakpoints = state.lineBreakpoints.map((breakpoint) => {
+      const statement = byIdentity.get(breakpoint.identity)
+      if (!statement || (breakpoint.nodeId === nodeId && breakpoint.line === statement.startLine))
+        return breakpoint
+      changed = true
+      return {
+        ...breakpoint,
+        nodeId,
+        requestedLine: statement.startLine,
+        line: statement.startLine,
+        endLine: statement.endLine,
+        description: statement.description || breakpoint.description,
+        sourceMethodToken: breakpoint.sourceMethodToken ?? statement.sourceMethodToken,
+      }
+    })
+    return changed ? { lineBreakpoints } : {}
+  })
+}
+
+/**
  * Reads bookmarks out of stored settings or an imported file. Both shapes are accepted — a bare array
  * and the `{ bookmarks: [...] }` wrapper the export writes — and a row that is not usable is dropped
  * rather than failing the whole load.
@@ -2138,6 +2237,151 @@ useAppStore.setState({ bookmarks: loadBookmarks() })
 useAppStore.subscribe((state, previous) => {
   if (state.bookmarks !== previous.bookmarks)
     saveBookmarks(state.bookmarks)
+})
+
+/**
+ * The line breakpoints in the shape they are stored and exported. A breakpoint the engine has not
+ * named a module and an offset for only exists for this session — there is nothing on disk to point
+ * at — so it is left out, which is the test WPF dnSpy's `BreakpointsSerializer.Save` applies when it
+ * asks whether a location can be serialized at all.
+ */
+export const lineBreakpointEntries = (breakpoints: LineBreakpoint[]): LineBreakpointEntry[] => breakpoints
+  .filter((breakpoint) => !!breakpoint.modulePath && !!breakpoint.metadataToken && breakpoint.ilOffset !== undefined)
+  .map((breakpoint) => ({
+    modulePath: breakpoint.modulePath!,
+    metadataToken: breakpoint.metadataToken!,
+    sourceMethodToken: breakpoint.sourceMethodToken ?? breakpoint.metadataToken!,
+    ilOffset: breakpoint.ilOffset!,
+    line: breakpoint.line,
+    enabled: breakpoint.enabled,
+    description: breakpoint.description,
+  }))
+
+/** A stored row, or undefined when it is damaged past the point of being worth keeping. */
+const toLineBreakpointEntry = (value: unknown): LineBreakpointEntry | undefined => {
+  if (typeof value !== 'object' || value === null)
+    return undefined
+  const entry = value as Record<string, unknown>
+  // The same three fields `lineBreakpointEntries` insists on writing: without them there is no
+  // location to bind, and the row could never become a breakpoint again.
+  if (typeof entry.modulePath !== 'string' || entry.modulePath === '' ||
+    typeof entry.metadataToken !== 'number' || entry.metadataToken === 0 ||
+    typeof entry.ilOffset !== 'number')
+    return undefined
+  return {
+    modulePath: entry.modulePath,
+    metadataToken: entry.metadataToken,
+    // Rows written before the source method was tracked fall back to the body's own token, which is
+    // the right answer everywhere except inside a state machine.
+    sourceMethodToken: typeof entry.sourceMethodToken === 'number' && entry.sourceMethodToken !== 0
+      ? entry.sourceMethodToken
+      : entry.metadataToken,
+    ilOffset: entry.ilOffset,
+    line: typeof entry.line === 'number' ? entry.line : 0,
+    enabled: entry.enabled !== false,
+    description: typeof entry.description === 'string' ? entry.description : undefined,
+  }
+}
+
+/**
+ * Reads line breakpoints out of stored settings or an imported file. Both shapes are accepted — a bare
+ * array and the `{ breakpoints: [...] }` wrapper the export writes — and a row that is not usable is
+ * dropped rather than failing the whole load.
+ */
+export const parseLineBreakpointEntries = (value: unknown): LineBreakpointEntry[] => {
+  if (Array.isArray(value))
+    return value.flatMap((entry) => {
+      const parsed = toLineBreakpointEntry(entry)
+      return parsed ? [parsed] : []
+    })
+  const wrapped = typeof value === 'object' && value !== null ? (value as { breakpoints?: unknown }).breakpoints : undefined
+  return wrapped === undefined ? [] : parseLineBreakpointEntries(wrapped)
+}
+
+/** Function breakpoints are named by the method they match, so a row only has to carry that. */
+export const parseFunctionBreakpoints = (value: unknown): FunctionBreakpoint[] => {
+  if (!Array.isArray(value))
+    return []
+  const seen = new Set<string>()
+  return value.flatMap((candidate) => {
+    if (typeof candidate !== 'object' || candidate === null)
+      return []
+    const entry = candidate as Record<string, unknown>
+    const name = typeof entry.name === 'string' ? entry.name.trim() : ''
+    if (name === '' || seen.has(name))
+      return []
+    seen.add(name)
+    return [{ name, enabled: entry.enabled !== false }]
+  })
+}
+
+const parseExceptionBreakpoints = (value: unknown): string[] =>
+  Array.isArray(value) ? [...new Set(value.filter((filter): filter is string => typeof filter === 'string' && filter !== ''))] : []
+
+/** Turns a stored row back into a breakpoint. The node id died with the workspace that issued it, so
+ * it starts empty: the IL identity is what the backend resolves the location from, and what
+ * `attachLineBreakpoints` matches on once the document is decompiled again. */
+const lineBreakpointFromEntry = (entry: LineBreakpointEntry): LineBreakpoint => ({
+  id: `line${++lineBreakpointSequence}`,
+  nodeId: '',
+  identity: statementIdentity(entry.modulePath, entry.metadataToken, entry.ilOffset),
+  requestedLine: entry.line,
+  line: entry.line,
+  endLine: entry.line,
+  state: 'pending',
+  enabled: entry.enabled,
+  description: entry.description,
+  modulePath: entry.modulePath,
+  metadataToken: entry.metadataToken,
+  sourceMethodToken: entry.sourceMethodToken,
+  ilOffset: entry.ilOffset,
+})
+
+const emptyBreakpoints = (): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'> =>
+  ({ lineBreakpoints: [], functionBreakpoints: [], exceptionBreakpoints: [] })
+
+function loadBreakpoints(): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'> {
+  if (typeof localStorage === 'undefined')
+    return emptyBreakpoints()
+  try {
+    const stored = JSON.parse(localStorage.getItem(breakpointsStorageKey) ?? 'null') as unknown
+    if (typeof stored !== 'object' || stored === null)
+      return emptyBreakpoints()
+    const { breakpoints, functions, exceptions } = stored as Record<string, unknown>
+    return {
+      lineBreakpoints: parseLineBreakpointEntries(breakpoints).map(lineBreakpointFromEntry),
+      functionBreakpoints: parseFunctionBreakpoints(functions),
+      exceptionBreakpoints: parseExceptionBreakpoints(exceptions),
+    }
+  } catch {
+    return emptyBreakpoints()
+  }
+}
+
+/** The file an export writes, which is also what `loadBreakpoints` reads back. */
+export const breakpointsFile = (state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'>): StoredBreakpoints & { version: number } => ({
+  version: 1,
+  breakpoints: lineBreakpointEntries(state.lineBreakpoints),
+  functions: state.functionBreakpoints,
+  exceptions: state.exceptionBreakpoints,
+})
+
+function saveBreakpoints(state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'>): void {
+  if (typeof localStorage !== 'undefined')
+    localStorage.setItem(breakpointsStorageKey, JSON.stringify(breakpointsFile(state)))
+}
+
+// Same timing as the bookmarks above: read back once the module has finished evaluating, because the
+// state initializer runs while `loadBreakpoints` is still in its temporal dead zone.
+useAppStore.setState(loadBreakpoints())
+
+// dnSpy writes its breakpoints when the main window closes; a renderer has no equally reliable moment
+// — a crash or a kill takes the window with it — so every change goes straight to storage instead.
+useAppStore.subscribe((state, previous) => {
+  if (state.lineBreakpoints !== previous.lineBreakpoints ||
+    state.functionBreakpoints !== previous.functionBreakpoints ||
+    state.exceptionBreakpoints !== previous.exceptionBreakpoints)
+    saveBreakpoints(state)
 })
 
 const sessionStorageKey = 'dnspy.session.v1'
@@ -2602,9 +2846,6 @@ const writeHexPatch = async (
   }
 }
 
-// Ids only have to be unique within a session's table, and only stable across re-renders, so a counter is enough.
-let lineBreakpointSequence = 0
-
 const refreshDebugState = async (get: StoreGet, set: StoreSet, preferredThreadId?: number): Promise<void> => {
   const sessionId = get().debugSessionId
   if (!sessionId) return
@@ -2669,6 +2910,12 @@ const syncLineBreakpoints = async (get: StoreGet, set: StoreSet): Promise<void> 
     nodeId: breakpoint.nodeId,
     line: breakpoint.requestedLine,
     enabled: breakpoint.enabled,
+    // A breakpoint restored from settings has no node id left — it belonged to the workspace that saved
+    // it — so the location it was saved with goes along for the backend to resolve from instead.
+    modulePath: breakpoint.modulePath,
+    metadataToken: breakpoint.metadataToken,
+    sourceMethodToken: breakpoint.sourceMethodToken,
+    ilOffset: breakpoint.ilOffset,
   }))
   const results = await window.dnSpy.setBreakpoints(debugSessionId, requested)
   const byId = new Map(results.map((result) => [result.id, result]))
@@ -2698,6 +2945,7 @@ const applyBreakpointResult = (breakpoint: LineBreakpoint, result: DebugBreakpoi
     description: result.description ?? breakpoint.description,
     modulePath,
     metadataToken: result.metadataToken || breakpoint.metadataToken,
+    sourceMethodToken: result.sourceMethodToken || breakpoint.sourceMethodToken,
     ilOffset,
   }
 }

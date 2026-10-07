@@ -777,8 +777,21 @@ public sealed record ScriptOutputEntry(string Kind, string Text) {
 
 public sealed record ScriptEvaluateResponse(IReadOnlyList<ScriptOutputEntry> Entries);
 
-/// <summary>A breakpoint the client asked for, expressed in decompiled-source coordinates.</summary>
-public sealed record BreakpointQuery(string Id, string NodeId, int Line, int? Column = null);
+/// <summary>
+/// A breakpoint the client asked for, expressed in decompiled-source coordinates. A breakpoint that
+/// outlived the workspace which issued its <see cref="NodeId"/> — one restored from settings, or one
+/// imported from a file — also carries the IL identity it was saved with, so it can be resolved
+/// without the node id ever having been valid in this workspace.
+/// </summary>
+public sealed record BreakpointQuery(
+	string Id,
+	string NodeId,
+	int Line,
+	int? Column = null,
+	string? ModulePath = null,
+	int? MetadataToken = null,
+	int? SourceMethodToken = null,
+	int? IlOffset = null);
 
 /// <summary>The IL identity of a breakpoint, after snapping the requested line to a sequence point.</summary>
 public sealed record ResolvedBreakpoint(

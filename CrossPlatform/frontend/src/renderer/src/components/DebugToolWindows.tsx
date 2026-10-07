@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, LoaderCircle, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, LoaderCircle, Plus, Trash2, Upload } from 'lucide-react'
 import type { DebugVariable } from '../../../shared/protocol'
-import { methodBreakpointName, useAppStore } from '../app-store'
+import { breakpointsFile, methodBreakpointName, parseLineBreakpointEntries, parseFunctionBreakpoints, useAppStore } from '../app-store'
 import type { LineBreakpoint } from '../app-store'
 import { useLanguage } from '../localization'
 
@@ -125,6 +125,7 @@ const lineBreakpointLabel = (breakpoint: LineBreakpoint): string => {
 
 export const BreakpointsPane = (): React.JSX.Element => {
   const [name, setName] = useState('')
+  const [status, setStatus] = useState('')
   const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
   const removeLineBreakpoint = useAppStore((state) => state.removeLineBreakpoint)
   const setLineBreakpointEnabled = useAppStore((state) => state.setLineBreakpointEnabled)
@@ -134,6 +135,7 @@ export const BreakpointsPane = (): React.JSX.Element => {
   const setBreakpointEnabled = useAppStore((state) => state.setFunctionBreakpointEnabled)
   const exceptionBreakpoints = useAppStore((state) => state.exceptionBreakpoints)
   const setExceptionBreakpoint = useAppStore((state) => state.setExceptionBreakpoint)
+  const importBreakpoints = useAppStore((state) => state.importBreakpoints)
   const { t } = useLanguage()
   const submit = (): void => {
     if (name.trim()) {
@@ -141,8 +143,60 @@ export const BreakpointsPane = (): React.JSX.Element => {
       setName('')
     }
   }
+
+  // The same file the settings are written as, so an export can be dropped back in by hand.
+  const exportBreakpoints = async (): Promise<void> => {
+    const file = breakpointsFile(useAppStore.getState())
+    if (file.breakpoints.length === 0 && file.functions.length === 0 && file.exceptions.length === 0)
+      return
+    const saved = await window.dnSpy.saveCode('breakpoints.json', JSON.stringify(file, null, 2))
+    setStatus(saved ? t('Exported breakpoints to {path}.', { path: saved }) : '')
+  }
+
+  const runImport = async (): Promise<void> => {
+    let text: string | undefined
+    try {
+      text = await window.dnSpy.readTextFile('breakpoints')
+    } catch {
+      // A file the host could not read is reported the same way a damaged one is.
+      setStatus(t('The breakpoint file could not be read.'))
+      return
+    }
+    if (text === undefined)
+      return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      setStatus(t('The breakpoint file could not be read.'))
+      return
+    }
+    const stored = typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+    const file = {
+      breakpoints: parseLineBreakpointEntries(parsed),
+      functions: parseFunctionBreakpoints(stored.functions),
+      exceptions: Array.isArray(stored.exceptions) ? stored.exceptions.filter((filter): filter is string => typeof filter === 'string') : [],
+    }
+    if (file.breakpoints.length === 0 && file.functions.length === 0 && file.exceptions.length === 0) {
+      setStatus(t('The breakpoint file could not be read.'))
+      return
+    }
+    setStatus(t('Imported {count} breakpoint(s).', { count: await importBreakpoints(file) }))
+  }
+
   return (
     <div className="debug-tool-pane">
+      <div className="bookmarks-toolbar">
+        <button className="icon-button" title={t('Import Breakpoints')} aria-label={t('Import Breakpoints')} onClick={() => void runImport()}><Upload size={14} /></button>
+        <button
+          className="icon-button"
+          title={t('Export Breakpoints')}
+          aria-label={t('Export Breakpoints')}
+          disabled={lineBreakpoints.length === 0 && breakpoints.length === 0}
+          onClick={() => void exportBreakpoints()}
+        ><Download size={14} /></button>
+        {status ? <span className="bookmarks-status">{status}</span> : null}
+      </div>
       <div className="result-list">
         {lineBreakpoints.map((breakpoint) => {
           const label = lineBreakpointLabel(breakpoint)

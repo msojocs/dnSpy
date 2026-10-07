@@ -33,6 +33,7 @@ const nativeMessages = {
     saveCode: '保存代码',
     codeFiles: '代码文件',
     openBookmarks: '导入书签',
+    openBreakpoints: '导入断点',
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
     selectWorkingDirectory: '选择工作目录',
@@ -49,6 +50,7 @@ const nativeMessages = {
     saveCode: 'Save Code',
     codeFiles: 'Code Files',
     openBookmarks: 'Import Bookmarks',
+    openBreakpoints: 'Import Breakpoints',
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
     selectWorkingDirectory: 'Select Working Directory',
@@ -490,7 +492,7 @@ const registerIpc = (): void => {
     await writeFile(result.filePath, text, 'utf8')
     return result.filePath
   })
-  ipcMain.handle('dialog:openTextFile', async () => {
+  ipcMain.handle('dialog:openTextFile', async (_event, kind?: 'bookmarks' | 'breakpoints') => {
     // A test cannot drive the native picker, so it names the file up front; a file that is not there
     // answers like a cancelled dialog rather than throwing through the IPC channel.
     if (!app.isPackaged && process.env.DNSPY_E2E_OPEN_TEXT_FILE) {
@@ -501,7 +503,7 @@ const registerIpc = (): void => {
       }
     }
     const result = await dialog.showOpenDialog(mainWindow!, {
-      title: nativeText().openBookmarks,
+      title: kind === 'breakpoints' ? nativeText().openBreakpoints : nativeText().openBookmarks,
       defaultPath: dialogPathHistory?.openDirectory,
       properties: ['openFile'],
       filters: [{ name: nativeText().allFiles, extensions: ['*'] }],

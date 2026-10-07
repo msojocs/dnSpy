@@ -251,6 +251,42 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Null(breakpoint.IlOffset);
 	}
 
+	/// <summary>
+	/// A breakpoint read back from settings names a node id the workspace that saved it issued, which this
+	/// workspace has never heard of. What survives a restart is the location WPF dnSpy persists — module,
+	/// token and IL offset — and that has to be enough to bind, without the document ever having been
+	/// opened here.
+	/// </summary>
+	[Fact]
+	public async Task ResolveBreakpoints_BindsASavedLocationWithoutItsNodeId() {
+		var (path, opened, node, document) = await OpenMethodDocumentAsync("Calculate(");
+		var statement = Assert.Single(
+			(document.CodeStatements ?? []).Where(candidate => !candidate.IsHidden),
+			candidate => candidate.StartLine == LineOf(document.Text, "+="));
+
+		var response = await manager.ResolveBreakpointsAsync(
+			opened.WorkspaceId,
+			[
+				// The id is shaped like one this workspace could hand out, and belongs to nothing in it.
+				new BreakpointQuery("saved", node.Id + "-from-a-previous-run", statement.StartLine,
+					null, path, statement.MetadataToken, statement.SourceMethodToken, statement.IlOffset),
+				// Nothing was saved with this one but the line, so there is no second chance for it.
+				new BreakpointQuery("no-identity", node.Id + "-from-a-previous-run", statement.StartLine),
+			],
+			TestContext.Current.CancellationToken);
+
+		var saved = Assert.Single(response.Breakpoints, resolved => resolved.Id == "saved");
+		Assert.True(saved.Bound, saved.Reason);
+		Assert.Equal(path, saved.ModulePath);
+		Assert.Equal(statement.MetadataToken, saved.MetadataToken);
+		Assert.Equal(statement.IlOffset, saved.IlOffset);
+		Assert.Equal(statement.StartLine, saved.StartLine);
+
+		var unknown = Assert.Single(response.Breakpoints, resolved => resolved.Id == "no-identity");
+		Assert.False(unknown.Bound);
+		Assert.False(string.IsNullOrWhiteSpace(unknown.Reason));
+	}
+
 	[Fact]
 	public async Task ResolveIlLocation_RoundTrips() {
 		var opened = await OpenContractsAssemblyAsync();
