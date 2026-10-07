@@ -71,7 +71,12 @@ const showOutput = async (): Promise<void> => {
 const showBreakpoints = async (): Promise<void> => {
   await page.getByRole('menuitem', { name: 'Debug', exact: true }).click()
   await page.getByRole('menuitem', { name: 'Window', exact: true }).hover()
-  await page.getByRole('menuitem', { name: /^Breakpoints/ }).click()
+  const breakpointsMenuItem = page.getByRole('menuitem', { name: /^Breakpoints/ })
+  if ((await breakpointsMenuItem.getAttribute('aria-checked')) === 'true') {
+    await page.keyboard.press('Escape')
+    return
+  }
+  await breakpointsMenuItem.click()
 }
 
 /** A row's expander is clicked only when the row is still collapsed: the assembly explorer opens an
@@ -1365,7 +1370,7 @@ test.describe('the breakpoints a run leaves behind', () => {
     await expect(page.locator('.breakpoint-glyph')).toHaveCount(1)
 
     // Removing it is what a restored breakpoint has to support too, and it leaves the storage empty.
-    await breakpointRows.first().getByRole('button').click()
+    await breakpointRows.first().getByRole('button', { name: /^Remove / }).click()
     await expect(page.locator('.breakpoint-glyph')).toHaveCount(0)
     await expect.poll(async () => (await storedBreakpoints())?.breakpoints.length).toBe(0)
 
