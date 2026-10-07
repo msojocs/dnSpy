@@ -72,13 +72,18 @@ internal sealed class ManagedValueFormatter {
 
 	FormattedValue FormatPrimitive(ICorDebugValue value) {
 		var element = value.Type;
+		return new FormattedValue(DescribePrimitive(ReadBytes(value), element), NameOfElementType(element), 0);
+	}
+
+	/// <summary>The raw bytes behind a primitive, which is as much as the runtime hands over.</summary>
+	static byte[] ReadBytes(ICorDebugValue value) {
 		var size = Math.Max((int)value.Size, 1);
 		var bytes = new byte[size];
 		unsafe {
 			fixed (byte* pointer = bytes)
 				((ICorDebugGenericValue)value).GetValue((IntPtr)pointer);
 		}
-		return new FormattedValue(DescribePrimitive(bytes, element), NameOfElementType(element), 0);
+		return bytes;
 	}
 
 	static string DescribePrimitive(byte[] bytes, CorElementType element) {
@@ -134,6 +139,62 @@ internal sealed class ManagedValueFormatter {
 		CorElementType.PTR or CorElementType.FNPTR => "pointer",
 		_ => "object",
 	};
+
+	/// <summary>
+	/// The same value, as the breakpoint expression evaluator understands it. A condition compares
+	/// values rather than printing them, so a primitive comes back as a number instead of as the text
+	/// of one, and anything the engine cannot look inside comes back opaque — comparable only to null.
+	/// </summary>
+	public BreakpointValue ReadValue(ICorDebugValue? value) {
+		if (value is null)
+			return BreakpointValue.Null;
+		try {
+			return ReadValueCore(value);
+		}
+		catch (Exception ex) when (ModuleTable.IsComFailure(ex)) {
+			return BreakpointValue.FromObject("<unavailable>");
+		}
+	}
+
+	BreakpointValue ReadValueCore(ICorDebugValue value) {
+		if (value is ICorDebugReferenceValue reference) {
+			if (reference.IsNull)
+				return BreakpointValue.Null;
+			var target = reference.Dereference();
+			return target is null ? BreakpointValue.Null : ReadValueCore(target);
+		}
+		if (value is ICorDebugStringValue text)
+			return BreakpointValue.FromString(text.String ?? string.Empty);
+		if (value is ICorDebugArrayValue array)
+			return BreakpointValue.FromObject(FormatArray(array).Text);
+		if (value is ICorDebugGenericValue)
+			return ReadPrimitive(value);
+		return BreakpointValue.FromObject("{object}");
+	}
+
+	static BreakpointValue ReadPrimitive(ICorDebugValue value) {
+		var element = value.Type;
+		var bytes = ReadBytes(value);
+		var wide = bytes.Length >= 8;
+		return element switch {
+			CorElementType.BOOLEAN => BreakpointValue.FromBool(bytes[0] != 0),
+			// A char reads as its code point, so both `c == 'x'` and `c == 120` work.
+			CorElementType.CHAR => BreakpointValue.FromInteger(BitConverter.ToUInt16(bytes, 0)),
+			CorElementType.I1 => BreakpointValue.FromInteger((sbyte)bytes[0]),
+			CorElementType.U1 => BreakpointValue.FromInteger(bytes[0]),
+			CorElementType.I2 => BreakpointValue.FromInteger(BitConverter.ToInt16(bytes, 0)),
+			CorElementType.U2 => BreakpointValue.FromInteger(BitConverter.ToUInt16(bytes, 0)),
+			CorElementType.I4 => BreakpointValue.FromInteger(BitConverter.ToInt32(bytes, 0)),
+			CorElementType.U4 => BreakpointValue.FromInteger(BitConverter.ToUInt32(bytes, 0)),
+			CorElementType.I8 => BreakpointValue.FromInteger(BitConverter.ToInt64(bytes, 0)),
+			CorElementType.U8 => BreakpointValue.FromUnsigned(BitConverter.ToUInt64(bytes, 0)),
+			CorElementType.R4 => BreakpointValue.FromFloating(BitConverter.ToSingle(bytes, 0)),
+			CorElementType.R8 => BreakpointValue.FromFloating(BitConverter.ToDouble(bytes, 0)),
+			CorElementType.I => BreakpointValue.FromInteger(wide ? BitConverter.ToInt64(bytes, 0) : BitConverter.ToInt32(bytes, 0)),
+			CorElementType.U => BreakpointValue.FromUnsigned(wide ? BitConverter.ToUInt64(bytes, 0) : BitConverter.ToUInt32(bytes, 0)),
+			_ => BreakpointValue.FromObject(DescribePrimitive(bytes, element)),
+		};
+	}
 
 	/// <summary>The children of a value the client expanded, named the way an array's are.</summary>
 	public IReadOnlyList<(string Name, ICorDebugValue Value)> Children(VariableEntry entry) {

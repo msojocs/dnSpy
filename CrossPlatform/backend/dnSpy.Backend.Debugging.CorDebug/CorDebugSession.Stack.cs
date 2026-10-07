@@ -62,23 +62,39 @@ internal sealed partial class CorDebugSession {
 			throw new RpcException(ErrorCodes.InvalidParams, RunningReason);
 		var thread = Threads.Find(threadId) ?? throw new RpcException(ErrorCodes.InvalidParams, $"There is no thread with id {threadId}.");
 		var frames = new List<RawFrame>();
-		// The active chain holds the frame the thread stopped in; each caller chain holds the frames
-		// that were running when it was called. Enumerating from the active chain outwards is what
-		// puts the innermost frame first, which is the order the client numbers them in.
-		var chain = thread.ActiveChain;
-		for (var depth = 0; chain is not null && depth < 64; depth++) {
-			if (chain.IsManaged) {
-				foreach (var frame in chain.Frames) {
-					var entry = frameTable.Add(frame, threadId);
-					var (modulePath, token) = FrameIdentity(frame);
-					frames.Add(new RawFrame(entry.Id, modulePath, token, ReadIlOffset(frame)));
-				}
-			}
-			chain = chain.Caller;
+		foreach (var frame in WalkFrames(thread, int.MaxValue)) {
+			var entry = frameTable.Add(frame, threadId);
+			var (modulePath, token) = FrameIdentity(frame);
+			frames.Add(new RawFrame(entry.Id, modulePath, token, ReadIlOffset(frame)));
 		}
 		return startFrame >= frames.Count
 			? Array.Empty<RawFrame>()
 			: (levels > 0 ? frames.Skip(startFrame).Take(levels) : frames.Skip(startFrame)).ToArray();
+	}
+
+	/// <summary>
+	/// The managed frames of a thread, innermost first — the order the client numbers them in.
+	/// </summary>
+	/// <remarks>
+	/// The active chain holds the frame the thread stopped in; each caller chain holds the frames that
+	/// were running when it was called, so enumerating from the active chain outwards is what puts the
+	/// innermost frame first. A tracepoint asks for only the handful of frames its message names, which
+	/// is why the count is a parameter rather than always the whole stack.
+	/// </remarks>
+	static IEnumerable<ICorDebugFrame> WalkFrames(ICorDebugThread thread, int max) {
+		var chain = thread.ActiveChain;
+		var produced = 0;
+		for (var depth = 0; chain is not null && depth < 64; depth++) {
+			if (chain.IsManaged) {
+				foreach (var frame in chain.Frames) {
+					if (produced >= max)
+						yield break;
+					produced++;
+					yield return frame;
+				}
+			}
+			chain = chain.Caller;
+		}
 	}
 
 	/// <summary>

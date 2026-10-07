@@ -1152,11 +1152,25 @@ select:focus-visible,
 
 .breakpoint-row {
   display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.breakpoint-main-row {
+  display: flex;
   align-items: center;
   gap: 7px;
   min-height: 25px;
   padding-left: 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.breakpoint-summary {
+  padding: 2px 8px 4px 45px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .breakpoint-row input[type="checkbox"] {
@@ -1183,7 +1197,7 @@ select:focus-visible,
   height: 14px;
 }
 
-.breakpoint-row > span {
+.breakpoint-main-row > span {
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1257,6 +1271,140 @@ select:focus-visible,
 
 .debug-program-engine {
   color: var(--text-muted);
+}
+
+.breakpoint-settings-dialog {
+  grid-template-rows: 33px minmax(0, 1fr) 43px;
+  width: min(90vw, 520px);
+  max-height: min(85vh, 600px);
+}
+
+.breakpoint-settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.breakpoint-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.breakpoint-settings-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+
+.breakpoint-settings-checkbox input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
+.breakpoint-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 20px;
+}
+
+.breakpoint-settings-field label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.breakpoint-settings-field input,
+.breakpoint-settings-field select,
+.breakpoint-settings-field textarea {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.breakpoint-settings-field textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+
+.breakpoint-settings-field input:disabled,
+.breakpoint-settings-field select:disabled,
+.breakpoint-settings-field textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.breakpoint-settings-help {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.breakpoint-settings-inline {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.breakpoint-settings-inline > div {
+  flex: 1;
+}
+
+.breakpoint-settings-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-left: 20px;
+}
+
+.breakpoint-settings-label-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.breakpoint-settings-label-tag button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.breakpoint-settings-label-tag button:hover {
+  color: var(--text);
+}
+
+.breakpoint-settings-label-input {
+  display: flex;
+  gap: 4px;
+  padding-left: 20px;
+}
+
+.breakpoint-settings-label-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 11px;
 }
 
 .process-list {

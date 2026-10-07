@@ -619,6 +619,27 @@ export interface DebugStackFrame {
   nodeId?: string
 }
 
+/** How a condition decides: the expression is true, or its value differs from the last hit's. */
+export type BreakpointConditionKind = 'isTrue' | 'whenChanged'
+
+export type BreakpointHitCountKind = 'equals' | 'multipleOf' | 'greaterThanOrEquals'
+
+/**
+ * The extra settings a breakpoint can carry, matching dnSpy's `DbgCodeBreakpointSettings` minus
+ * `IsEnabled`, which the breakpoint already has of its own.
+ */
+export interface BreakpointSettings {
+  /** An expression checked at the hit; the breakpoint only stops when it passes. */
+  condition?: { kind: BreakpointConditionKind; expression: string }
+  /** How many matching hits to let by before stopping. */
+  hitCount?: { kind: BreakpointHitCountKind; count: number }
+  /** An expression over the machine, process and thread, checked before the condition. */
+  filter?: string
+  /** A message printed at the hit; `continue` makes the breakpoint a tracepoint rather than a stop. */
+  trace?: { message: string; continue: boolean }
+  labels?: string[]
+}
+
 /** A breakpoint the client asked for, before or after the engine snapped it to a sequence point. */
 export interface DebugBreakpointRequest {
   id: string
@@ -634,6 +655,13 @@ export interface DebugBreakpointRequest {
   metadataToken?: number
   sourceMethodToken?: number
   ilOffset?: number
+  settings?: BreakpointSettings
+}
+
+/** A method breakpoint, which the engine matches by name rather than by location. */
+export interface DebugFunctionBreakpointRequest {
+  name: string
+  settings?: BreakpointSettings
 }
 
 /** The engine's answer: where the breakpoint really is, and whether it is armed. */
@@ -652,6 +680,8 @@ export interface DebugBreakpoint {
   ilOffset: number
   description?: string
   enabled: boolean
+  /** How many times the engine has reached the breakpoint and its condition and filter passed. */
+  hitCount?: number
 }
 
 export interface DebugScope {
@@ -800,7 +830,7 @@ export interface DnSpyApi {
   launchDebug(options: DebugLaunchOptions): Promise<DebugStartResponse>
   attachDebug(processId: number, workspaceId?: string): Promise<DebugStartResponse>
   setBreakpoints(sessionId: string, breakpoints: DebugBreakpointRequest[]): Promise<DebugBreakpoint[]>
-  setFunctionBreakpoints(sessionId: string, names: string[]): Promise<Record<string, unknown>>
+  setFunctionBreakpoints(sessionId: string, breakpoints: DebugFunctionBreakpointRequest[]): Promise<Record<string, unknown>>
   /** Releases a launch the engine held back until the client had armed its breakpoints. */
   configurationDone(sessionId: string): Promise<void>
   debugContinue(sessionId: string, threadId: number): Promise<Record<string, unknown>>

@@ -49,7 +49,7 @@ const api: DnSpyApi = {
   launchDebug: (options) => ipcRenderer.invoke('debug:launch', options),
   attachDebug: (processId, workspaceId) => ipcRenderer.invoke('debug:attach', processId, workspaceId),
   setBreakpoints: async (sessionId, breakpoints) => ((await ipcRenderer.invoke('debug:setBreakpoints', sessionId, { breakpoints })).body?.breakpoints ?? []),
-  setFunctionBreakpoints: async (sessionId, names) => (await ipcRenderer.invoke('debug:setFunctionBreakpoints', sessionId, { breakpoints: names.map((name) => ({ name })) })).body ?? {},
+  setFunctionBreakpoints: async (sessionId, breakpoints) => (await ipcRenderer.invoke('debug:setFunctionBreakpoints', sessionId, { breakpoints })).body ?? {},
   configurationDone: async (sessionId) => { await ipcRenderer.invoke('debug:configurationDone', sessionId, {}) },
   debugContinue: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:continue', sessionId, { threadId })).body ?? {},
   debugPause: async (sessionId, threadId) => (await ipcRenderer.invoke('debug:pause', sessionId, { threadId })).body ?? {},

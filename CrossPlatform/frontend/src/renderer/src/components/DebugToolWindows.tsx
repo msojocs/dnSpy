@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Download, LoaderCircle, Plus, Trash2, Upload } from 'lucide-react'
+import { ChevronDown, ChevronRight, Download, LoaderCircle, Plus, Settings, Trash2, Upload } from 'lucide-react'
 import type { DebugVariable } from '../../../shared/protocol'
-import { breakpointsFile, methodBreakpointName, parseLineBreakpointEntries, parseFunctionBreakpoints, useAppStore } from '../app-store'
-import type { LineBreakpoint } from '../app-store'
+import { breakpointConditionsSummary, breakpointsFile, methodBreakpointName, parseLineBreakpointEntries, parseFunctionBreakpoints, useAppStore } from '../app-store'
+import type { BreakpointSettings, LineBreakpoint } from '../app-store'
 import { useLanguage } from '../localization'
+import { BreakpointSettingsDialog } from './BreakpointSettingsDialog'
 
 export const LocalsPane = (): React.JSX.Element => {
   const variables = useAppStore((state) => state.debugVariables)
@@ -126,13 +127,17 @@ const lineBreakpointLabel = (breakpoint: LineBreakpoint): string => {
 export const BreakpointsPane = (): React.JSX.Element => {
   const [name, setName] = useState('')
   const [status, setStatus] = useState('')
+  // Which breakpoint's settings dialog is open: a line breakpoint by id, a function one by name.
+  const [editing, setEditing] = useState<{ kind: 'line' | 'function'; key: string }>()
   const lineBreakpoints = useAppStore((state) => state.lineBreakpoints)
   const removeLineBreakpoint = useAppStore((state) => state.removeLineBreakpoint)
   const setLineBreakpointEnabled = useAppStore((state) => state.setLineBreakpointEnabled)
+  const setLineBreakpointSettings = useAppStore((state) => state.setLineBreakpointSettings)
   const breakpoints = useAppStore((state) => state.functionBreakpoints)
   const addBreakpoint = useAppStore((state) => state.addFunctionBreakpoint)
   const removeBreakpoint = useAppStore((state) => state.removeFunctionBreakpoint)
   const setBreakpointEnabled = useAppStore((state) => state.setFunctionBreakpointEnabled)
+  const setBreakpointSettings = useAppStore((state) => state.setFunctionBreakpointSettings)
   const exceptionBreakpoints = useAppStore((state) => state.exceptionBreakpoints)
   const setExceptionBreakpoint = useAppStore((state) => state.setExceptionBreakpoint)
   const importBreakpoints = useAppStore((state) => state.importBreakpoints)
@@ -200,17 +205,29 @@ export const BreakpointsPane = (): React.JSX.Element => {
       <div className="result-list">
         {lineBreakpoints.map((breakpoint) => {
           const label = lineBreakpointLabel(breakpoint)
+          const summary = breakpointConditionsSummary(breakpoint.settings, breakpoint.hitCount)
           return (
             <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.id}>
-              <input
-                type="checkbox"
-                checked={breakpoint.enabled}
-                aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: label })}
-                onChange={() => void setLineBreakpointEnabled(breakpoint.id, !breakpoint.enabled)}
-              />
-              <span className={`breakpoint-state breakpoint-state-${breakpoint.state}`} title={breakpoint.message ?? t('Bound')} />
-              <span title={breakpoint.message ?? breakpoint.description}>{label}</span>
-              <button className="icon-button" aria-label={t('Remove {name}', { name: label })} onClick={() => void removeLineBreakpoint(breakpoint.id)}><Trash2 size={13} /></button>
+              <div className="breakpoint-main-row">
+                <input
+                  type="checkbox"
+                  checked={breakpoint.enabled}
+                  aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: label })}
+                  onChange={() => void setLineBreakpointEnabled(breakpoint.id, !breakpoint.enabled)}
+                />
+                <span className={`breakpoint-state breakpoint-state-${breakpoint.state}`} title={breakpoint.message ?? t('Bound')} />
+                <span title={breakpoint.message ?? breakpoint.description}>{label}</span>
+                <button
+                  className="icon-button"
+                  aria-label={t('Breakpoint settings for {name}', { name: label })}
+                  title={t('Breakpoint settings')}
+                  onClick={() => setEditing({ kind: 'line', key: breakpoint.id })}
+                >
+                  <Settings size={13} />
+                </button>
+                <button className="icon-button" aria-label={t('Remove {name}', { name: label })} onClick={() => void removeLineBreakpoint(breakpoint.id)}><Trash2 size={13} /></button>
+              </div>
+              {summary && <div className="breakpoint-summary">{summary}</div>}
             </div>
           )
         })}
@@ -220,18 +237,32 @@ export const BreakpointsPane = (): React.JSX.Element => {
         <button className="icon-button" aria-label={t('Add function breakpoint')} title={t('Add function breakpoint')} disabled={!name.trim()} onClick={submit}><Plus size={14} /></button>
       </div>
       <div className="result-list">
-        {breakpoints.map((breakpoint) => (
-          <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.name}>
-            <input
-              type="checkbox"
-              checked={breakpoint.enabled}
-              aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: breakpoint.name })}
-              onChange={() => void setBreakpointEnabled(breakpoint.name, !breakpoint.enabled)}
-            />
-            <span>{breakpoint.name}</span>
-            <button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint.name })} onClick={() => void removeBreakpoint(breakpoint.name)}><Trash2 size={13} /></button>
-          </div>
-        ))}
+        {breakpoints.map((breakpoint) => {
+          const summary = breakpointConditionsSummary(breakpoint.settings, breakpoint.hitCount)
+          return (
+            <div className={`breakpoint-row${breakpoint.enabled ? '' : ' breakpoint-disabled'}`} key={breakpoint.name}>
+              <div className="breakpoint-main-row">
+                <input
+                  type="checkbox"
+                  checked={breakpoint.enabled}
+                  aria-label={t(breakpoint.enabled ? 'Disable {name}' : 'Enable {name}', { name: breakpoint.name })}
+                  onChange={() => void setBreakpointEnabled(breakpoint.name, !breakpoint.enabled)}
+                />
+                <span>{breakpoint.name}</span>
+                <button
+                  className="icon-button"
+                  aria-label={t('Breakpoint settings for {name}', { name: breakpoint.name })}
+                  title={t('Breakpoint settings')}
+                  onClick={() => setEditing({ kind: 'function', key: breakpoint.name })}
+                >
+                  <Settings size={13} />
+                </button>
+                <button className="icon-button" aria-label={t('Remove {name}', { name: breakpoint.name })} onClick={() => void removeBreakpoint(breakpoint.name)}><Trash2 size={13} /></button>
+              </div>
+              {summary && <div className="breakpoint-summary">{summary}</div>}
+            </div>
+          )
+        })}
         {/* The in-process engine has no exception breakpoints; the checkboxes stay visible but inert rather than
             disappearing, so the pane does not shift between engines. */}
         <label className="exception-breakpoint-row" title={t('Not supported by this debug engine')}>
@@ -241,6 +272,25 @@ export const BreakpointsPane = (): React.JSX.Element => {
           <input type="checkbox" disabled checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}
         </label>
       </div>
+      {editing && (
+        <BreakpointSettingsDialog
+          title={t('Breakpoint settings')}
+          settings={
+            editing.kind === 'line'
+              ? lineBreakpoints.find((bp) => bp.id === editing.key)?.settings
+              : breakpoints.find((bp) => bp.name === editing.key)?.settings
+          }
+          onClose={() => setEditing(undefined)}
+          onSave={(settings) => {
+            if (editing.kind === 'line') {
+              void setLineBreakpointSettings(editing.key, settings)
+            } else {
+              void setBreakpointSettings(editing.key, settings)
+            }
+            setEditing(undefined)
+          }}
+        />
+      )}
     </div>
   )
 }

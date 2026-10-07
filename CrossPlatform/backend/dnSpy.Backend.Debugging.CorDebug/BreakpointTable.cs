@@ -67,6 +67,25 @@ internal sealed class BreakpointEntry {
 
 	public bool Enabled { get; set; } = true;
 
+	/// <summary>The condition, hit count, filter, trace and labels the client attached to it.</summary>
+	public BreakpointSettings Settings { get; init; } = BreakpointSettings.None;
+
+	/// <summary>
+	/// What the breakpoint remembers between hits. It is not part of <see cref="Settings"/> because the
+	/// client re-sends the whole breakpoint set whenever any of it changes, and a hit count that reset
+	/// every time a label was edited would be useless; <see cref="BreakpointTable.Replace"/> carries it
+	/// across to the entry that replaces this one.
+	/// </summary>
+	public BreakpointHitState HitState { get; set; } = new();
+
+	/// <summary>
+	/// Where the method's arguments and locals live, by the names the decompiler gives them. Filled in
+	/// when the breakpoint is set — naming them goes through the decompiler, which must not happen on
+	/// the dispatcher — and only when the settings actually read variables.
+	/// </summary>
+	public IReadOnlyDictionary<string, (bool IsArgument, int Index)> VariableSlots { get; set; } =
+		new Dictionary<string, (bool, int)>(StringComparer.Ordinal);
+
 	/// <summary>The engine breakpoint, once the module that owns it is loaded.</summary>
 	public ICorDebugFunctionBreakpoint? Breakpoint { get; set; }
 
@@ -106,9 +125,17 @@ internal sealed class BreakpointTable {
 	/// </summary>
 	public void Replace(string kind, IReadOnlyList<BreakpointEntry> requested) {
 		lock (gate) {
+			// Any edit re-sends the whole set, so a breakpoint that is still the same breakpoint keeps
+			// the hits it has already counted instead of starting over because a label was renamed.
+			var previous = new Dictionary<string, BreakpointHitState>(StringComparer.Ordinal);
 			foreach (var entry in entries.Where(entry => entry.Kind == kind).ToArray()) {
+				previous[entry.Id] = entry.HitState;
 				Deactivate(entry);
 				entries.Remove(entry);
+			}
+			foreach (var entry in requested) {
+				if (previous.TryGetValue(entry.Id, out var carried))
+					entry.HitState = carried;
 			}
 			entries.AddRange(requested);
 		}

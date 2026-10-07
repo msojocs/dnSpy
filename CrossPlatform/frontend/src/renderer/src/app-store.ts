@@ -3,6 +3,9 @@ import { create } from 'zustand'
 import type {
   AnalyzeReferencesResponse,
   BackendStatus,
+  BreakpointConditionKind,
+  BreakpointHitCountKind,
+  BreakpointSettings,
   CodeStatement,
   DecompilerLanguage,
   DecompileResponse,
@@ -25,6 +28,8 @@ import type {
 } from '../../shared/protocol'
 import { getActiveLocale, translate as t } from './localization'
 
+export type { BreakpointConditionKind, BreakpointHitCountKind, BreakpointSettings }
+
 export interface DocumentState extends DecompileResponse {
   nodeId: string
   loading: boolean
@@ -34,6 +39,8 @@ export interface DocumentState extends DecompileResponse {
 export interface FunctionBreakpoint {
   name: string
   enabled: boolean
+  settings?: BreakpointSettings
+  hitCount?: number
 }
 
 /**
@@ -58,6 +65,10 @@ export interface LineBreakpoint {
   /** The method a user navigates to — `metadataToken` except inside a state machine. */
   sourceMethodToken?: number
   ilOffset?: number
+  /** The condition, hit count, filter, trace and labels attached to it, absent when it has none. */
+  settings?: BreakpointSettings
+  /** How many hits the engine has counted, which only a live session knows and nothing stores. */
+  hitCount?: number
 }
 
 /**
@@ -76,6 +87,8 @@ export interface LineBreakpointEntry {
   enabled: boolean
   /** The method's signature, which is what the pane labels the row with. */
   description?: string
+  /** Omitted when the breakpoint has no settings, so an ordinary row stays the size it was. */
+  settings?: BreakpointSettings
 }
 
 /** Everything the breakpoint settings hold, which is also the shape the export file is written in. */
@@ -308,11 +321,15 @@ interface AppState {
   removeFunctionBreakpoint(name: string): Promise<void>
   toggleFunctionBreakpoint(name: string): Promise<void>
   setFunctionBreakpointEnabled(name: string, enabled: boolean): Promise<void>
+  /** Attaches a condition, hit count, filter, trace and labels; `undefined` clears them all. */
+  setFunctionBreakpointSettings(name: string, settings: BreakpointSettings | undefined): Promise<void>
   deleteAllFunctionBreakpoints(): Promise<void>
   setAllFunctionBreakpointsEnabled(enabled: boolean): Promise<void>
   toggleLineBreakpoint(nodeId: string, line: number, column?: number): Promise<void>
   removeLineBreakpoint(id: string): Promise<void>
   setLineBreakpointEnabled(id: string, enabled: boolean): Promise<void>
+  /** Attaches a condition, hit count, filter, trace and labels; `undefined` clears them all. */
+  setLineBreakpointSettings(id: string, settings: BreakpointSettings | undefined): Promise<void>
   deleteAllBreakpoints(): Promise<void>
   /** Merges an imported breakpoint file into the current set, answering how many rows it added. */
   importBreakpoints(stored: Partial<StoredBreakpoints>): Promise<number>
@@ -1281,9 +1298,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const started = await window.dnSpy.launchDebug({ ...options, workspaceId: get().workspaceId })
       sessionId = started.sessionId
       set({ debugSessionId: sessionId, debugCapabilities: started.capabilities })
-      const breakpointNames = enabledFunctionBreakpointNames(get().functionBreakpoints)
-      if (breakpointNames.length > 0)
-        await window.dnSpy.setFunctionBreakpoints(sessionId, breakpointNames)
+      const breakpointRequests = enabledFunctionBreakpointRequests(get().functionBreakpoints)
+      if (breakpointRequests.length > 0)
+        await window.dnSpy.setFunctionBreakpoints(sessionId, breakpointRequests)
       if (get().lineBreakpoints.length > 0)
         await syncLineBreakpoints(get, set)
       if (get().exceptionBreakpoints.length > 0)
@@ -1459,8 +1476,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     await syncFunctionBreakpoints(get)
   },
 
-  deleteAllFunctionBreakpoints: async () => {
-    if (get().functionBreakpoints.length === 0) return
+  setFunctionBreakpointSettings: async (name, settings) => {
+    const normalized = normalizeBreakpointSettings(settings)
+    if (!get().functionBreakpoints.some((breakpoint) => breakpoint.name === name)) return
+    set((state) => ({
+      functionBreakpoints: state.functionBreakpoints.map((breakpoint) => breakpoint.name === name ? { ...breakpoint, settings: normalized } : breakpoint),
+    }))
+    await syncFunctionBreakpoints(get)
+  },
+
+  deleteAllFunctionBreakpoints: async () => {    if (get().functionBreakpoints.length === 0) return
     set({ functionBreakpoints: [] })
     await syncFunctionBreakpoints(get)
   },
@@ -1517,8 +1542,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     await syncLineBreakpoints(get, set)
   },
 
-  deleteAllBreakpoints: async () => {
-    if (get().lineBreakpoints.length === 0 && get().functionBreakpoints.length === 0) return
+  setLineBreakpointSettings: async (id, settings) => {
+    const normalized = normalizeBreakpointSettings(settings)
+    if (!get().lineBreakpoints.some((breakpoint) => breakpoint.id === id)) return
+    set((state) => ({
+      lineBreakpoints: state.lineBreakpoints.map((breakpoint) => breakpoint.id === id ? { ...breakpoint, settings: normalized } : breakpoint),
+    }))
+    await syncLineBreakpoints(get, set)
+  },
+
+  deleteAllBreakpoints: async () => {    if (get().lineBreakpoints.length === 0 && get().functionBreakpoints.length === 0) return
     set({ lineBreakpoints: [], functionBreakpoints: [] })
     await Promise.all([syncLineBreakpoints(get, set), syncFunctionBreakpoints(get)])
   },
@@ -2255,7 +2288,123 @@ export const lineBreakpointEntries = (breakpoints: LineBreakpoint[]): LineBreakp
     line: breakpoint.line,
     enabled: breakpoint.enabled,
     description: breakpoint.description,
+    // Omitted when there is nothing to say, the way WPF's `BreakpointsSerializer` only writes the
+    // sections that differ from the default.
+    ...(normalizeBreakpointSettings(breakpoint.settings) ? { settings: breakpoint.settings } : {}),
   }))
+
+/**
+ * The settings as they are worth keeping: `undefined` when every part of them is empty. A breakpoint
+ * whose dialog was opened and closed again should be indistinguishable from one that never was.
+ */
+export const normalizeBreakpointSettings = (settings: BreakpointSettings | undefined): BreakpointSettings | undefined => {
+  if (!settings)
+    return undefined
+  const condition = settings.condition?.expression ? settings.condition : undefined
+  const hitCount = settings.hitCount
+  const filter = settings.filter || undefined
+  const trace = settings.trace?.message ? settings.trace : undefined
+  const labels = settings.labels?.filter((label) => label !== '') ?? []
+  if (!condition && !hitCount && !filter && !trace && labels.length === 0)
+    return undefined
+  return {
+    ...(condition ? { condition } : {}),
+    ...(hitCount ? { hitCount } : {}),
+    ...(filter ? { filter } : {}),
+    ...(trace ? { trace } : {}),
+    ...(labels.length > 0 ? { labels } : {}),
+  }
+}
+
+const conditionKinds: BreakpointConditionKind[] = ['isTrue', 'whenChanged']
+const hitCountKinds: BreakpointHitCountKind[] = ['equals', 'multipleOf', 'greaterThanOrEquals']
+
+/**
+ * Reads settings off a stored row. Each part is read on its own, so a damaged condition costs the
+ * breakpoint its condition rather than its hit count — or the breakpoint itself.
+ */
+export const parseBreakpointSettings = (value: unknown): BreakpointSettings | undefined => {
+  if (typeof value !== 'object' || value === null)
+    return undefined
+  const stored = value as Record<string, unknown>
+  const settings: BreakpointSettings = {}
+
+  const condition = stored.condition as Record<string, unknown> | undefined
+  if (typeof condition?.expression === 'string' && condition.expression !== '') {
+    settings.condition = {
+      kind: conditionKinds.find((kind) => kind === condition.kind) ?? 'isTrue',
+      expression: condition.expression,
+    }
+  }
+
+  const hitCount = stored.hitCount as Record<string, unknown> | undefined
+  if (typeof hitCount?.count === 'number' && Number.isInteger(hitCount.count)) {
+    settings.hitCount = {
+      kind: hitCountKinds.find((kind) => kind === hitCount.kind) ?? 'equals',
+      count: hitCount.count,
+    }
+  }
+
+  if (typeof stored.filter === 'string' && stored.filter !== '')
+    settings.filter = stored.filter
+
+  const trace = stored.trace as Record<string, unknown> | undefined
+  if (typeof trace?.message === 'string' && trace.message !== '')
+    settings.trace = { message: trace.message, continue: trace.continue !== false }
+
+  if (Array.isArray(stored.labels)) {
+    const labels = stored.labels.filter((label): label is string => typeof label === 'string' && label !== '')
+    if (labels.length > 0)
+      settings.labels = labels
+  }
+
+  return normalizeBreakpointSettings(settings)
+}
+
+/**
+ * How the breakpoints pane sums up a breakpoint's settings, ported from WPF's
+ * `BreakpointConditionsFormatter`. WPF gives each part its own column; the pane here has one row, so
+ * the parts that have something to say are joined and the rest stay silent.
+ */
+export const breakpointConditionsSummary = (settings: BreakpointSettings | undefined, hitCount?: number): string => {
+  const normalized = normalizeBreakpointSettings(settings)
+  if (!normalized)
+    return ''
+  const parts: string[] = []
+
+  if (normalized.condition) {
+    const { kind, expression } = normalized.condition
+    parts.push(kind === 'whenChanged'
+      ? t("when '{expression}' has changed", { expression })
+      : t("when '{expression}' is true", { expression }))
+  }
+
+  if (normalized.hitCount) {
+    const { kind, count } = normalized.hitCount
+    const text = kind === 'multipleOf'
+      ? t('when hit count is a multiple of {count}', { count })
+      : kind === 'greaterThanOrEquals'
+        ? t('when hit count is greater than or equal to {count}', { count })
+        : t('when hit count is equal to {count}', { count })
+    // The live count only exists while a session is running, which is also the only time it is useful.
+    parts.push(hitCount === undefined ? text : `${text} (${t('currently {count}', { count: hitCount })})`)
+  }
+
+  if (normalized.filter)
+    parts.push(t('when {filter}', { filter: normalized.filter }))
+
+  if (normalized.trace) {
+    const { message, continue: keepGoing } = normalized.trace
+    parts.push(keepGoing
+      ? t("print message '{message}'", { message })
+      : t("break and print message '{message}'", { message }))
+  }
+
+  if (normalized.labels?.length)
+    parts.push(normalized.labels.join(', '))
+
+  return parts.join(', ')
+}
 
 /** A stored row, or undefined when it is damaged past the point of being worth keeping. */
 const toLineBreakpointEntry = (value: unknown): LineBreakpointEntry | undefined => {
@@ -2280,6 +2429,7 @@ const toLineBreakpointEntry = (value: unknown): LineBreakpointEntry | undefined 
     line: typeof entry.line === 'number' ? entry.line : 0,
     enabled: entry.enabled !== false,
     description: typeof entry.description === 'string' ? entry.description : undefined,
+    settings: parseBreakpointSettings(entry.settings),
   }
 }
 
@@ -2311,7 +2461,7 @@ export const parseFunctionBreakpoints = (value: unknown): FunctionBreakpoint[] =
     if (name === '' || seen.has(name))
       return []
     seen.add(name)
-    return [{ name, enabled: entry.enabled !== false }]
+    return [{ name, enabled: entry.enabled !== false, settings: parseBreakpointSettings(entry.settings) }]
   })
 }
 
@@ -2335,6 +2485,7 @@ const lineBreakpointFromEntry = (entry: LineBreakpointEntry): LineBreakpoint => 
   metadataToken: entry.metadataToken,
   sourceMethodToken: entry.sourceMethodToken,
   ilOffset: entry.ilOffset,
+  settings: entry.settings,
 })
 
 const emptyBreakpoints = (): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'> =>
@@ -2890,13 +3041,13 @@ const refreshWatches = async (get: StoreGet, set: StoreSet): Promise<void> => {
 
 // Disabled breakpoints are deliberately left out of what we send: the debug adapter only knows
 // about the breakpoints it was last given, so omitting them is what "disables" them.
-const enabledFunctionBreakpointNames = (breakpoints: FunctionBreakpoint[]): string[] =>
-  breakpoints.filter((breakpoint) => breakpoint.enabled).map((breakpoint) => breakpoint.name)
+const enabledFunctionBreakpointRequests = (breakpoints: FunctionBreakpoint[]): { name: string; settings?: BreakpointSettings }[] =>
+  breakpoints.filter((breakpoint) => breakpoint.enabled).map((breakpoint) => ({ name: breakpoint.name, settings: breakpoint.settings }))
 
 const syncFunctionBreakpoints = async (get: StoreGet): Promise<void> => {
   const { debugSessionId, functionBreakpoints } = get()
   if (debugSessionId)
-    await window.dnSpy.setFunctionBreakpoints(debugSessionId, enabledFunctionBreakpointNames(functionBreakpoints))
+    await window.dnSpy.setFunctionBreakpoints(debugSessionId, enabledFunctionBreakpointRequests(functionBreakpoints))
 }
 
 // Line breakpoints are sent as the whole set every time, including the disabled ones: the engine can arm and disarm
@@ -2916,6 +3067,7 @@ const syncLineBreakpoints = async (get: StoreGet, set: StoreSet): Promise<void> 
     metadataToken: breakpoint.metadataToken,
     sourceMethodToken: breakpoint.sourceMethodToken,
     ilOffset: breakpoint.ilOffset,
+    settings: breakpoint.settings,
   }))
   const results = await window.dnSpy.setBreakpoints(debugSessionId, requested)
   const byId = new Map(results.map((result) => [result.id, result]))
@@ -2947,6 +3099,8 @@ const applyBreakpointResult = (breakpoint: LineBreakpoint, result: DebugBreakpoi
     metadataToken: result.metadataToken || breakpoint.metadataToken,
     sourceMethodToken: result.sourceMethodToken || breakpoint.sourceMethodToken,
     ilOffset,
+    // The count lives in the engine, which carries it across a re-send, so the client only mirrors it.
+    hitCount: result.hitCount ?? breakpoint.hitCount,
   }
 }
 

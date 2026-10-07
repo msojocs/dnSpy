@@ -31,7 +31,8 @@ internal sealed partial class CorDebugSession {
 		string? ModulePath = null,
 		int? MetadataToken = null,
 		int? SourceMethodToken = null,
-		int? IlOffset = null);
+		int? IlOffset = null,
+		BreakpointSettings? Settings = null);
 
 	const string NoWorkspaceReason =
 		"This debug session has no workspace, so decompiled source cannot be resolved to IL.";
@@ -50,6 +51,7 @@ internal sealed partial class CorDebugSession {
 		var requests = ParseBreakpointRequests(arguments, "line");
 		var resolutions = await ResolveAsync(requests, cancellationToken).ConfigureAwait(false);
 		var entries = requests.Select(request => CreateLineEntry(request, resolutions)).ToList();
+		await ResolveVariableSlotsAsync(entries, cancellationToken).ConfigureAwait(false);
 		return await ApplyAsync(BreakpointEntry.LineKind, entries).ConfigureAwait(false);
 	}
 
@@ -63,7 +65,35 @@ internal sealed partial class CorDebugSession {
 		var entries = new List<BreakpointEntry>(requests.Count);
 		foreach (var request in requests)
 			entries.Add(await CreateFunctionEntryAsync(request, cancellationToken).ConfigureAwait(false));
+		await ResolveVariableSlotsAsync(entries, cancellationToken).ConfigureAwait(false);
 		return await ApplyAsync(BreakpointEntry.FunctionKind, entries).ConfigureAwait(false);
+	}
+
+	/// <summary>
+	/// Names the arguments and locals of every breakpoint whose settings read variables, so that
+	/// checking a condition at a hit is a dictionary lookup.
+	/// </summary>
+	/// <remarks>
+	/// Naming them goes through the decompiler, and a hit is handled on the dispatcher, where
+	/// decompiling would stall the event pump — so it happens here instead, where the request is
+	/// already off the dispatcher and the user is already waiting. Breakpoints whose settings never
+	/// mention a variable pay nothing.
+	/// </remarks>
+	async Task ResolveVariableSlotsAsync(IReadOnlyList<BreakpointEntry> entries, CancellationToken cancellationToken) {
+		if (SymbolResolver is null || WorkspaceId is null)
+			return;
+		foreach (var entry in entries) {
+			if (!entry.Settings.ReadsVariables || string.IsNullOrEmpty(entry.ModulePath))
+				continue;
+			var names = await SymbolResolver.GetVariableNamesAsync(WorkspaceId, entry.ModulePath, entry.MetadataToken, cancellationToken).ConfigureAwait(false);
+			var slots = new Dictionary<string, (bool IsArgument, int Index)>(StringComparer.Ordinal);
+			foreach (var name in names) {
+				// Two slots can share a name — a local declared in sibling scopes — and the first one
+				// is the one a condition written against the method's text means.
+				slots.TryAdd(name.Name, (name.IsArgument, name.Index));
+			}
+			entry.VariableSlots = slots;
+		}
 	}
 
 	/// <summary>Installs the entries and answers with their post-binding state, as DAP expects.</summary>
@@ -108,6 +138,7 @@ internal sealed partial class CorDebugSession {
 				Line = request.Line,
 				EndLine = request.Line,
 				Enabled = request.Enabled,
+				Settings = request.Settings ?? BreakpointSettings.None,
 				Message = resolved?.Reason ?? NoWorkspaceReason,
 			};
 		}
@@ -126,6 +157,7 @@ internal sealed partial class CorDebugSession {
 			EndColumn = resolved.EndColumn,
 			Description = resolved.Description,
 			Enabled = request.Enabled,
+			Settings = request.Settings ?? BreakpointSettings.None,
 		};
 	}
 
@@ -140,6 +172,7 @@ internal sealed partial class CorDebugSession {
 			Line = request.Line,
 			EndLine = request.Line,
 			Enabled = request.Enabled,
+			Settings = request.Settings ?? BreakpointSettings.None,
 			Message = message,
 		};
 		if (SymbolResolver is null || WorkspaceId is null)
@@ -158,6 +191,7 @@ internal sealed partial class CorDebugSession {
 			EndLine = request.Line,
 			Description = method.Description,
 			Enabled = request.Enabled,
+			Settings = request.Settings ?? BreakpointSettings.None,
 		};
 	}
 
@@ -176,6 +210,9 @@ internal sealed partial class CorDebugSession {
 		ilOffset = entry.IlOffset,
 		description = entry.Description,
 		enabled = entry.Enabled,
+		// How many times the breakpoint has been reached and wanted, which is what the pane shows
+		// beside a hit-count condition.
+		hitCount = entry.HitState.HitCount,
 	};
 
 	void EmitBreakpointChanged(BreakpointEntry entry) =>
@@ -207,10 +244,75 @@ internal sealed partial class CorDebugSession {
 				GetString(element, "modulePath"),
 				GetInt(element, "metadataToken"),
 				GetInt(element, "sourceMethodToken"),
-				GetInt(element, "ilOffset")));
+				GetInt(element, "ilOffset"),
+				ParseSettings(element)));
 			index++;
 		}
 		return requests;
+	}
+
+	/// <summary>
+	/// Reads the condition, hit count, filter, trace and labels off a request. A field the client
+	/// spelled wrongly is dropped rather than failing the whole request: the breakpoint itself is
+	/// still wanted, and a setting that silently does nothing is easier to notice than a breakpoint
+	/// that never appeared.
+	/// </summary>
+	static BreakpointSettings? ParseSettings(JsonElement element) {
+		if (!element.TryGetProperty("settings", out var settings) || settings.ValueKind != JsonValueKind.Object)
+			return null;
+		var parsed = new BreakpointSettings {
+			Condition = ParseCondition(settings),
+			HitCount = ParseHitCount(settings),
+			Filter = GetString(settings, "filter") is { Length: > 0 } filter ? filter : null,
+			Trace = ParseTrace(settings),
+			Labels = ParseLabels(settings),
+		};
+		return parsed.IsDefault ? null : parsed;
+	}
+
+	static BreakpointCondition? ParseCondition(JsonElement settings) {
+		if (!settings.TryGetProperty("condition", out var value) || value.ValueKind != JsonValueKind.Object)
+			return null;
+		if (GetString(value, "expression") is not { Length: > 0 } expression)
+			return null;
+		var kind = GetString(value, "kind") switch {
+			"whenChanged" => BreakpointConditionKind.WhenChanged,
+			_ => BreakpointConditionKind.IsTrue,
+		};
+		return new BreakpointCondition(kind, expression);
+	}
+
+	static BreakpointHitCount? ParseHitCount(JsonElement settings) {
+		if (!settings.TryGetProperty("hitCount", out var value) || value.ValueKind != JsonValueKind.Object)
+			return null;
+		if (GetInt(value, "count") is not { } count)
+			return null;
+		var kind = GetString(value, "kind") switch {
+			"multipleOf" => BreakpointHitCountKind.MultipleOf,
+			"greaterThanOrEquals" => BreakpointHitCountKind.GreaterThanOrEquals,
+			_ => BreakpointHitCountKind.Equals,
+		};
+		return new BreakpointHitCount(kind, count);
+	}
+
+	static BreakpointTrace? ParseTrace(JsonElement settings) {
+		if (!settings.TryGetProperty("trace", out var value) || value.ValueKind != JsonValueKind.Object)
+			return null;
+		var message = GetString(value, "message");
+		if (message is null)
+			return null;
+		return new BreakpointTrace(message, GetBool(value, "continue") ?? true);
+	}
+
+	static IReadOnlyList<string> ParseLabels(JsonElement settings) {
+		if (!settings.TryGetProperty("labels", out var value) || value.ValueKind != JsonValueKind.Array)
+			return Array.Empty<string>();
+		var labels = new List<string>();
+		foreach (var label in value.EnumerateArray()) {
+			if (label.ValueKind == JsonValueKind.String && label.GetString() is { Length: > 0 } text)
+				labels.Add(text);
+		}
+		return labels;
 	}
 
 	static string? GetString(JsonElement element, string name) =>
@@ -274,11 +376,25 @@ internal sealed partial class CorDebugSession {
 			return;
 		}
 		var function = breakpoint as ICorDebugFunctionBreakpoint;
+		var entry = function is null ? null : FindEntry(function);
 		// A breakpoint the user set wins over a step's temporary one at the same location, so the
 		// stop is reported as the breakpoint it is. Stop() clears the step either way.
-		var id = function is null ? null : FindEntry(function)?.Id;
-		if (id is not null || !IsSteppingBreakpoint(breakpoint)) {
-			Stop(StopReasons.Breakpoint, thread, id);
+		if (entry is not null) {
+			// A condition, a hit count or a filter can decide this hit is not one the user wants, and
+			// a tracepoint prints and keeps going. Not calling Stop() is all that takes: the process
+			// stays unstopped, and AfterEventProcessed() resumes it.
+			if (!ShouldBreakOnHit(entry, thread)) {
+				// The location may still be where a step was waiting to land, and a breakpoint
+				// declining to stop must not swallow the step the user asked for.
+				if (IsSteppingBreakpoint(breakpoint))
+					Stop(StopReasons.Step, thread);
+				return;
+			}
+			Stop(StopReasons.Breakpoint, thread, entry.Id);
+			return;
+		}
+		if (!IsSteppingBreakpoint(breakpoint)) {
+			Stop(StopReasons.Breakpoint, thread, null);
 			return;
 		}
 		Stop(StopReasons.Step, thread);
