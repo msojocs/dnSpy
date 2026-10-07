@@ -119,6 +119,44 @@ interface MenuBarProps {
   onShowBreakpoints(): void
   onShowThreads(): void
   onShowModules(): void
+  /** Commands in the top-level Window menu. They are optional for lightweight menu consumers. */
+  windowTabs?: ReadonlyArray<{ id: string; label: string; checked: boolean }>
+  onSelectWindowTab?(id: string): void
+  onNewWindow?(): void
+  onCloseWindow?(): void
+  onNewHorizontalTabGroup?(): void
+  onNewVerticalTabGroup?(): void
+  onMoveToNextTabGroup?(): void
+  onMoveAllToNextTabGroup?(): void
+  onMoveToPreviousTabGroup?(): void
+  onMoveAllToPreviousTabGroup?(): void
+  onCloseAllTabs?(): void
+  onCloseTabGroup?(): void
+  onCloseAllTabGroupsButThis?(): void
+  onMoveTabGroupAfterNext?(): void
+  onMoveTabGroupBeforePrevious?(): void
+  onMergeAllTabGroups?(): void
+  onUseVerticalTabGroups?(): void
+  onUseHorizontalTabGroups?(): void
+  canNewWindow?: boolean
+  canCloseWindow?: boolean
+  canCreateTabGroup?: boolean
+  canNewHorizontalTabGroup?: boolean
+  canNewVerticalTabGroup?: boolean
+  canMoveToNextTabGroup?: boolean
+  canMoveAllToNextTabGroup?: boolean
+  canMoveToPreviousTabGroup?: boolean
+  canMoveAllToPreviousTabGroup?: boolean
+  canCloseAllTabs?: boolean
+  canCloseTabGroup?: boolean
+  canCloseAllTabGroupsButThis?: boolean
+  canMoveTabGroupAfterNext?: boolean
+  canMoveTabGroupBeforePrevious?: boolean
+  canMergeAllTabGroups?: boolean
+  canUseVerticalTabGroups?: boolean
+  canUseHorizontalTabGroups?: boolean
+  /** Opens the Windows dialog that lists every document tab (WPF's TabsDlg). */
+  onShowWindowsDialog?(): void
   onTheme(theme: ThemeName): void
   onToggleWordWrap(): void
   onToggleHighlightCurrentLine(): void
@@ -233,6 +271,42 @@ export const MenuBar = ({
   onShowBreakpoints,
   onShowThreads,
   onShowModules,
+  windowTabs = [],
+  onSelectWindowTab,
+  onNewWindow,
+  onCloseWindow,
+  onNewHorizontalTabGroup,
+  onNewVerticalTabGroup,
+  onMoveToNextTabGroup,
+  onMoveAllToNextTabGroup,
+  onMoveToPreviousTabGroup,
+  onMoveAllToPreviousTabGroup,
+  onCloseAllTabs,
+  onCloseTabGroup,
+  onCloseAllTabGroupsButThis,
+  onMoveTabGroupAfterNext,
+  onMoveTabGroupBeforePrevious,
+  onMergeAllTabGroups,
+  onUseVerticalTabGroups,
+  onUseHorizontalTabGroups,
+  canNewWindow = false,
+  canCloseWindow = false,
+  canCreateTabGroup = false,
+  canNewHorizontalTabGroup = canCreateTabGroup,
+  canNewVerticalTabGroup = canCreateTabGroup,
+  canMoveToNextTabGroup = false,
+  canMoveAllToNextTabGroup = canMoveToNextTabGroup,
+  canMoveToPreviousTabGroup = false,
+  canMoveAllToPreviousTabGroup = canMoveToPreviousTabGroup,
+  canCloseAllTabs = false,
+  canCloseTabGroup = false,
+  canCloseAllTabGroupsButThis = false,
+  canMoveTabGroupAfterNext = false,
+  canMoveTabGroupBeforePrevious = false,
+  canMergeAllTabGroups = false,
+  canUseVerticalTabGroups = false,
+  canUseHorizontalTabGroups = false,
+  onShowWindowsDialog,
   onTheme,
   onToggleWordWrap,
   onToggleHighlightCurrentLine,
@@ -251,6 +325,54 @@ export const MenuBar = ({
   // "Disable All", and one bookmark off is enough for "Enable All". Those first two kinds are what
   // App hands over as the two flags, so "all of them are on" is nothing left to enable.
   const allBookmarksEnabled = !canEnableAllBookmarks && canDisableAllBookmarks
+  // Window commands are grouped the same way as dnSpy's WPF menu. Commands whose CanExecute state
+  // also controls IsVisible are omitted here; commands such as New Window and Close All Tabs stay in
+  // the menu and only become disabled when their action is unavailable.
+  const windowTabGroupItems: MenuItem[] = [
+    ...(canNewHorizontalTabGroup ? [
+      { label: t('New Horizontal Tab Group'), action: onNewHorizontalTabGroup },
+    ] : []),
+    ...(canNewVerticalTabGroup ? [
+      { label: t('New Vertical Tab Group'), action: onNewVerticalTabGroup },
+    ] : []),
+    ...(canMoveToNextTabGroup ? [{ label: t('Move to Next Tab Group'), action: onMoveToNextTabGroup }] : []),
+    ...(canMoveAllToNextTabGroup ? [
+      { label: t('Move All to Next Tab Group'), action: onMoveAllToNextTabGroup },
+    ] : []),
+    ...(canMoveToPreviousTabGroup ? [{ label: t('Move to Previous Tab Group'), action: onMoveToPreviousTabGroup }] : []),
+    ...(canMoveAllToPreviousTabGroup ? [
+      { label: t('Move All to Previous Tab Group'), action: onMoveAllToPreviousTabGroup },
+    ] : []),
+  ]
+  // In WPF, Close All Tabs belongs to GROUP_APP_MENU_WINDOW_TABGROUPS (Order 60) and its IsVisible
+  // always returns true: it stays in the menu even with a single tab in a single group — when every
+  // split and move command is gone — and is controlled by IsEnabled alone.
+  const windowTabGroupItemsWithCloseAll: MenuItem[] = [
+    ...windowTabGroupItems,
+    { label: t('Close All Tabs'), disabled: !canCloseAllTabs, action: onCloseAllTabs },
+  ]
+  const windowTabGroupCloseItems: MenuItem[] = [
+    ...(canCloseTabGroup ? [{ label: t('Close Tab Group'), action: onCloseTabGroup }] : []),
+    ...(canCloseAllTabGroupsButThis ? [{ label: t('Close All Tab Groups But This'), action: onCloseAllTabGroupsButThis }] : []),
+    ...(canMoveTabGroupAfterNext ? [{ label: t('Move Tab Group After Next Tab Group'), action: onMoveTabGroupAfterNext }] : []),
+    ...(canMoveTabGroupBeforePrevious ? [{ label: t('Move Tab Group Before Previous Tab Group'), action: onMoveTabGroupBeforePrevious }] : []),
+    ...(canMergeAllTabGroups ? [{ label: t('Merge All Tab Groups'), action: onMergeAllTabGroups }] : []),
+  ]
+  const windowTabGroupOrientationItems: MenuItem[] = [
+    ...(canUseVerticalTabGroups ? [{ label: t('Use Vertical Tab Groups'), action: onUseVerticalTabGroups }] : []),
+    ...(canUseHorizontalTabGroups ? [{ label: t('Use Horizontal Tab Groups'), action: onUseHorizontalTabGroups }] : []),
+  ]
+  // WPF shows up to 10 tabs directly in the Window menu, numbered 1 through 10, followed by a
+  // "Windows..." entry that opens a dialog with all tabs. Match WPF's limit and structure.
+  const MAX_WINDOW_TABS = 10
+  const windowTabItems: MenuItem[] = windowTabs.slice(0, MAX_WINDOW_TABS).map((tab, index) => {
+    const num = index + 1
+    return { label: `${num} ${tab.label}`, checked: tab.checked, action: () => onSelectWindowTab?.(tab.id) }
+  })
+  // Add "Windows..." entry at the end if there are any tabs (even if ≤10, WPF always shows it)
+  if (windowTabs.length > 0) {
+    windowTabItems.push({ label: t('Windows...'), action: () => onShowWindowsDialog?.() })
+  }
   const menus: Record<string, MenuItem[]> = {
     // dnSpy's File menu in full: see file-menu.ts for the ordering and the disabled entries.
     [t('File')]: buildFileMenu({
@@ -407,6 +529,16 @@ export const MenuBar = ({
       { separator: true },
       { label: t('Options...'), action: () => onShowOptions('debugger') },
     ],
+    [t('Window')]: [
+      { label: t('New Window'), shortcut: 'Ctrl+N', disabled: !canNewWindow, action: onNewWindow },
+      { label: t('Close'), shortcut: 'Ctrl+F4', disabled: !canCloseWindow, action: onCloseWindow },
+      // Close All Tabs keeps its group non-empty, so this separator is unconditional like WPF's.
+      { separator: true },
+      ...windowTabGroupItemsWithCloseAll,
+      ...(windowTabGroupCloseItems.length > 0 ? [{ separator: true }, ...windowTabGroupCloseItems] : []),
+      ...(windowTabGroupOrientationItems.length > 0 ? [{ separator: true }, ...windowTabGroupOrientationItems] : []),
+      ...(windowTabItems.length > 0 ? [{ separator: true }, ...windowTabItems] : []),
+    ],
     [t('Help')]: [
       { label: t('Latest Release'), action: () => openExternal(`${repositoryUrl}/releases/latest`) },
       { label: t('Report Bug'), action: () => openExternal(`${repositoryUrl}/issues/new`) },
@@ -430,7 +562,14 @@ export const MenuBar = ({
   return (
     <div className="menu-bar" role="menubar" ref={host}>
       {Object.entries(menus).map(([name, items]) => (
-        <div className="menu-root" key={name}>
+        <div
+          className="menu-root"
+          key={name}
+          // The debugger's legacy Windows submenu and the top-level Window menu share a label. Hide the
+          // inactive top-level entry from the accessibility tree while Debug is open so keyboard and
+          // screen-reader navigation follows the submenu that is currently displayed.
+          aria-hidden={openMenu === t('Debug') && name === t('Window') ? true : undefined}
+        >
           <button
             role="menuitem"
             className={openMenu === name ? 'active' : ''}

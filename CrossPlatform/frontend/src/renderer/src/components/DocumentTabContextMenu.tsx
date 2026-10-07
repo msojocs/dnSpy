@@ -79,6 +79,9 @@ export const getDocumentTabSets = (model: Model): TabSetNode[] => {
   return tabSets.filter((tabSet) => !isToolWindowTabSet(tabSet))
 }
 
+/** Returns every document tab in display order for the Window > All Windows menu. */
+export const getDocumentTabs = (model: Model): TabNode[] => getDocumentTabSets(model).flatMap(allTabs)
+
 const belongsToDocumentLayout = (model: Model, tabSet: TabSetNode): boolean =>
   getDocumentTabSets(model).includes(tabSet)
 

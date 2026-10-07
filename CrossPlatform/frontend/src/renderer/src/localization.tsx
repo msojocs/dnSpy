@@ -12,6 +12,19 @@ const zhCN: Record<string, string> = {
   'Language': '语言',
   'Debug': '调试',
   'Window': '窗口',
+  'New Window': '新建窗口',
+  'All Windows': '所有窗口',
+  'Move to Next Tab Group': '移动到下一个标签组',
+  'Move All to Next Tab Group': '将全部移动到下一个标签组',
+  'Move to Previous Tab Group': '移动到上一个标签组',
+  'Move All to Previous Tab Group': '将全部移动到上一个标签组',
+  'Close Tab Group': '关闭标签组',
+  'Close All Tab Groups But This': '关闭除当前外的所有标签组',
+  'Move Tab Group After Next Tab Group': '将标签组移到下一个标签组之后',
+  'Move Tab Group Before Previous Tab Group': '将标签组移到上一个标签组之前',
+  'Merge All Tab Groups': '合并所有标签组',
+  'Use Vertical Tab Groups': '使用垂直标签组',
+  'Use Horizontal Tab Groups': '使用水平标签组',
   'Help': '帮助',
   // dnSpy's File menu (dnSpy.Resources.zh-CN.resx / dnSpy.AsmEditor.Resources.zh-CN.resx). Entries the
   // port has not implemented — Export to Project, Open from GAC, Open List, the Close* sweeps — are
@@ -35,6 +48,12 @@ const zhCN: Record<string, string> = {
   'Close All Tabs': '关闭所有标签页',
   'Close All But This': '除此之外全部关闭',
   'New Tab': '新标签页',
+  'Windows...': '窗口(W)...',
+  // dnSpy's Windows dialog (TabsDlg_* and Button_Save in dnSpy.Resources.zh-CN.resx). Name, Module
+  // and Path already have translations from the other grids.
+  'Windows': '窗口',
+  'Activate': '激活',
+  'Close Window': '关闭窗口',
   'New Horizontal Tab Group': '新建水平标签组',
   'New Vertical Tab Group': '新建垂直标签组',
   'Tab actions': '标签页操作',

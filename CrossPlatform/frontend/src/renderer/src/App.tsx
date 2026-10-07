@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, TabNode, TabSetNode, type IJsonModel } from 'flexlayout-react'
+import { Actions, DockLocation, I18nLabelDefaults, Layout, Model, Orientation, RowNode, TabNode, TabSetNode, type IJsonModel } from 'flexlayout-react'
 import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
 import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, syncDockTabStrips, useAppStore, type SavedSession } from './app-store'
@@ -16,9 +16,10 @@ import { BookmarksPane } from './components/BookmarksPane'
 import { AttachDialog } from './components/AttachDialog'
 import { DebugProgramDialog } from './components/DebugProgramDialog'
 import { AboutDialog } from './components/AboutDialog'
+import { WindowsDialog, type WindowTabEntry } from './components/WindowsDialog'
 import { NodeOptionsDialog } from './components/NodeOptionsDialog'
 import { OptionsDialog } from './components/OptionsDialog'
-import { cloneDocumentTab, closeDocumentTab, closeDocumentTabsFor, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
+import { cloneDocumentTab, closeAllDocumentTabs, closeDocumentTab, closeDocumentTabsFor, createDocumentTabGroup, getDocumentTabMenuState, getDocumentTabSets, getDocumentTabs, showDocumentTabContextMenu } from './components/DocumentTabContextMenu'
 import { DockPane } from './components/DockPane'
 import type { ActiveDocument, CreatedKind, HexShowKind } from './components/edit-menu'
 import { findInActiveDocumentEditor, focusDocumentEditor } from './editor-registry'
@@ -62,6 +63,12 @@ const restorableTabs: Record<string, { name: string; component: string }> = {
   bookmarks: { name: 'Bookmarks', component: 'bookmarks' },
   threads: { name: 'Threads', component: 'threads' },
   modules: { name: 'Modules', component: 'modules' },
+  'module-breakpoints': { name: 'Module Breakpoints', component: 'module-breakpoints' },
+  autos: { name: 'Autos', component: 'autos' },
+  'static-fields': { name: 'Static Fields', component: 'static-fields' },
+  processes: { name: 'Processes', component: 'processes' },
+  memory: { name: 'Memory', component: 'memory' },
+  disassembly: { name: 'Disassembly', component: 'disassembly' },
 }
 
 // The default window, laid out the way dnSpy's is: the Assembly Explorer fills the left edge top to
@@ -237,6 +244,7 @@ export const App = (): React.JSX.Element => {
   const [attachDialogOpen, setAttachDialogOpen] = useState(false)
   const [debugProgramDialogOpen, setDebugProgramDialogOpen] = useState(false)
   const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
+  const [windowsDialogOpen, setWindowsDialogOpen] = useState(false)
   const [optionsDialogCategory, setOptionsDialogCategory] = useState<'environment' | 'decompiler' | 'debugger' | undefined>(undefined)
   const [navigation, setNavigation] = useState<{ items: TreeNode[]; index: number }>({ items: [], index: -1 })
   const [layoutVersion, forceLayoutUpdate] = useState(0)
@@ -442,12 +450,19 @@ export const App = (): React.JSX.Element => {
       search: t('Search'),
       analysis: t('Analyzer'),
       locals: t('Locals'),
+      'exception-settings': t('Exception Settings'),
       watch: t('Watch 1'),
       callstack: t('Call Stack'),
       breakpoints: t('Breakpoints'),
       bookmarks: t('Bookmarks'),
       threads: t('Threads'),
       modules: t('Modules'),
+      'module-breakpoints': t('Module Breakpoints'),
+      autos: t('Autos'),
+      'static-fields': t('Static Fields'),
+      processes: t('Processes'),
+      memory: t('Memory'),
+      disassembly: t('Disassembly'),
       start: t('Start'),
     }
     for (const [id, name] of Object.entries(names)) {
@@ -505,6 +520,125 @@ export const App = (): React.JSX.Element => {
     }, TOOL_WINDOW_TABSET_ID, DockLocation.CENTER, -1, true))
     forceLayoutUpdate((value) => value + 1)
   }
+
+  // Window-menu commands operate on document tabs only. Tool-window docks are deliberately excluded,
+  // matching dnSpy's tab-group commands and preventing "Close All Tabs" from hiding the debugger panes.
+  const activeDocumentTab = (): TabNode | undefined => {
+    const activeTabSet = model.getActiveTabset()
+    if (!activeTabSet || !getDocumentTabSets(model).includes(activeTabSet))
+      return undefined
+    const selected = activeTabSet.getSelectedNode()
+    return selected instanceof TabNode && DOCUMENT_COMPONENTS.includes(selected.getComponent() ?? '') ? selected : undefined
+  }
+  const documentTabSets = (): TabSetNode[] => getDocumentTabSets(model).filter((tabSet) => tabSet.getTabNodes().length > 0)
+  const refreshLayout = (): void => forceLayoutUpdate((value) => value + 1)
+  const moveActiveTabToGroup = (offset: -1 | 1, all: boolean): void => {
+    const tab = activeDocumentTab()
+    if (!tab) return
+    const groups = documentTabSets()
+    const source = tab.getParent()
+    if (!(source instanceof TabSetNode)) return
+    const target = groups[groups.indexOf(source) + offset]
+    if (!target) return
+    const ids = all ? source.getTabNodes().map((item) => item.getId()) : [tab.getId()]
+    for (const id of ids) {
+      if (model.getNodeById(id))
+        model.doAction(Actions.moveNode(id, target.getId(), DockLocation.CENTER, -1, true))
+    }
+    refreshLayout()
+  }
+  const moveActiveGroup = (after: boolean): void => {
+    const tab = activeDocumentTab()
+    const groups = documentTabSets()
+    const source = tab?.getParent()
+    if (!(source instanceof TabSetNode)) return
+    const index = groups.indexOf(source)
+    const target = groups[index + (after ? 1 : -1)]
+    if (!target) return
+    model.doAction(Actions.moveNode(source.getId(), target.getId(), after ? DockLocation.RIGHT : DockLocation.LEFT, -1, false))
+    refreshLayout()
+  }
+  const closeActiveTabGroup = (): void => {
+    const tab = activeDocumentTab()
+    const group = tab?.getParent()
+    if (!(group instanceof TabSetNode)) return
+    for (const item of group.getTabNodes())
+      if (item.isCloseable()) model.doAction(Actions.deleteTab(item.getId()))
+    refreshLayout()
+  }
+  const closeOtherTabGroups = (): void => {
+    const tab = activeDocumentTab()
+    const current = tab?.getParent()
+    if (!(current instanceof TabSetNode)) return
+    for (const group of documentTabSets()) {
+      if (group === current) continue
+      for (const item of group.getTabNodes())
+        if (item.isCloseable()) model.doAction(Actions.deleteTab(item.getId()))
+    }
+    refreshLayout()
+  }
+  const mergeTabGroups = (): void => {
+    const groups = documentTabSets()
+    const target = activeDocumentTab()?.getParent()
+    if (!(target instanceof TabSetNode)) return
+    for (const group of groups) {
+      if (group === target) continue
+      for (const item of group.getTabNodes())
+        model.doAction(Actions.moveNode(item.getId(), target.getId(), DockLocation.CENTER, -1, false))
+    }
+    refreshLayout()
+  }
+  const arrangeTabGroups = (horizontal: boolean): void => {
+    const groups = documentTabSets()
+    const target = groups[0]
+    if (!target || groups.length < 2) return
+    for (const group of groups.slice(1))
+      if (model.getNodeById(group.getId()))
+        model.doAction(Actions.moveNode(group.getId(), target.getId(), horizontal ? DockLocation.BOTTOM : DockLocation.RIGHT, -1, false))
+    refreshLayout()
+  }
+  const windowTabs = useMemo(() => getDocumentTabs(model).map((tab) => ({
+    id: tab.getId(),
+    label: tab.getName(),
+    checked: tab.isSelected(),
+  })), [model, layoutVersion])
+  // The Windows dialog's rows: the module column walks the tree up from the document's node, which
+  // works for the members documents usually show; special tabs fall back to the single loaded module.
+  const windowsDialogTabs = useMemo<WindowTabEntry[]>(() => windowTabs.map((tab) => {
+    let moduleId: string | undefined
+    let ancestor = tab.id
+    const seen = new Set<string>()
+    while (!seen.has(ancestor)) {
+      seen.add(ancestor)
+      const parentId = treeParents[ancestor]
+      if (!parentId) break
+      if (modules.some((module) => module.id === parentId)) {
+        moduleId = parentId
+        break
+      }
+      ancestor = parentId
+    }
+    const module = modules.find((candidate) => candidate.id === moduleId) ?? (modules.length === 1 ? modules[0] : undefined)
+    return { id: tab.id, name: tab.label, moduleName: module?.name ?? '', modulePath: module?.path ?? '' }
+  }), [windowTabs, modules, treeParents])
+  const currentWindowTab = activeDocumentTab()
+  const currentWindowGroup = currentWindowTab?.getParent()
+  const windowGroups = documentTabSets()
+  const currentWindowGroupIndex = currentWindowGroup instanceof TabSetNode ? windowGroups.indexOf(currentWindowGroup) : -1
+  const hasOtherWindowGroup = windowGroups.length > 1
+  const canCloneWindow = currentWindowTab?.getComponent() === 'document'
+  // The WPF tab-group service exposes separate CanExecute values for horizontal and vertical splits.
+  // Reuse the context-menu calculation so the application menu hides only the direction that cannot
+  // be created in the current layout.
+  const windowTabMenuState = currentWindowTab
+    ? getDocumentTabMenuState(currentWindowTab, false, canCloneWindow)
+    : undefined
+  const commonWindowGroupParent = windowGroups.length > 0
+    && windowGroups.every((group) => group.getParent() === windowGroups[0].getParent())
+    ? windowGroups[0].getParent()
+    : undefined
+  const windowGroupsAreHorizontal = commonWindowGroupParent instanceof RowNode
+    && commonWindowGroupParent.getOrientation() === Orientation.HORZ
 
   const showCode = async (): Promise<void> => {
     const tab = model.getActiveTabset()?.getSelectedNode()
@@ -1010,6 +1144,16 @@ export const App = (): React.JSX.Element => {
       case 'bookmarks': return <BookmarksPane />
       case 'threads': return <ThreadsPane />
       case 'modules': return <ModulesPane />
+      // These debugger windows do not have a backend model yet, but they still need to behave like
+      // real dockable windows: opening them from Debug > Window adds a closable pane and preserves
+      // the layout. The placeholder keeps the command useful until the corresponding data providers
+      // are implemented.
+      case 'module-breakpoints': return <DebugPlaceholder label={t('Module Breakpoints')} />
+      case 'autos': return <DebugPlaceholder label={t('Autos')} />
+      case 'static-fields': return <DebugPlaceholder label={t('Static Fields')} />
+      case 'processes': return <DebugPlaceholder label={t('Processes')} />
+      case 'memory': return <DebugPlaceholder label={t('Memory')} />
+      case 'disassembly': return <DebugPlaceholder label={t('Disassembly')} />
       case 'start': return (
         <div className="start-view">
           <button className="command-button" disabled={backendStatus.state !== 'ready'} onClick={() => void chooseAndOpen()}>
@@ -1115,13 +1259,54 @@ export const App = (): React.JSX.Element => {
         onShowBreakpoints={() => showToolWindow('breakpoints')}
         onShowThreads={() => showToolWindow('threads')}
         onShowModules={() => showToolWindow('modules')}
-        onShowModuleBreakpoints={() => undefined}
+        onShowModuleBreakpoints={() => showToolWindow('module-breakpoints')}
         onShowExceptionSettings={() => showToolWindow('exception-settings')}
-        onShowAutos={() => undefined}
-        onShowStaticFields={() => undefined}
-        onShowProcesses={() => undefined}
-        onShowMemory={() => undefined}
-        onShowDisassembly={() => undefined}
+        onShowAutos={() => showToolWindow('autos')}
+        onShowStaticFields={() => showToolWindow('static-fields')}
+        onShowProcesses={() => showToolWindow('processes')}
+        onShowMemory={() => showToolWindow('memory')}
+        onShowDisassembly={() => showToolWindow('disassembly')}
+        windowTabs={windowTabs}
+        onSelectWindowTab={(tabId) => {
+          if (model.getNodeById(tabId)) {
+            model.doAction(Actions.selectTab(tabId))
+            refreshLayout()
+          }
+        }}
+        canNewWindow={canCloneWindow}
+        onNewWindow={() => { if (currentWindowTab && canCloneWindow) { cloneDocumentTab(currentWindowTab); refreshLayout() } }}
+        canCloseWindow={Boolean(currentWindowTab?.isCloseable())}
+        onCloseWindow={() => { if (currentWindowTab) { closeDocumentTab(currentWindowTab); refreshLayout() } }}
+        canCreateTabGroup={Boolean(windowTabMenuState?.canCreateHorizontalGroup || windowTabMenuState?.canCreateVerticalGroup)}
+        canNewHorizontalTabGroup={windowTabMenuState?.canCreateHorizontalGroup ?? false}
+        canNewVerticalTabGroup={windowTabMenuState?.canCreateVerticalGroup ?? false}
+        onNewHorizontalTabGroup={() => { if (currentWindowTab) { createDocumentTabGroup(currentWindowTab, true); refreshLayout() } }}
+        onNewVerticalTabGroup={() => { if (currentWindowTab) { createDocumentTabGroup(currentWindowTab, false); refreshLayout() } }}
+        canMoveToNextTabGroup={currentWindowGroupIndex >= 0 && currentWindowGroupIndex < windowGroups.length - 1}
+        canMoveAllToNextTabGroup={currentWindowGroup instanceof TabSetNode && currentWindowGroup.getTabNodes().length > 1 && currentWindowGroupIndex >= 0 && currentWindowGroupIndex < windowGroups.length - 1}
+        onMoveToNextTabGroup={() => moveActiveTabToGroup(1, false)}
+        onMoveAllToNextTabGroup={() => moveActiveTabToGroup(1, true)}
+        canMoveToPreviousTabGroup={currentWindowGroupIndex > 0}
+        canMoveAllToPreviousTabGroup={currentWindowGroup instanceof TabSetNode && currentWindowGroup.getTabNodes().length > 1 && currentWindowGroupIndex > 0}
+        onMoveToPreviousTabGroup={() => moveActiveTabToGroup(-1, false)}
+        onMoveAllToPreviousTabGroup={() => moveActiveTabToGroup(-1, true)}
+        canCloseAllTabs={windowTabs.some((tab) => model.getNodeById(tab.id)?.isCloseable())}
+        onCloseAllTabs={() => { closeAllDocumentTabs(model); refreshLayout() }}
+        canCloseTabGroup={hasOtherWindowGroup}
+        onCloseTabGroup={closeActiveTabGroup}
+        canCloseAllTabGroupsButThis={hasOtherWindowGroup}
+        onCloseAllTabGroupsButThis={closeOtherTabGroups}
+        canMoveTabGroupAfterNext={currentWindowGroupIndex >= 0 && currentWindowGroupIndex < windowGroups.length - 1}
+        onMoveTabGroupAfterNext={() => moveActiveGroup(true)}
+        canMoveTabGroupBeforePrevious={currentWindowGroupIndex > 0}
+        onMoveTabGroupBeforePrevious={() => moveActiveGroup(false)}
+        canMergeAllTabGroups={hasOtherWindowGroup}
+        onMergeAllTabGroups={mergeTabGroups}
+        canUseVerticalTabGroups={hasOtherWindowGroup && windowGroupsAreHorizontal}
+        onUseVerticalTabGroups={() => arrangeTabGroups(false)}
+        canUseHorizontalTabGroups={hasOtherWindowGroup && !windowGroupsAreHorizontal}
+        onUseHorizontalTabGroups={() => arrangeTabGroups(true)}
+        onShowWindowsDialog={() => setWindowsDialogOpen(true)}
         visibleToolWindows={visibleToolWindows}
         onTheme={setTheme}
         wordWrap={wordWrap}
@@ -1215,6 +1400,40 @@ export const App = (): React.JSX.Element => {
       {attachDialogOpen && <AttachDialog onClose={() => setAttachDialogOpen(false)} />}
       {debugProgramDialogOpen && <DebugProgramDialog onClose={() => setDebugProgramDialogOpen(false)} />}
       {aboutDialogOpen && <AboutDialog onClose={() => setAboutDialogOpen(false)} />}
+      {windowsDialogOpen && (
+        <WindowsDialog
+          tabs={windowsDialogTabs}
+          onActivate={(tabId) => {
+            if (model.getNodeById(tabId)) {
+              model.doAction(Actions.selectTab(tabId))
+              refreshLayout()
+            }
+            setWindowsDialogOpen(false)
+          }}
+          canSave={(tabId) => {
+            const tab = model.getNodeById(tabId)
+            if (!(tab instanceof TabNode) || tab.getComponent() !== 'document') return false
+            const config = tab.getConfig() as { documentId?: string } | undefined
+            const state = useAppStore.getState()
+            const document = config?.documentId ? state.documents[config.documentId] : undefined
+            return Boolean(document && !document.loading && !state.busy)
+          }}
+          onSave={(tabId) => {
+            const tab = model.getNodeById(tabId)
+            const config = tab instanceof TabNode ? tab.getConfig() as { documentId?: string } | undefined : undefined
+            if (config?.documentId) void saveCode(config.documentId)
+          }}
+          onCloseTabs={(tabIds) => {
+            for (const tabId of tabIds) {
+              const tab = model.getNodeById(tabId)
+              if (tab instanceof TabNode && tab.isCloseable())
+                model.doAction(Actions.deleteTab(tabId))
+            }
+            refreshLayout()
+          }}
+          onClose={() => setWindowsDialogOpen(false)}
+        />
+      )}
       {optionsDialogCategory !== undefined && (
         <OptionsDialog initialCategory={optionsDialogCategory} onClose={() => setOptionsDialogCategory(undefined)} />
       )}

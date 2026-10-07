@@ -227,6 +227,54 @@ describe('MenuBar', () => {
     expect(screen.getByRole('menuitem', { name: 'Attach to Process...' })).toBeEnabled()
   })
 
+  it('hides Window commands whose WPF CanExecute value is false', () => {
+    renderMenuWith({
+      canNewWindow: false,
+      canCloseWindow: false,
+      canNewHorizontalTabGroup: false,
+      canNewVerticalTabGroup: false,
+      canMoveToNextTabGroup: false,
+      canMoveToPreviousTabGroup: false,
+      canCloseTabGroup: false,
+      canCloseAllTabGroupsButThis: false,
+      canMoveTabGroupAfterNext: false,
+      canMoveTabGroupBeforePrevious: false,
+      canMergeAllTabGroups: false,
+      canUseVerticalTabGroups: false,
+      canUseHorizontalTabGroups: false,
+    })
+    // Like the WPF menu, New Window and Close stay visible and are merely disabled; Close All Tabs
+    // stays visible too (its WPF IsVisible always returns true) even when the rest of the tab-group
+    // commands are gone — this is the single-tab-in-a-single-group state.
+    const hiddenMenu = openMenu('Window')
+    expect(hiddenMenu).toEqual(['New WindowCtrl+N', 'CloseCtrl+F4', 'Close All Tabs'])
+    expect(screen.getByRole('menuitem', { name: /^New Window/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: /^CloseCtrl/ })).toBeDisabled()
+    expect(screen.getByRole('menuitem', { name: 'Close All Tabs' })).toBeDisabled()
+
+    cleanup()
+    renderMenuWith({
+      canCloseWindow: true,
+      canNewHorizontalTabGroup: true,
+      canNewVerticalTabGroup: true,
+      canMoveToNextTabGroup: true,
+      canMoveToPreviousTabGroup: true,
+      canCloseTabGroup: true,
+      canCloseAllTabGroupsButThis: true,
+      canMoveTabGroupAfterNext: true,
+      canMoveTabGroupBeforePrevious: true,
+      canMergeAllTabGroups: true,
+      canUseVerticalTabGroups: true,
+      canUseHorizontalTabGroups: true,
+    })
+    const visibleMenu = openMenu('Window')
+    expect(visibleMenu).toContain('CloseCtrl+F4')
+    expect(visibleMenu).toContain('New Horizontal Tab Group')
+    expect(visibleMenu).toContain('Move All to Previous Tab Group')
+    expect(visibleMenu).toContain('Merge All Tab Groups')
+    expect(visibleMenu).toContain('Use Horizontal Tab Groups')
+  })
+
   it('mirrors the upstream View menu layout', () => {
     renderMenu()
     // Upstream sorts the View menu by group and then by item order, so the options come first

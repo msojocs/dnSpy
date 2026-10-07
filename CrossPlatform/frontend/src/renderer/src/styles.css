@@ -949,6 +949,56 @@ select:focus-visible,
   flex: 1;
 }
 
+.windows-dialog {
+  grid-template-rows: 33px 1fr 43px;
+  width: min(96vw, 1000px);
+  height: min(92vh, 400px);
+}
+
+.windows-dialog-table {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, 1fr) minmax(200px, 2fr);
+  align-content: start;
+  overflow: auto;
+  margin: 5px 5px 0;
+  border: 1px solid var(--border);
+}
+
+.windows-dialog-header,
+.windows-dialog-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+}
+
+.windows-dialog-header {
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-weight: 600;
+}
+
+.windows-dialog-header span,
+.windows-dialog-row span {
+  overflow: hidden;
+  padding: 3px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.windows-dialog-row {
+  cursor: default;
+}
+
+.windows-dialog-row:hover:not(.windows-dialog-row-selected) {
+  background: var(--selection);
+}
+
+.windows-dialog-row-selected {
+  background: var(--accent-soft);
+}
+
 .about-dialog {
   grid-template-rows: 33px auto 43px;
   width: min(92vw, 460px);
