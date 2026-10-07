@@ -318,7 +318,7 @@ test('splits the editor group without disturbing the tool windows', async () => 
   await page.locator('.tree-row[data-kind="assembly"] .tree-expander').first().click()
   await page.locator('.tree-row[data-kind="module"]').filter({ hasText: 'dnSpy.Backend.Contracts.dll' }).locator('.tree-expander').click()
   await page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
-  await page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^dnSpy\.Backend\.Contracts\.HelloRequest$/ }).dblclick()
+  await page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest$/ }).dblclick()
   const tab = page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })
   await expect(tab).toBeVisible()
 

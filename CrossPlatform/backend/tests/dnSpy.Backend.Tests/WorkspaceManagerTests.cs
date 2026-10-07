@@ -30,7 +30,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var namespaceChildren = await manager.GetChildrenAsync(
 			new NodeRequest(opened.WorkspaceId, contractNamespace.Id),
 			TestContext.Current.CancellationToken);
-		var helloRequest = Assert.Single(namespaceChildren.Nodes, n => n.Label == "dnSpy.Backend.Contracts.HelloRequest");
+		var helloRequest = Assert.Single(namespaceChildren.Nodes, n => n.Label == "HelloRequest");
 
 		var csharp = await manager.DecompileAsync(
 			new DecompileRequest(opened.WorkspaceId, helloRequest.Id, DecompilerLanguage.CSharp),
@@ -46,7 +46,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Contains(".class", il.Text, StringComparison.Ordinal);
 		Assert.Contains("HelloRequest", il.Text, StringComparison.Ordinal);
 
-		var rpcException = Assert.Single(namespaceChildren.Nodes, n => n.Label == "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = Assert.Single(namespaceChildren.Nodes, n => n.Label == "RpcException");
 		var rpcMembers = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
 		var getCode = Assert.Single(rpcMembers.Nodes, member => member.Label == "get_Code()");
 		var getCodeDocument = await manager.DecompileAsync(
@@ -100,7 +100,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 
 		// A breakpoint must land on the same IL offset whichever document it was set from, so the module map has
 		// to agree with what the standalone method view of the same body reports.
-		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Core", "dnSpy.Backend.Core.WorkspaceManager");
+		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Core", "WorkspaceManager");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, type.Id), TestContext.Current.CancellationToken);
 		var moduleIdentities = statements.Where(statement => !statement.IsHidden).Select(statement => (statement.MetadataToken, statement.IlOffset)).ToHashSet();
 		// Constructors are the one exception and are checked against a plain method instead: a field initializer
@@ -138,7 +138,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var token = unchecked((int)calculate.MDToken.Raw);
 
 		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
-		var program = await FindTypeAsync(opened.WorkspaceId, "DebugTarget", "DebugTarget.Program");
+		var program = await FindTypeAsync(opened.WorkspaceId, "DebugTarget", "Program");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, program.Id), TestContext.Current.CancellationToken);
 		var calculateNode = Assert.Single(members.Nodes, node => node.Label.StartsWith("Calculate(", StringComparison.Ordinal));
 		var document = await manager.DecompileAsync(
@@ -192,7 +192,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task ResolveBreakpoints_SnapsToNearestStatement() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var csharp = await manager.DecompileAsync(
 			new DecompileRequest(opened.WorkspaceId, rpcException.Id, DecompilerLanguage.CSharp),
 			TestContext.Current.CancellationToken);
@@ -228,7 +228,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		// An interface method has no body and therefore no sequence points: its document renders, but nothing in
 		// it maps to IL. The request has to come back unbound with a reason rather than inventing an offset.
 		var opened = await OpenContractsAssemblyAsync();
-		var resolver = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.IDebugSymbolResolver");
+		var resolver = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "IDebugSymbolResolver");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, resolver.Id), TestContext.Current.CancellationToken);
 		var method = Assert.Single(members.Nodes, node => node.Label.StartsWith("FindMethods", StringComparison.Ordinal));
 
@@ -290,7 +290,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task ResolveIlLocation_RoundTrips() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var rpcMembers = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
 		var getCodeNode = Assert.Single(rpcMembers.Nodes, member => member.Label == "get_Code()");
 
@@ -415,7 +415,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, contractsRoot.Id), TestContext.Current.CancellationToken);
 		var contractsNamespace = Assert.Single(moduleChildren.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
 		var types = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, contractsNamespace.Id), TestContext.Current.CancellationToken);
-		var rpcException = Assert.Single(types.Nodes, node => node.Label == "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = Assert.Single(types.Nodes, node => node.Label == "RpcException");
 		var references = await manager.AnalyzeReferencesAsync(
 			new AnalyzeReferencesRequest(opened.WorkspaceId, rpcException.Id),
 			TestContext.Current.CancellationToken);
@@ -462,7 +462,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var path = typeof(HelloRequest).Assembly.Location;
 		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
 		var moduleId = Assert.Single(opened.Modules).Id;
-		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, type.Id), TestContext.Current.CancellationToken);
 		var methodNode = Assert.Single(members.Nodes, node => node.Kind == "method" && node.Label == "get_Code()");
 
@@ -693,7 +693,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task CommitsRenameDetectsConflictsAndSavesVerifiedCopy() {
 		var opened = await OpenContractsAssemblyAsync();
-		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloRequest");
 		var first = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 		var conflicting = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 
@@ -756,7 +756,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task ReplacesStructuredIlMethodBody() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(
 			new NodeRequest(opened.WorkspaceId, rpcException.Id),
 			TestContext.Current.CancellationToken);
@@ -797,7 +797,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task RoundTripsEditableMethodBodyWithMetadataTokens() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
 		var getCode = Assert.Single(members.Nodes, node => node.Label == "get_Code()");
 		var body = await manager.GetMethodBodyAsync(
@@ -848,7 +848,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	public async Task DeletesATypeAndUndoHandsBackTheSameNode() {
 		var opened = await OpenContractsAssemblyAsync();
 		var @namespace = await FindNamespaceAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts");
-		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloRequest");
 		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 
 		await manager.QueueDeleteAsync(
@@ -860,7 +860,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Contains(helloRequest.Id, committed.ChangedNodeIds);
 
 		var removed = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, @namespace.Id), TestContext.Current.CancellationToken);
-		Assert.DoesNotContain(removed.Nodes, node => node.Label == "dnSpy.Backend.Contracts.HelloRequest");
+		Assert.DoesNotContain(removed.Nodes, node => node.Label == "HelloRequest");
 
 		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 
@@ -872,7 +872,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task DeletesAPropertyTogetherWithItsAccessors() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
 		var code = Assert.Single(members.Nodes, node => node.Kind == "property" && node.Label == "Code");
 		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
@@ -908,7 +908,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.DoesNotContain(children.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
 		var renamed = Assert.Single(children.Nodes, node => node.Label == "dnSpy.Backend.Renamed");
 		var types = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, renamed.Id), TestContext.Current.CancellationToken);
-		Assert.Contains(types.Nodes, node => node.Label == "dnSpy.Backend.Renamed.HelloRequest");
+		Assert.Contains(types.Nodes, node => node.Label == "HelloRequest");
 
 		await manager.UndoAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 
@@ -916,7 +916,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.DoesNotContain(restored.Nodes, node => node.Label == "dnSpy.Backend.Renamed");
 		var original = Assert.Single(restored.Nodes, node => node.Label == "dnSpy.Backend.Contracts");
 		var originalTypes = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, original.Id), TestContext.Current.CancellationToken);
-		Assert.Contains(originalTypes.Nodes, node => node.Label == "dnSpy.Backend.Contracts.HelloRequest");
+		Assert.Contains(originalTypes.Nodes, node => node.Label == "HelloRequest");
 	}
 
 	[Fact]
@@ -957,7 +957,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task ReplacesAMethodBodyWithTheGeneratedStub() {
 		var opened = await OpenContractsAssemblyAsync();
-		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
 		var getCode = Assert.Single(members.Nodes, node => node.Label == "get_Code()");
 		var before = await manager.DecompileAsync(
@@ -2063,7 +2063,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 			Assert.Empty((await manager.SaveAllModulesAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Saved);
 
 			// The tree holds two modules, so the type is looked up under the one it belongs to.
-			var helloRequest = await FindTypeInModuleAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+			var helloRequest = await FindTypeInModuleAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts", "HelloRequest");
 			var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 			await manager.QueueRenameAsync(
 				new RenameEditRequest(opened.WorkspaceId, transaction.TransactionId, helloRequest.Id, "HelloRequestRenamed"),
@@ -2089,7 +2089,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	[Fact]
 	public async Task ReloadAllRebuildsTheTreeUnderTheSameWorkspaceId() {
 		var opened = await OpenContractsAssemblyAsync();
-		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloRequest");
 		var transaction = await manager.BeginEditAsync(new BeginEditRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
 		await manager.QueueRenameAsync(
 			new RenameEditRequest(opened.WorkspaceId, transaction.TransactionId, helloRequest.Id, "HelloRequestRenamed"),
@@ -2103,7 +2103,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		// The file was never written, so the rename dies with the modules it was made on. The node is a
 		// different node — its id was issued again — but it is the same type, which is what the stable
 		// key says and what lets the client recognise what it is looking at.
-		var restored = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.HelloRequest");
+		var restored = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloRequest");
 		Assert.Equal(helloRequest.Key, restored.Key);
 		Assert.NotEqual(helloRequest.Id, restored.Id);
 		Assert.Single((await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
@@ -2199,7 +2199,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var path = Path.Combine(AppContext.BaseDirectory, "DebugTarget.dll");
 		Assert.True(File.Exists(path), $"The debuggee was not copied to the test output: {path}");
 		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
-		var program = await FindTypeAsync(opened.WorkspaceId, "DebugTarget", "DebugTarget.Program");
+		var program = await FindTypeAsync(opened.WorkspaceId, "DebugTarget", "Program");
 		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, program.Id), TestContext.Current.CancellationToken);
 		var node = Assert.Single(members.Nodes, member => member.Label.StartsWith(memberLabel, StringComparison.Ordinal));
 		var document = await manager.DecompileAsync(new DecompileRequest(opened.WorkspaceId, node.Id, DecompilerLanguage.CSharp), TestContext.Current.CancellationToken);
@@ -2241,7 +2241,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 
 	/// <summary>The one-liner getter the hex write commands are pointed at: <c>RpcException.get_Code()</c>.</summary>
 	async Task<TreeNodeDto> FindRpcExceptionGetterAsync(string workspaceId) {
-		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts", "dnSpy.Backend.Contracts.RpcException");
+		var type = await FindTypeAsync(workspaceId, "dnSpy.Backend.Contracts", "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(workspaceId, type.Id), TestContext.Current.CancellationToken);
 		return Assert.Single(members.Nodes, node => node.Kind == "method" && node.Label == "get_Code()");
 	}

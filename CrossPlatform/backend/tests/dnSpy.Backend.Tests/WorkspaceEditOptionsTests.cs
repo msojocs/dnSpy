@@ -22,7 +22,7 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		var core = Assert.Single(namespaces.Nodes, node => node.Kind == "namespace" && node.Label == "dnSpy.Backend.Core");
 
 		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, core.Id), TestContext.Current.CancellationToken);
-		var workspaceManager = Assert.Single(types.Nodes, node => node.Label == "dnSpy.Backend.Core.WorkspaceManager");
+		var workspaceManager = Assert.Single(types.Nodes, node => node.Label == "WorkspaceManager");
 		Assert.Equal("type", workspaceManager.Kind);
 		Assert.Equal("class", workspaceManager.Icon);
 	}
@@ -68,7 +68,7 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
 		var @namespace = Assert.Single(moduleChildren.Nodes, node => node.Kind == "namespace" && node.Label == "dnSpy.Backend.Tests");
 		var namespaceChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
-		var type = Assert.Single(namespaceChildren.Nodes, node => node.Label == "dnSpy.Backend.Tests.WorkspaceEditOptionsTests");
+		var type = Assert.Single(namespaceChildren.Nodes, node => node.Label == "WorkspaceEditOptionsTests");
 
 		var newType = await GetNewOptionsAsync(workspaceId, NodeOptionKinds.Type, @namespace.Id);
 		var typeOptions = Assert.IsType<TypeOptionsDto>(newType.Type);
@@ -110,7 +110,7 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
 		var @namespace = Assert.Single(moduleChildren.Nodes, node => node.Kind == "namespace" && node.Label == "dnSpy.Backend.Tests");
 		var namespaceChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
-		var type = Assert.Single(namespaceChildren.Nodes, node => node.Label == "dnSpy.Backend.Tests.WorkspaceEditOptionsTests");
+		var type = Assert.Single(namespaceChildren.Nodes, node => node.Label == "WorkspaceEditOptionsTests");
 
 		var nested = Assert.IsType<TypeOptionsDto>((await GetNewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id, nested: true)).Type);
 		Assert.Equal("MyType", nested.Name);
@@ -139,7 +139,7 @@ public sealed class WorkspaceEditOptionsTests : IDisposable {
 		var moduleChildren = await manager.GetChildrenAsync(new NodeRequest(workspaceId, module.Id), TestContext.Current.CancellationToken);
 		var @namespace = Assert.Single(moduleChildren.Nodes, node => node.Kind == "namespace" && node.Label == "dnSpy.Backend.Contracts");
 		var types = await manager.GetChildrenAsync(new NodeRequest(workspaceId, @namespace.Id), TestContext.Current.CancellationToken);
-		var exception = Assert.Single(types.Nodes, node => node.Label == "dnSpy.Backend.Contracts.RpcException");
+		var exception = Assert.Single(types.Nodes, node => node.Label == "RpcException");
 		var members = await manager.GetChildrenAsync(new NodeRequest(workspaceId, exception.Id), TestContext.Current.CancellationToken);
 		var getCode = Assert.Single(members.Nodes, node => node.Kind == "method" && node.Label.StartsWith("get_Code", StringComparison.Ordinal));
 

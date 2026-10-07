@@ -37,7 +37,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		var created = await CreateAsync(workspaceId, @namespace.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, @namespace.Id));
 
 		Assert.Equal("type", created.Kind);
-		Assert.Equal("dnSpy.Backend.Contracts.MyType", created.Label);
+		Assert.Equal("MyType", created.Label);
 		var types = await ChildrenAsync(workspaceId, @namespace.Id);
 		Assert.Contains(types, node => node.Id == created.NodeId);
 		// A top-level type is not a nested one, so the type it was created from is untouched.
@@ -48,7 +48,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		// it — dnSpy's own command reads the selection's nearest namespace ancestor instead, and a type's is
 		// the namespace its name is written with.
 		var fromAType = await CreateAsync(workspaceId, type.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, type.Id));
-		Assert.Equal("dnSpy.Backend.Contracts.MyType", fromAType.Label);
+		Assert.Equal("MyType", fromAType.Label);
 		Assert.Contains(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == fromAType.NodeId);
 		Assert.DoesNotContain(await ChildrenAsync(workspaceId, type.Id), node => node.Id == fromAType.NodeId);
 	}
@@ -64,7 +64,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		Assert.Equal("type", nested.Kind);
 		// A nested type has no namespace of its own: its name is its declaring type's and the hash-marked
 		// one the metadata gives it.
-		Assert.Equal("dnSpy.Backend.Contracts.RpcException+MyType", nested.Label);
+		Assert.Equal("RpcException+MyType", nested.Label);
 		Assert.Contains(await ChildrenAsync(workspaceId, type.Id), node => node.Id == nested.NodeId);
 		Assert.DoesNotContain(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == nested.NodeId);
 
@@ -72,7 +72,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		// cannot hold a type.
 		var member = await FindMethodAsync(workspaceId, type.Id);
 		var fromAMember = await CreateAsync(workspaceId, member.Id, await NewOptionsAsync(workspaceId, NodeOptionKinds.Type, member.Id, nested: true), nested: true);
-		Assert.Equal("dnSpy.Backend.Contracts.RpcException+MyType", fromAMember.Label);
+		Assert.Equal("RpcException+MyType", fromAMember.Label);
 		Assert.Contains(await ChildrenAsync(workspaceId, type.Id), node => node.Id == fromAMember.NodeId);
 	}
 
@@ -111,7 +111,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		var renamed = options with { Type = options.Type! with { Name = "Widget", Namespace = "Other.Place" } };
 		var created = await CreateAsync(workspaceId, type.Id, renamed);
 
-		Assert.Equal("Other.Place.Widget", created.Label);
+		Assert.Equal("Widget", created.Label);
 		var module = await FindModuleAsync(workspaceId);
 		var @namespace = Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "namespace" && node.Label == "Other.Place");
 		Assert.Single(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == created.NodeId);
@@ -252,7 +252,7 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 		// The tree says so where the type is listed, which is the namespace the name files it under.
 		var @namespace = await NamespaceOfAsync(workspaceId, type);
 		var renamed = Assert.Single(await ChildrenAsync(workspaceId, @namespace.Id), node => node.Id == type.Id);
-		Assert.Equal("dnSpy.Backend.Contracts.Renamed", renamed.Label);
+		Assert.Equal("Renamed", renamed.Label);
 
 		var after = Assert.IsType<TypeOptionsDto>((await manager.GetOptionsAsync(
 			new GetNodeOptionsRequest(workspaceId, NodeOptionKinds.Type, type.Id), TestContext.Current.CancellationToken)).Type);
@@ -358,17 +358,20 @@ public sealed class WorkspaceEditCreateTests : IDisposable {
 	async Task<TreeNodeDto> FindTypeAsync(string workspaceId, string fullName) {
 		var module = await FindModuleAsync(workspaceId);
 		var @namespace = fullName[..fullName.LastIndexOf('.')];
+		var typeName = fullName[(fullName.LastIndexOf('.') + 1)..];
 		foreach (var node in await ChildrenAsync(workspaceId, module.Id)) {
 			if (node.Kind != "namespace" || node.Label != @namespace)
 				continue;
-			return Assert.Single(await ChildrenAsync(workspaceId, node.Id), candidate => candidate.Label == fullName);
+			return Assert.Single(await ChildrenAsync(workspaceId, node.Id), candidate => candidate.Label == typeName);
 		}
 		throw new InvalidOperationException($"The module has no namespace '{@namespace}'.");
 	}
 
 	async Task<TreeNodeDto> NamespaceOfAsync(string workspaceId, TreeNodeDto type) {
 		var module = await FindModuleAsync(workspaceId);
-		var @namespace = type.Label[..type.Label.LastIndexOf('.')];
+		// Type labels carry no namespace now, so take it off the tooltip (full name).
+		var description = type.Description!;
+		var @namespace = description[..description.LastIndexOf('.')];
 		return Assert.Single(await ChildrenAsync(workspaceId, module.Id), node => node.Kind == "namespace" && node.Label == @namespace);
 	}
 

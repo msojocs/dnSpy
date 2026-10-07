@@ -20,7 +20,7 @@ public sealed class DecompilationConcurrencyTests : IDisposable {
 		try {
 			var children = await manager.GetChildrenAsync(new NodeRequest(workspace, space.Id), TestContext.Current.CancellationToken)
 				.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-			Assert.Equal("Slow.ManyMethods", Assert.Single(children.Nodes).Label);
+			Assert.Equal("ManyMethods", Assert.Single(children.Nodes).Label);
 			Assert.False(decompilation.IsCompleted, "The tree must respond before the assembly document finishes.");
 		}
 		finally {
@@ -43,7 +43,7 @@ public sealed class DecompilationConcurrencyTests : IDisposable {
 			await manager.CommitEditAsync(new EditTransactionRequest(workspace, edit.TransactionId), TestContext.Current.CancellationToken);
 			await Assert.ThrowsAnyAsync<OperationCanceledException>(() => decompilation.WaitAsync(TestContext.Current.CancellationToken));
 			var types = await manager.GetChildrenAsync(new NodeRequest(workspace, space.Id), TestContext.Current.CancellationToken);
-			Assert.Equal("Slow.Renamed", Assert.Single(types.Nodes).Label);
+			Assert.Equal("Renamed", Assert.Single(types.Nodes).Label);
 		}
 		finally {
 			await cancellation.CancelAsync();

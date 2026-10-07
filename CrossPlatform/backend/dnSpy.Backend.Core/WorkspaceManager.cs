@@ -2641,7 +2641,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// spelled out — which is exactly what <c>FullName</c> will say once the list holds it.
 		/// </summary>
 		static string LabelOf(IMDTokenProvider created, TypeDef? ownerType, NodeEntry node) =>
-			created is TypeDef type && ownerType is not null ? $"{ownerType.FullName}+{type.Name}" : GetLabel(node);
+			created is TypeDef type && ownerType is not null ? $"{ownerType.Name}+{type.Name}" : GetLabel(node);
 
 		/// <summary>
 		/// Queues an edit of an existing type or member: the dialog's values are written over the row, and the
@@ -3119,7 +3119,9 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		static string GetMemberDisplayName(IMDTokenProvider member) => member switch {
-			TypeDef type => type.FullName,
+			// Show only the type name in the tree (dnSpy behavior); the namespace already appears
+			// on the parent namespace node, and the full name stays available via the tooltip.
+			TypeDef type => type.Name.String,
 			MethodDef method => $"{method.Name}{FormatParameterList(method)}",
 			FieldDef field => field.Name.String,
 			PropertyDef property => property.Name.String,
