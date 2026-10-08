@@ -155,7 +155,7 @@ describe('function breakpoints', () => {
     await useAppStore.getState().addFunctionBreakpoint(' Ns.Type.A ')
     await useAppStore.getState().addFunctionBreakpoint('Ns.Type.A')
     expect(useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.A', enabled: true }])
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.A' }])
 
     await useAppStore.getState().toggleFunctionBreakpoint('Ns.Type.A')
     expect(useAppStore.getState().functionBreakpoints).toEqual([])
@@ -164,12 +164,18 @@ describe('function breakpoints', () => {
     expect(useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.B', enabled: true }])
   })
 
-  it('sends only enabled breakpoints to the debug adapter', async () => {
+  it('sends only enabled breakpoints to the debug adapter, with their settings', async () => {
     useAppStore.setState({
-      functionBreakpoints: [{ name: 'Ns.Type.A', enabled: true }, { name: 'Ns.Type.B', enabled: false }],
+      functionBreakpoints: [
+        { name: 'Ns.Type.A', enabled: true, settings: { condition: { kind: 'isTrue', expression: 'Code > 1' } } },
+        { name: 'Ns.Type.B', enabled: false },
+      ],
     })
     await useAppStore.getState().addFunctionBreakpoint('Ns.Type.C')
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A', 'Ns.Type.C'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [
+      { name: 'Ns.Type.A', settings: { condition: { kind: 'isTrue', expression: 'Code > 1' } } },
+      { name: 'Ns.Type.C' },
+    ])
   })
 
   it('enables and disables every breakpoint', async () => {
@@ -181,7 +187,7 @@ describe('function breakpoints', () => {
 
     await useAppStore.getState().setAllFunctionBreakpointsEnabled(true)
     expect(useAppStore.getState().functionBreakpoints.every((breakpoint) => breakpoint.enabled)).toBe(true)
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A', 'Ns.Type.B'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.A' }, { name: 'Ns.Type.B' }])
   })
 
   it('enables and disables a single breakpoint', async () => {
@@ -192,10 +198,10 @@ describe('function breakpoints', () => {
       { name: 'Ns.Type.A', enabled: true },
       { name: 'Ns.Type.B', enabled: true },
     ])
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A', 'Ns.Type.B'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.A' }, { name: 'Ns.Type.B' }])
 
     await useAppStore.getState().setFunctionBreakpointEnabled('Ns.Type.A', false)
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.B'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.B' }])
   })
 
   it('deletes every breakpoint', async () => {

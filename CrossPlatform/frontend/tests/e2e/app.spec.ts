@@ -464,9 +464,9 @@ test.describe('the workspace shell', () => {
     const helloType = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest @02000005$/ })
     await helloType.click()
 
-    // The Edit menu names the node it would delete, the way the WPF command does.
+    // The Edit menu names the node it would delete — the tree's label, the name the row shows.
     await page.getByRole('menuitem', { name: 'Edit' }).click()
-    await page.getByRole('menuitem', { name: /^Delete dnSpy\.Backend\.Contracts\.HelloRequest\b/ }).click()
+    await page.getByRole('menuitem', { name: /^Delete HelloRequest\b/ }).click()
     await expect(helloType).not.toBeVisible()
 
     await page.getByRole('menuitem', { name: 'Edit' }).click()
@@ -904,7 +904,7 @@ test.describe('the in-process debug engine', () => {
 
   test('sets a line breakpoint from the gutter, stops on it and shows the frame locals', async () => {
     await openDebugTarget()
-    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^DebugTarget\.Program$/ })
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
     await programRow.locator('.tree-expander').click()
     await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^Calculate\(/ }).dblclick()
 
@@ -991,7 +991,7 @@ test.describe('the in-process debug engine', () => {
 
   test('steps the loop one pass at a time and leaves the method for its caller', async () => {
     await openDebugTarget()
-    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^DebugTarget\.Program$/ })
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
     await programRow.locator('.tree-expander').click()
     await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^Calculate\(/ }).dblclick()
 
@@ -1062,7 +1062,7 @@ test.describe('the in-process debug engine', () => {
   // stepping out of a method lands *after* its call, where there is nothing left to enter.
   test('steps into a call of the debuggee and lands on the callee', async () => {
     await openDebugTarget()
-    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^DebugTarget\.Program$/ })
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
     await programRow.locator('.tree-expander').click()
     await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^Main\(/ }).dblclick()
 
@@ -1105,7 +1105,7 @@ test.describe('the in-process debug engine', () => {
 
   test('steps across an await without landing in the state machine', async () => {
     await openDebugTarget()
-    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^DebugTarget\.Program$/ })
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
     await programRow.locator('.tree-expander').click()
     await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^AddAsync\(/ }).dblclick()
 

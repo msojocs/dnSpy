@@ -68,7 +68,7 @@ describe('BreakpointsPane', () => {
       { name: 'Ns.Type.A', enabled: true },
       { name: 'Ns.Type.B', enabled: true },
     ])
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A', 'Ns.Type.B'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.A' }, { name: 'Ns.Type.B' }])
     expect(container.querySelectorAll('.breakpoint-disabled')).toHaveLength(0)
   })
 
@@ -83,7 +83,7 @@ describe('BreakpointsPane', () => {
       { name: 'Ns.Type.B', enabled: false },
       { name: 'Ns.Type.C', enabled: true },
     ])
-    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', ['Ns.Type.A', 'Ns.Type.C'])
+    expect(setFunctionBreakpoints).toHaveBeenLastCalledWith('session', [{ name: 'Ns.Type.A' }, { name: 'Ns.Type.C' }])
   })
 
   it('labels a restored line breakpoint by the method it was saved in', () => {
