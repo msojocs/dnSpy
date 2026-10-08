@@ -388,6 +388,9 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Equal(getCodeNode.Id, location.NodeId);
 		Assert.False(location.IsExternalModule);
 		Assert.Equal(statement.Description, location.Description);
+		// The Call Stack window wears this one instead: the dotted declaring type, the method and its
+		// parameters — never dnlib's "System.Void Ns.Type::Method(...)".
+		Assert.Equal("dnSpy.Backend.Contracts.RpcException.get_Code()", location.StackFrameName);
 		Assert.Equal(statement.StartLine, location.StartLine);
 		Assert.Equal(statement.EndLine, location.EndLine);
 		Assert.Equal(statement.StartColumn, location.StartColumn);

@@ -1195,6 +1195,20 @@ select:focus-visible,
   align-items: center;
 }
 
+/* The Call Stack's row is WPF's: a marker column the width of the icon column, then the name. The
+   location the WPF grid has no column for lives in the row's tooltip. */
+.stack-row {
+  grid-template-columns: 16px minmax(0, 1fr);
+}
+
+.stack-marker {
+  color: var(--accent);
+}
+
+.stack-row.active .result-name {
+  font-weight: 600;
+}
+
 .stack-row.selected,
 .thread-row.selected {
   background: var(--selection);

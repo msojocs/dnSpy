@@ -86,16 +86,38 @@ export const WatchPane = (): React.JSX.Element => {
 export const CallStackPane = (): React.JSX.Element => {
   const frames = useAppStore((state) => state.debugFrames)
   const selectedFrameId = useAppStore((state) => state.selectedDebugFrameId)
+  const activeFrameId = useAppStore((state) => state.activeDebugFrameId)
   const selectFrame = useAppStore((state) => state.selectDebugFrame)
+  const switchToFrame = useAppStore((state) => state.switchToDebugFrame)
   const { t } = useLanguage()
   return (
     <div className="result-list" role="list" aria-label={t('Call Stack')}>
-      {frames.map((frame) => (
-        <button key={frame.id} className={`result-row stack-row${selectedFrameId === frame.id ? ' selected' : ''}`} onClick={() => void selectFrame(frame.id)}>
-          <span className="result-name">{frame.name}</span>
-          <span className="result-location">{frame.source?.name ?? frame.source?.path ?? ''}{frame.line > 0 ? `:${frame.line}` : ''}</span>
-        </button>
-      ))}
+      {frames.map((frame) => {
+        const active = activeFrameId === frame.id
+        // WPF's grid has no location column — the frame's name is the whole row — so the file and line
+        // stay reachable through the tooltip instead of taking a column of their own.
+        const location = `${frame.source?.name ?? frame.source?.path ?? ''}${frame.line > 0 ? `:${frame.line}` : ''}`
+        return (
+          <button
+            key={frame.id}
+            className={`result-row stack-row${selectedFrameId === frame.id ? ' selected' : ''}${active ? ' active' : ''}`}
+            title={location}
+            aria-current={active ? 'true' : undefined}
+            onClick={() => void selectFrame(frame.id)}
+            onDoubleClick={() => void switchToFrame(frame.id)}
+            // A button takes Enter as a click, so the switch has to claim the key before the select does.
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void switchToFrame(frame.id)
+              }
+            }}
+          >
+            <span className="stack-marker" aria-hidden="true">{active ? '>' : ''}</span>
+            <span className="result-name">{frame.name}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }

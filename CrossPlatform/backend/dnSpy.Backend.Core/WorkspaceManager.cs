@@ -344,6 +344,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			return new ResolvedIlLocation(
 				workspace?.TryGetMemberNodeId(entry, source),
 				hit.Description,
+				CSharpTypeName.StackFrameName(source),
 				entry.Path,
 				unchecked((int)bodyToken),
 				hit.StartLine,

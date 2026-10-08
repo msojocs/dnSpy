@@ -68,6 +68,48 @@ static class CSharpTypeName {
 	public static string ParameterList(MethodDef method) =>
 		$"({string.Join(", ", method.Parameters.Where(p => !p.IsHiddenThisParameter).Select(p => Of(p.ParamDef, p.Type) ?? string.Empty))})";
 
+	/// <summary>
+	/// A stack frame's name the way the WPF Call Stack window writes it — dnSpy's
+	/// <c>CSharpStackFrameFormatter</c> with the default display settings, which are the ones the
+	/// screenshot has to match: the declaring type chain in dotted form, the method name, and the
+	/// parameters as "type name". The return type and the IL offset the formatter also knows are off
+	/// there, and the "module!" prefix belongs to the caller, which is the only one that knows which
+	/// module the frame lives in.
+	/// </summary>
+	public static string StackFrameName(MethodDef method) {
+		var declaringType = DottedTypeName(method.DeclaringType);
+		return declaringType.Length == 0
+			? $"{method.Name}{NamedParameterList(method)}"
+			: $"{declaringType}.{method.Name}{NamedParameterList(method)}";
+	}
+
+	/// <summary>
+	/// The declaring types a frame's name carries, "Namespace.Outer.Inner": one dotted name, the way
+	/// the formatter writes DeclaringTypes. Generic arity is never part of a name that is shown.
+	/// </summary>
+	static string DottedTypeName(ITypeDefOrRef? type) {
+		if (type is null)
+			return string.Empty;
+		var name = SplitArity(type.Name.String);
+		if (type.DeclaringType is not null)
+			return $"{DottedTypeName(type.DeclaringType)}.{name}";
+		return string.IsNullOrEmpty(type.Namespace) ? name : $"{type.Namespace}.{name}";
+	}
+
+	/// <summary>
+	/// <see cref="ParameterList"/> with each parameter's own name behind its type — what a stack frame
+	/// writes, because ShowParameterNames is on there and off in the tree. The name comes from the
+	/// metadata's Param rows, so a parameter the compiler left unnamed keeps its type alone.
+	/// </summary>
+	static string NamedParameterList(MethodDef method) =>
+		$"({string.Join(", ", method.Parameters.Where(p => !p.IsHiddenThisParameter).Select(NamedParameter))})";
+
+	static string NamedParameter(Parameter parameter) {
+		var type = Of(parameter.ParamDef, parameter.Type) ?? string.Empty;
+		var name = parameter.ParamDef?.Name?.String;
+		return string.IsNullOrEmpty(name) ? type : $"{type} {name}";
+	}
+
 	static Syntax? Convert(TypeSig? type, ref int typeIndex, bool includeParameterDefinitions, int depth) {
 		if (type is null || ++depth > MaxDepth)
 			return null;

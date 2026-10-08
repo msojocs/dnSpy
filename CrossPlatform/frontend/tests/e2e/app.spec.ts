@@ -324,7 +324,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
     await getCode.dblclick()
 
     await expect(page.locator('.document-view')).toHaveAttribute('data-reference-count', /^[1-9]\d*$/)
@@ -390,7 +390,7 @@ test.describe('the workspace shell', () => {
 
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
     await getCode.click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Edit Method Body...' }).click()
@@ -407,7 +407,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
     await getCode.click()
 
     // The hex group is listed in dnSpy's order, and only the entries that have something to point at are
@@ -489,7 +489,7 @@ test.describe('the workspace shell', () => {
     // land as an edit the user can undo.
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Replace Method Body with stub...' }).click()
     await expect(page.getByText('Modified', { exact: true })).toBeVisible()
@@ -600,7 +600,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
     await page.keyboard.press('Alt+Enter')
     const method = page.getByRole('dialog', { name: 'Edit Method' })
     await expect(method).toBeVisible()
@@ -814,7 +814,7 @@ test.describe('the workspace shell', () => {
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
     // The tree row keeps focus, so the F9 handler is not suppressed by the editor guard.
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C0$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
 
     const breakpointRows = page.locator('.breakpoint-row')
     await page.keyboard.press('F9')
@@ -967,7 +967,7 @@ test.describe('the in-process debug engine', () => {
 
     await expect(page.locator('.status-bar')).toContainText('Stopped: entry')
     await page.getByRole('tab', { name: 'Call Stack' }).click()
-    await expect(page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()).toContainText('DebugTarget.Program::Main')
+    await expect(page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()).toContainText('DebugTarget.dll!DebugTarget.Program.Main(string[] args)')
 
     // The entry stop is an ordinary stop: continuing runs the program to its end.
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
@@ -1019,8 +1019,9 @@ test.describe('the in-process debug engine', () => {
     // reports is the decompiled document's, the same one the editor is showing.
     await page.getByRole('tab', { name: 'Call Stack' }).click()
     const frameRow = page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()
-    await expect(frameRow).toContainText('DebugTarget.Program::Calculate')
-    await expect(frameRow).toContainText('DebugTarget.dll:9')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.Calculate(int left, int right)')
+    // The row has no location column — WPF's grid has none — so the line it reports is the tooltip's.
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:9')
     await page.getByRole('tab', { name: 'Locals' }).click()
     const sumRow = page.locator('.debug-table-row').filter({ hasText: 'sum' })
     await expect(sumRow).toContainText('0')
@@ -1029,13 +1030,13 @@ test.describe('the in-process debug engine', () => {
     // and the accumulator has grown by the left operand.
     await toolbar.getByRole('button', { name: 'Step Over' }).click()
     await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
-    await expect(frameRow).toContainText('DebugTarget.dll:7')
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:7')
     await expect(sumRow).toContainText('2')
 
     // The step after that is the body again: a loop runs its statements more than once, so a step that
     // only ever moved forwards would have left it.
     await toolbar.getByRole('button', { name: 'Step Over' }).click()
-    await expect(frameRow).toContainText('DebugTarget.dll:9')
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:9')
     await expect(sumRow).toContainText('2')
 
     // Stepping out of the body leaves the method rather than running the loop to its end: the stop is
@@ -1044,15 +1045,61 @@ test.describe('the in-process debug engine', () => {
     await page.getByRole('menuitem', { name: 'Debug' }).click()
     await page.getByRole('menuitem', { name: 'Step Out' }).click()
     await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
-    await expect(frameRow).toContainText('DebugTarget.Program::Main')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.Main(string[] args)')
 
     // The step out lands after the call, so what follows it is the framework's own call — which has no
     // decompilable source to walk into. A step into degrades to a step over there and stops on the
     // caller's next statement; the editor's marker stays on a statement of the debuggee.
     await page.keyboard.press('F11')
     await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
-    await expect(frameRow).toContainText('DebugTarget.Program::Main')
-    await expect(frameRow).toContainText('DebugTarget.dll:18')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.Main(string[] args)')
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:18')
+
+    await toolbar.getByRole('button', { name: 'Stop' }).click()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
+  })
+
+  // Upstream shows the Locals window once, when a debugging session starts: `AutoShowLocalsWindow` hangs off
+  // `DbgManager_IsDebuggingChanged`, so a break or a step inside the session leaves the dock's tabs where the
+  // user put them. Switching to Call Stack before the launch is what makes the difference visible — the start
+  // may move the tab, the step that follows it must not.
+  test('opens the Locals window when the session starts and leaves the tool tabs alone when stepping', async () => {
+    await openDebugTarget()
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
+    await programRow.locator('.tree-expander').click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^Calculate\(/ }).dblclick()
+
+    const editor = page.locator('.monaco-editor')
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    // A breakpoint on the loop body stops on the first pass, which is a stop to step over from.
+    const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
+    await expect(bodyLine).toBeVisible()
+    await showBreakpoints()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await editor.locator('.margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
+    await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Calculate:')
+
+    // The user is already on Call Stack when the debugger starts, so Locals coming to the front is the
+    // session-start behaviour this test can see, not just the default layout.
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    await expect(page.getByRole('tab', { name: 'Call Stack' })).toHaveAttribute('aria-selected', 'true')
+
+    const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
+    await startDebugging()
+    await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Locals' })).toHaveAttribute('aria-selected', 'true')
+
+    // Stepping is the same session, so the dock stays on the window the user chose.
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    await toolbar.getByRole('button', { name: 'Step Over' }).click()
+    await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Call Stack' })).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByRole('tab', { name: 'Locals' })).toHaveAttribute('aria-selected', 'false')
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
     await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
@@ -1091,13 +1138,13 @@ test.describe('the in-process debug engine', () => {
     // The stop is on the call itself: the arguments are read but the callee has not run.
     await page.getByRole('tab', { name: 'Call Stack' }).click()
     const frameRow = page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()
-    await expect(frameRow).toContainText('DebugTarget.Program::Main')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.Main(string[] args)')
 
     // The step arms the callee's statements, so the runtime stops on the method's first one rather than
     // walking through code the client has nothing to show for.
     await page.keyboard.press('F11')
     await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
-    await expect(frameRow).toContainText('DebugTarget.Program::Calculate')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.Calculate(int left, int right)')
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
     await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
@@ -1133,16 +1180,82 @@ test.describe('the in-process debug engine', () => {
 
     await page.getByRole('tab', { name: 'Call Stack' }).click()
     const frameRow = page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()
-    await expect(frameRow).toContainText('DebugTarget.Program::AddAsync')
-    await expect(frameRow).toContainText('DebugTarget.dll:7')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.AddAsync(int left, int right)')
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:7')
 
     // The step over crosses the suspension and stops on the await's own line, in the method the user
     // wrote: the frame is a generated MoveNext, so walking its own instructions would stop somewhere in
     // the plumbing between the two statements instead.
     await toolbar.getByRole('button', { name: 'Step Over' }).click()
     await expect(page.getByText('Stopped: step', { exact: true })).toBeVisible()
-    await expect(frameRow).toContainText('DebugTarget.Program::AddAsync')
-    await expect(frameRow).toContainText('DebugTarget.dll:8')
+    await expect(frameRow).toContainText('DebugTarget.dll!DebugTarget.Program.AddAsync(int left, int right)')
+    await expect(frameRow).toHaveAttribute('title', 'DebugTarget.dll:8')
+
+    await toolbar.getByRole('button', { name: 'Stop' }).click()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
+  })
+
+  // The Call Stack navigates the way the original's does: Ctrl+F10-style switching is a double click,
+  // and a single click is only the highlight the user is about to double click.
+  test('switches to a frame on a double click and leaves the single click a highlight', async () => {
+    await openDebugTarget()
+    const programRow = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^Program @02000002$/ })
+    await programRow.locator('.tree-expander').click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^Calculate\(/ }).dblclick()
+
+    const editor = page.locator('.monaco-editor')
+    const browserWindow = await application.browserWindow(page)
+    await browserWindow.evaluate((window) => window.setSize(1500, 700))
+
+    // A breakpoint on the loop body stops inside Calculate, whose caller is the frame the navigation
+    // has to walk up to.
+    const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
+    await expect(bodyLine).toBeVisible()
+    await showBreakpoints()
+    const lineBox = await bodyLine.boundingBox()
+    const marginBox = await editor.locator('.margin').first().boundingBox()
+    if (!lineBox || !marginBox)
+      throw new Error('The editor is not laid out yet.')
+    await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
+
+    const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
+    await startDebugging()
+    await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
+
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    const rows = page.locator('.result-list[aria-label="Call Stack"] .stack-row')
+    const frame = rows.first()
+    const caller = rows.nth(1)
+    await expect(frame).toContainText('DebugTarget.dll!DebugTarget.Program.Calculate(int left, int right)')
+    await expect(caller).toContainText('DebugTarget.dll!DebugTarget.Program.Main(string[] args)')
+    // Only the frame the debugger is in wears the marker, which is where WPF's arrow sits too.
+    await expect(frame).toHaveAttribute('aria-current', 'true')
+    await expect(caller).not.toHaveAttribute('aria-current', 'true')
+
+    // A single click is a highlight: the debugger stays in Calculate, so the row that reads the frame's
+    // locals does not change and no document comes forward.
+    await caller.click()
+    await expect(caller).toHaveClass(/selected/)
+    await expect(frame).toHaveAttribute('aria-current', 'true')
+    await page.getByRole('tab', { name: 'Locals' }).click()
+    await expect(page.locator('.debug-table-row').filter({ hasText: 'sum' })).toBeVisible()
+    await expect(page.getByRole('tab', { name: 'Main(string[]) : void' })).toHaveCount(0)
+
+    // The double click is the switch: the caller becomes the active frame — its own locals are what
+    // Locals shows now — and its document is opened, selected, and scrolled to the statement it is
+    // stopped at, which is the call the debugger has to return from.
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    await caller.dblclick()
+    await expect(caller).toHaveAttribute('aria-current', 'true')
+    await expect(frame).not.toHaveAttribute('aria-current', 'true')
+    await expect(page.getByRole('tab', { name: 'Main(string[]) : void' })).toHaveAttribute('aria-selected', 'true')
+    // A whole-line decoration lands in Monaco's overlay layer (a `cdr` div over the line), not on the
+    // `.view-line` element itself, and only for the lines the viewport holds — so the reveal, which is
+    // what scrolls the stopped line into view, is what makes it render at all.
+    const stoppedLine = page.locator('.view-overlays .cdr.debug-stopped-line')
+    await expect(stoppedLine).toHaveCount(1)
+    await page.getByRole('tab', { name: 'Locals' }).click()
+    await expect(page.locator('.debug-table-row').filter({ hasText: 'args' })).toBeVisible()
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
     await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()

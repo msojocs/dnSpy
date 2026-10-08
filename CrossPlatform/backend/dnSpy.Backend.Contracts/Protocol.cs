@@ -821,9 +821,14 @@ public sealed record ResolveBreakpointsRequest(string WorkspaceId, IReadOnlyList
 public sealed record ResolveBreakpointsResponse(IReadOnlyList<ResolvedBreakpoint> Breakpoints);
 
 /// <summary>The decompiled line(s) a stopped IL location maps to, so the client can reveal it.</summary>
+/// <param name="Description">
+/// The method's dnlib full name, which the breakpoint UI parses; <paramref name="StackFrameName"/> is
+/// the same method the way the Call Stack window writes it, for display only.
+/// </param>
 public sealed record ResolvedIlLocation(
 	string? NodeId,
 	string? Description,
+	string StackFrameName,
 	string ModulePath,
 	int MetadataToken,
 	int StartLine,

@@ -1,5 +1,5 @@
 import Editor from './CodeEditor'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
 import type { CodeStatement } from '../../../shared/protocol'
@@ -60,7 +60,18 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   const toggleLineBreakpoint = useAppStore((state) => state.toggleLineBreakpoint)
   const toggleFunctionBreakpoint = useAppStore((state) => state.toggleFunctionBreakpoint)
   const stoppedLocation = useAppStore((state) => state.stoppedLocation)
+  const activeDocumentId = useAppStore((state) => state.activeDocumentId)
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | undefined>(undefined)
+  // Monaco is created asynchronously, so the effects below can find no editor on their first run. This
+  // makes the mount a dependency of theirs: a document that arrives already decompiled — which is what a
+  // frame navigation produces — has no later store change to run them again on.
+  const [editorReady, setEditorReady] = useState(false)
+  // The stopped-location request whose line this view already moved the caret to.
+  const revealedTokenRef = useRef(0)
+  // The reveal that has not landed yet. A frame navigation opens its document while the tab is still being
+  // laid out, so the scroll it asks for finds an editor with no height and moves nowhere; keeping the
+  // request until the line is really on screen is what makes the second attempt (on a layout change) work.
+  const pendingRevealRef = useRef<{ line: number; column?: number } | undefined>(undefined)
   const decorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   const breakpointDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
   const bookmarkDecorationsRef = useRef<MonacoEditor.IEditorDecorationsCollection | undefined>(undefined)
@@ -81,6 +92,23 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   bookmarksRef.current = bookmarks
   toggleLineBreakpointRef.current = toggleLineBreakpoint
   toggleFunctionBreakpointRef.current = toggleFunctionBreakpoint
+
+  // Puts the caret on the stopped line and scrolls it into view. This lives apart from the effect below
+  // because the layout change that gives the scroll somewhere to go arrives after the effect has run.
+  const applyPendingReveal = (): void => {
+    const pending = pendingRevealRef.current
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!pending || !editor || !model || useAppStore.getState().activeDocumentId !== documentId)
+      return
+    const target = Math.min(Math.max(pending.line, 1), model.getLineCount())
+    editor.setPosition({ lineNumber: target, column: Math.min(Math.max(pending.column ?? 1, 1), model.getLineMaxColumn(target)) })
+    editor.revealLineInCenterIfOutsideViewport(target)
+    if (editor.getVisibleRanges().some((range) => target >= range.startLineNumber && target <= range.endLineNumber))
+      pendingRevealRef.current = undefined
+  }
+  const applyPendingRevealRef = useRef(applyPendingReveal)
+  applyPendingRevealRef.current = applyPendingReveal
 
   useEffect(() => () => unregisterDocumentEditor(viewId), [viewId])
 
@@ -104,15 +132,15 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
         },
       }
     }))
-  }, [document?.spans, document?.text, locale])
+  }, [document?.spans, document?.text, locale, editorReady])
 
   useEffect(() => {
     breakpointDecorationsRef.current?.set(breakpointDecorations(documentId, document?.codeStatements, lineBreakpoints, t))
-  }, [documentId, lineBreakpoints, document?.codeStatements, document?.text, locale])
+  }, [documentId, lineBreakpoints, document?.codeStatements, document?.text, locale, editorReady])
 
   useEffect(() => {
     bookmarkDecorationsRef.current?.set(bookmarkDecorations(documentId, document?.codeStatements, bookmarks, t))
-  }, [documentId, bookmarks, document?.codeStatements, document?.text, locale])
+  }, [documentId, bookmarks, document?.codeStatements, document?.text, locale, editorReady])
 
   // "Go to bookmark" is answered here rather than in the action itself: the line has to be shown in an
   // editor that is mounted, and only the mounted view knows its own model.
@@ -127,9 +155,9 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
     editor.setPosition({ lineNumber: line, column: Math.min(bookmarksReveal.column, model.getLineMaxColumn(line)) })
     editor.revealLineInCenterIfOutsideViewport(line)
     editor.focus()
-  }, [bookmarksReveal, documentId, document?.text])
+  }, [bookmarksReveal, documentId, document?.text, editorReady])
 
-  // The line the selected frame is stopped at, in the document that frame decompiles to. Stepping moves it one
+  // The line the active frame is stopped at, in the document that frame decompiles to. Stepping moves it one
   // statement at a time, so the view follows it — otherwise the marker would advance off-screen and the step
   // would look like nothing happened.
   useEffect(() => {
@@ -145,9 +173,22 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
           },
         }]
       : [])
-    if (line > 0)
-      editorRef.current?.revealLineInCenterIfOutsideViewport(line)
-  }, [documentId, stoppedLocation, document?.text, locale])
+    if (line <= 0 || !stoppedLocation) {
+      pendingRevealRef.current = undefined
+      return
+    }
+    // Only the editor on screen can show a line, and the tab the request opened usually mounts after the
+    // request was made — so the caret is placed when this document is the one in front, once per request.
+    if (activeDocumentId !== documentId || revealedTokenRef.current === stoppedLocation.token)
+      return
+    revealedTokenRef.current = stoppedLocation.token
+    pendingRevealRef.current = { line, column: stoppedLocation.column }
+    applyPendingReveal()
+    // A step scrolls but leaves the keyboard where the user put it; a frame switch or Show Next Statement
+    // is a navigation, and there the caret follows into the editor.
+    if (stoppedLocation.caret)
+      editorRef.current?.focus()
+  }, [documentId, stoppedLocation, activeDocumentId, document?.text, locale, editorReady])
 
   if (!document)
     return <div className="pane-empty">{t('Document closed')}</div>
@@ -185,6 +226,11 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
             onMount={(editor, monaco) => {
               editorRef.current = editor
               registerDocumentEditor(viewId, editor, documentId)
+              // The decoration collections exist from here on, so the effects that fill them can run again.
+              setEditorReady(true)
+              // A frame navigation opens its document while the tab is still being laid out, so the reveal
+              // it asks for finds an editor without a height; this is where that request is tried again.
+              editor.onDidLayoutChange(() => applyPendingRevealRef.current())
               const updateLanguageId = (): void => {
                 const languageId = editor.getModel()?.getLanguageId()
                 if (languageId)

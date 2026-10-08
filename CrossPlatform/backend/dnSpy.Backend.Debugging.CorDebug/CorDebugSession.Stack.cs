@@ -117,7 +117,9 @@ internal sealed partial class CorDebugSession {
 				budget--;
 				var location = await SymbolResolver.ResolveIlLocationAsync(WorkspaceId, frame.ModulePath, frame.MetadataToken, frame.IlOffset, cancellationToken).ConfigureAwait(false);
 				if (location is not null) {
-					name = location.Description ?? name;
+					// The Call Stack window names a frame "module!Type.Method(params)", the way the WPF
+					// formatter does; the module is the one the frame's own metadata came from.
+					name = $"{Path.GetFileName(frame.ModulePath)}!{location.StackFrameName}";
 					line = location.StartLine;
 					column = location.StartColumn;
 					nodeId = location.NodeId;

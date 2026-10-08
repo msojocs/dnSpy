@@ -4,6 +4,7 @@ import { AlertCircle, FolderOpen, X } from 'lucide-react'
 import type { DecompilerLanguage, TreeNode } from '../../shared/protocol'
 import { enableSessionPersistence, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, syncDockTabStrips, useAppStore, type SavedSession } from './app-store'
 import { clearBookmarks, clearBookmarksInDocument, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from './bookmark-commands'
+import { loadAppOptions } from './components/app-options'
 import { AssemblyExplorer } from './components/AssemblyExplorer'
 import { MenuBar, type ThemeName } from './components/MenuBar'
 import { ToolBar } from './components/ToolBar'
@@ -319,6 +320,7 @@ export const App = (): React.JSX.Element => {
   const setDocumentOrder = useAppStore((state) => state.setDocumentOrder)
   const appendOutput = useAppStore((state) => state.appendOutput)
   const setOpenNodeById = useAppStore((state) => state.setOpenNodeById)
+  const setRevealDocument = useAppStore((state) => state.setRevealDocument)
   const setOpenToolWindow = useAppStore((state) => state.setOpenToolWindow)
   const bookmarks = useAppStore((state) => state.bookmarks)
   const setAllBookmarksEnabled = useAppStore((state) => state.setAllBookmarksEnabled)
@@ -327,6 +329,7 @@ export const App = (): React.JSX.Element => {
   const setBackendStatus = useAppStore((state) => state.setBackendStatus)
   const clearError = useAppStore((state) => state.clearError)
   const debugState = useAppStore((state) => state.debugState)
+  const debugSessionId = useAppStore((state) => state.debugSessionId)
   const stoppedReason = useAppStore((state) => state.stoppedReason)
   const handleDebugEvent = useAppStore((state) => state.handleDebugEvent)
   const continueDebug = useAppStore((state) => state.continueDebug)
@@ -401,13 +404,19 @@ export const App = (): React.JSX.Element => {
   }, [setBackendStatus])
   useEffect(() => window.dnSpy.onDebugEvent((event) => { void handleDebugEvent(event) }), [handleDebugEvent])
 
+  // Upstream opens the Locals window from `AutoShowLocalsWindow`, which hangs off `DbgManager_IsDebuggingChanged`:
+  // it is shown once, when a debugging session starts, and the Debugger options' "Show the Locals window when the
+  // debugger starts" can turn it off. Breaking, stepping and continuing all leave the session — and its
+  // `debugSessionId` — as it was, so they must not move the dock's tabs; only a session that has just started may.
   useEffect(() => {
+    if (!debugSessionId || !loadAppOptions().debugger.autoOpenLocalsWindow)
+      return
     const locals = model.getNodeById('locals')
-    if (debugState === 'stopped' && locals instanceof TabNode && !locals.isSelected()) {
+    if (locals instanceof TabNode && !locals.isSelected()) {
       model.doAction(Actions.selectTab('locals'))
       forceLayoutUpdate((value) => value + 1)
     }
-  }, [debugState, model])
+  }, [debugSessionId, model])
 
   // The editor keeps its row even when empty. A dock's row follows what it holds: one window shows none, and a
   // second window — dragged in, or brought back by the View menu — is and does. The change this makes comes
@@ -990,18 +999,38 @@ export const App = (): React.JSX.Element => {
     }
   }
 
+  // Debug navigation — a frame switch, Show Next Statement — brings a document that is already in the
+  // store to the front without decompiling it again, which is what a step cannot afford. Only a node
+  // with no tab at all pays for the lookup and the tab the bookmark path builds.
+  const revealDocumentTarget = async (nodeId: string): Promise<void> => {
+    const tabId = `doc:${nodeId}`
+    const tab = model.getNodeById(tabId)
+    if (tab instanceof TabNode) {
+      // Selecting the tab that is already selected would still count as a layout change, and a step
+      // asks for this on every stop.
+      if (!tab.isSelected()) {
+        model.doAction(Actions.selectTab(tabId))
+        forceLayoutUpdate((value) => value + 1)
+      }
+      return
+    }
+    await shellCallbacksRef.current.openBookmarkTarget(nodeId)
+  }
+
   // The store cannot open tabs or tool windows itself, so it calls back into the shell. Handlers are
   // read through a ref because both close over the current workspace and layout.
-  const shellCallbacksRef = useRef({ openBookmarkTarget, showToolWindow, restoreSession })
-  shellCallbacksRef.current = { openBookmarkTarget, showToolWindow, restoreSession }
+  const shellCallbacksRef = useRef({ openBookmarkTarget, showToolWindow, restoreSession, revealDocumentTarget })
+  shellCallbacksRef.current = { openBookmarkTarget, showToolWindow, restoreSession, revealDocumentTarget }
   useEffect(() => {
     setOpenNodeById((nodeId) => shellCallbacksRef.current.openBookmarkTarget(nodeId))
     setOpenToolWindow((tabId) => shellCallbacksRef.current.showToolWindow(tabId))
+    setRevealDocument((nodeId) => shellCallbacksRef.current.revealDocumentTarget(nodeId))
     return () => {
       setOpenNodeById(undefined)
       setOpenToolWindow(undefined)
+      setRevealDocument(undefined)
     }
-  }, [setOpenNodeById, setOpenToolWindow])
+  }, [setOpenNodeById, setOpenToolWindow, setRevealDocument])
 
   // The one place the previous session comes back. It runs once the backend can answer, and puts the
   // assemblies, the branches, the tabs and the selection back before anything else looks at the state.
