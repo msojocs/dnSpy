@@ -8,6 +8,8 @@
  * dnSpy/dnSpy.Contracts.DnSpy/Settings/Dialog/AppSettingsConstants.cs.
  */
 
+import { useSyncExternalStore } from 'react'
+
 export type ThemeName = 'blue' | 'light' | 'dark' | 'hc'
 /** Runtime kind hosted by the DAP backend (upstream `RuntimeDisplayName` is ".NET"). */
 export type DebugEngine = 'dotnet'
@@ -679,12 +681,42 @@ export const saveAppOptions = (options: AppOptions): void => {
   if (typeof localStorage === 'undefined')
     return
   localStorage.setItem(STORAGE_KEY, JSON.stringify(options))
+  window.dispatchEvent(new Event(APP_OPTIONS_CHANGED_EVENT))
 }
 
 export const resetAppOptions = (): AppOptions => {
-  if (typeof localStorage !== 'undefined')
+  if (typeof localStorage !== 'undefined') {
     localStorage.removeItem(STORAGE_KEY)
+    window.dispatchEvent(new Event(APP_OPTIONS_CHANGED_EVENT))
+  }
   return cloneDefault()
 }
 
 const cloneDefault = (): AppOptions => JSON.parse(JSON.stringify(defaultAppOptions)) as AppOptions
+
+/** Fired on `window` when `saveAppOptions` or `resetAppOptions` has rewritten the stored options. */
+export const APP_OPTIONS_CHANGED_EVENT = 'app-options-changed'
+
+// The snapshot `useAppOptions` hands out; only the change event may swap it, so React sees a stable
+// reference between them. It is loaded lazily — module evaluation is too early to read storage.
+let optionsSnapshot: AppOptions | null = null
+
+const subscribeToAppOptions = (onChange: () => void): (() => void) => {
+  const listener = (): void => {
+    optionsSnapshot = loadAppOptions()
+    onChange()
+  }
+  window.addEventListener(APP_OPTIONS_CHANGED_EVENT, listener)
+  return () => window.removeEventListener(APP_OPTIONS_CHANGED_EVENT, listener)
+}
+
+/**
+ * Reads the options the way a bound control upstream does: the value tracks the dialog's save, which
+ * is the only writer. Options live in localStorage alone, so this subscription is the one bridge
+ * into render.
+ */
+export const useAppOptions = (): AppOptions =>
+  useSyncExternalStore(subscribeToAppOptions, () => {
+    optionsSnapshot ??= loadAppOptions()
+    return optionsSnapshot
+  })

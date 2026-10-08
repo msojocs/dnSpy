@@ -51,7 +51,7 @@ test('packaged application starts its bundled backend and discovers the debugger
     await expect(namespaceRow).toBeVisible()
     await namespaceRow.locator('.tree-expander').click({ force: true })
     await expect(namespaceRow).toHaveAttribute('aria-expanded', 'true')
-    const helloRequest = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest$/ })
+    const helloRequest = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest @02000005$/ })
     await expect(helloRequest).toBeVisible()
     await helloRequest.dblclick({ force: true })
     await expect(page.locator('.monaco-editor')).toBeVisible()

@@ -76,6 +76,82 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		Assert.Contains("Class RpcException", visualBasic.Text, StringComparison.OrdinalIgnoreCase);
 	}
 
+	/// <summary>
+	/// A method's tab wears the WPF title — "name(params) : return" — while its tree label keeps the short
+	/// form, because the row already has a tooltip with the full signature and the tab does not. The row
+	/// itself is composed on the client from the token and return type below.
+	/// </summary>
+	[Fact]
+	public async Task DecompileMethod_TitleCarriesTheReturnTypeButTheTreeLabelDoesNot() {
+		var (_, opened, node, document) = await OpenMethodDocumentAsync("Calculate(");
+
+		Assert.Equal("Calculate(int, int)", node.Label);
+		Assert.Equal("Calculate(int, int) : int", document.Title);
+
+		// The IL document of the same method names it the same way, whatever language opened it.
+		var il = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, node.Id, DecompilerLanguage.IL),
+			TestContext.Current.CancellationToken);
+		Assert.Equal(document.Title, il.Title);
+	}
+
+	/// <summary>
+	/// The tree DTO hands the client the raw pieces dnSpy's NodeFormatter composes a row out of — the
+	/// metadata token of anything that is a metadata row, and the type a member's row names after the
+	/// colon — while the label itself stays the bare name that bookmarks and output messages quote.
+	/// </summary>
+	[Fact]
+	public async Task TreeNodes_CarryTokenAndReturnTypeForTheClientToFormatRowsWith() {
+		var path = typeof(HelloRequest).Assembly.Location;
+		using var module = ModuleDefMD.Load(path);
+		var getCode = module.GetTypes().Single(type => type.Name == "RpcException").Methods.Single(method => method.Name == "get_Code");
+
+		var opened = await OpenContractsAssemblyAsync();
+		var roots = await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken);
+		var assembly = Assert.Single(roots.Nodes);
+		Assert.True(assembly.MetadataToken.HasValue, "The assembly row should carry its token like dnSpy's tree does.");
+
+		var moduleNode = Assert.Single(await ChildrenAsync(opened.WorkspaceId, assembly.Id), node => node.Kind == "module");
+		Assert.True(moduleNode.MetadataToken.HasValue);
+		var contractNamespace = Assert.Single(await ChildrenAsync(opened.WorkspaceId, moduleNode.Id), n => n.Label == "dnSpy.Backend.Contracts");
+		// A namespace and the group folders are no metadata rows, so dnSpy writes no token for them.
+		Assert.Null(contractNamespace.MetadataToken);
+		Assert.Null(contractNamespace.ReturnType);
+
+		var helloRequest = Assert.Single(await ChildrenAsync(opened.WorkspaceId, contractNamespace.Id), n => n.Label == "HelloRequest");
+		Assert.True(helloRequest.MetadataToken.HasValue);
+		Assert.Null(helloRequest.ReturnType);
+
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
+		var rpcMembers = await ChildrenAsync(opened.WorkspaceId, rpcException.Id);
+		var getCodeNode = Assert.Single(rpcMembers, member => member.Label == "get_Code()");
+		Assert.Equal(unchecked((int)getCode.MDToken.Raw), getCodeNode.MetadataToken);
+		Assert.Equal("int", getCodeNode.ReturnType);
+		var codeProperty = Assert.Single(rpcMembers, member => member.Kind == "property" && member.Label == "Code");
+		Assert.Equal("int", codeProperty.ReturnType);
+		Assert.True(codeProperty.MetadataToken.HasValue);
+	}
+
+	/// <summary>
+	/// The types a row writes after the colon and inside a parameter list carry the C# decompiler's
+	/// spelling — System.Int32 as "int", a generic instance with its actual arguments — because that
+	/// is what the WPF tree shows, not the CLR names dnlib hands out.
+	/// </summary>
+	[Fact]
+	public async Task TreeNodes_WriteMemberTypesTheWayTheCSharpDecompilerSpellsThem() {
+		var opened = await OpenContractsAssemblyAsync();
+		var helloResponse = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloResponse");
+		var members = await ChildrenAsync(opened.WorkspaceId, helloResponse.Id);
+		var capabilities = Assert.Single(members, member => member.Kind == "property" && member.Label == "Capabilities");
+		Assert.Equal("IReadOnlyDictionary<string, bool>", capabilities.ReturnType);
+		// The primary constructor wears its parameter list; the record's copy constructor is the other .ctor.
+		Assert.Single(members, member => member.Label == ".ctor(int, string, string, string, string, IReadOnlyDictionary<string, bool>)");
+
+		var openRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "OpenWorkspaceRequest");
+		var openRequestMembers = await ChildrenAsync(opened.WorkspaceId, openRequest.Id);
+		Assert.Single(openRequestMembers, member => member.Label == ".ctor(IReadOnlyList<string>)");
+	}
+
 	[Fact]
 	public async Task DecompileWholeModule_ProducesCodeStatements() {
 		// The contracts assembly is nearly all primary-constructor records and constants, so almost none of it has

@@ -46,6 +46,14 @@ export interface TreeNode {
    * name a node by. See `SavedSession` in the app store.
    */
   key?: string
+  /**
+   * The raw pieces the WPF-style row text is composed from: "name : RetType @06000004". The token is the
+   * raw MDToken, present only on the rows dnSpy's NodeFormatter writes one for; the return type only on
+   * members whose row names a type after the colon. The label stays the bare name — bookmarks and output
+   * messages quote it.
+   */
+  metadataToken?: number
+  returnType?: string
 }
 
 export interface TreeNodesResponse {

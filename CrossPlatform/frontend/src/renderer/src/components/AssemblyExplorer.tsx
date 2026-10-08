@@ -24,6 +24,7 @@ import {
 import type { TreeNode } from '../../../shared/protocol'
 import { useAppStore } from '../app-store'
 import { useLanguage } from '../localization'
+import { useAppOptions } from './app-options'
 
 interface AssemblyExplorerProps {
   onOpenNode(node: TreeNode): void
@@ -60,7 +61,27 @@ export const NodeIcon = ({ icon, expanded = false }: { icon?: string; expanded?:
 
 const contextMenuItem = (key: string, label: string, onSelect: () => void): IPopupMenuItem => ({ key, label, onSelect })
 
-const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps & { node: TreeNode; depth: number }): React.JSX.Element => {
+// The kinds whose row names a type after the colon, and the ones dnSpy's NodeFormatter appends a raw
+// metadata token to — members, assemblies, modules and assembly references, but not namespaces, the
+// group folders, resources or the PE/ELF structures.
+const KINDS_WITH_RETURN_TYPE = new Set(['method', 'field', 'property', 'event'])
+const KINDS_WITH_TOKEN = new Set(['type', 'assembly', 'module', 'assemblyreference', ...KINDS_WITH_RETURN_TYPE])
+
+const formatMetadataToken = (token: number): string =>
+  `@${(token >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
+
+/**
+ * The text a tree row wears — dnSpy's NodeFormatter writes "name : RetType @06000004": members name
+ * their type after a colon, and a metadata row gets its token appended unless the user turned tokens
+ * off. The tooltip keeps the bare label, which is the full signature the row abbreviates.
+ */
+export const composeTreeRowText = (label: string, node: TreeNode, showToken: boolean): string => {
+  const typeSuffix = node.returnType != null && KINDS_WITH_RETURN_TYPE.has(node.kind) ? ` : ${node.returnType}` : ''
+  const tokenSuffix = showToken && node.metadataToken != null && KINDS_WITH_TOKEN.has(node.kind) ? ` ${formatMetadataToken(node.metadataToken)}` : ''
+  return `${label}${typeSuffix}${tokenSuffix}`
+}
+
+const TreeRow = memo(({ node, depth, showToken, onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps & { node: TreeNode; depth: number; showToken: boolean }): React.JSX.Element => {
   const children = useAppStore((state) => state.children[node.id])
   const expanded = useAppStore((state) => state.expanded[node.id] ?? false)
   const loading = useAppStore((state) => state.loadingNodes[node.id] ?? false)
@@ -129,10 +150,10 @@ const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onSho
           {loading ? <LoaderCircle className="spin" size={13} /> : node.hasChildren ? expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} /> : null}
         </button>
         <span className={`tree-icon kind-${node.kind} icon-${node.icon ?? 'item'}`}><NodeIcon icon={node.icon} expanded={expanded} /></span>
-        <span className="tree-label">{label}</span>
+        <span className="tree-label">{composeTreeRowText(label, node, showToken)}</span>
       </div>
       {expanded && children?.map((child) => (
-        <TreeRow key={child.id} node={child} depth={depth + 1} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
+        <TreeRow key={child.id} node={child} depth={depth + 1} showToken={showToken} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
       ))}
     </>
   )
@@ -140,6 +161,7 @@ const TreeRow = memo(({ node, depth, onOpenNode, onAnalyzeNode, onShowHex, onSho
 
 export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowModuleInfo }: AssemblyExplorerProps): React.JSX.Element => {
   const roots = useAppStore((state) => state.roots)
+  const showToken = useAppOptions().assemblyExplorer.showToken
   const { t } = useLanguage()
 
   if (roots.length === 0)
@@ -148,7 +170,7 @@ export const AssemblyExplorer = ({ onOpenNode, onAnalyzeNode, onShowHex, onShowM
   return (
     <div className="assembly-tree" role="tree" aria-label={t('Assembly Explorer')}>
       {roots.map((root) => (
-        <TreeRow key={root.id} node={root} depth={0} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
+        <TreeRow key={root.id} node={root} depth={0} showToken={showToken} onOpenNode={onOpenNode} onAnalyzeNode={onAnalyzeNode} onShowHex={onShowHex} onShowModuleInfo={onShowModuleInfo} />
       ))}
     </div>
   )

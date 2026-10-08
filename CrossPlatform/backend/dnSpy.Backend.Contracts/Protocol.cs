@@ -108,6 +108,11 @@ public sealed record TreeNodesResponse(IReadOnlyList<TreeNodeDto> Nodes);
 /// <paramref name="Id"/> is a counter value that is issued in the order nodes are first materialised,
 /// so it does not survive a restart. <paramref name="Key"/> does: it is built from the module's path
 /// and the metadata token, which is what a client stores to find the same node in a later session.
+/// <para><paramref name="MetadataToken"/> and <paramref name="ReturnType"/> are the raw pieces the
+/// client composes the WPF tree text out of — "name : RetType @06000004" — so the label itself stays
+/// the bare member name that bookmarks, output messages and tests quote. The token is the raw
+/// <c>MDToken.Raw</c>, present only where the WPF tree writes one; the return type only on members
+/// whose row names one after a colon.</para>
 /// </summary>
 public sealed record TreeNodeDto(
 	string Id,
@@ -116,7 +121,9 @@ public sealed record TreeNodeDto(
 	bool HasChildren,
 	string? Description = null,
 	string? Icon = null,
-	string? Key = null);
+	string? Key = null,
+	int? MetadataToken = null,
+	string? ReturnType = null);
 
 public enum DecompilerLanguage {
 	CSharp,

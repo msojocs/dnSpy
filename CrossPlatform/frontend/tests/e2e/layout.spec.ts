@@ -175,7 +175,8 @@ test('keeps the editor tab strip after closing and reopening the last document',
   await page.getByRole('button', { name: 'Open Assembly' }).first().click()
   const assembly = page.locator('.tree-row[data-kind="assembly"]').first()
   await expect(assembly).toBeVisible()
-  const title = await assembly.locator('.tree-label').innerText()
+  // The row wears dnSpy's token suffix; the tab names the document, which carries none.
+  const title = (await assembly.locator('.tree-label').innerText()).replace(/ @[0-9A-F]{8}$/, '')
   await assembly.dblclick()
   const tab = page.getByRole('tab', { name: title, exact: true })
   await expect(tab).toBeVisible()
@@ -318,8 +319,8 @@ test('splits the editor group without disturbing the tool windows', async () => 
   await page.locator('.tree-row[data-kind="assembly"] .tree-expander').first().click()
   await page.locator('.tree-row[data-kind="module"]').filter({ hasText: 'dnSpy.Backend.Contracts.dll' }).locator('.tree-expander').click()
   await page.locator('.tree-row[data-kind="namespace"]').filter({ hasText: /^dnSpy\.Backend\.Contracts$/ }).locator('.tree-expander').click()
-  await page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest$/ }).dblclick()
-  const tab = page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })
+  await page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^HelloRequest @02000005$/ }).dblclick()
+  const tab = page.getByRole('tab', { name: 'HelloRequest' })
   await expect(tab).toBeVisible()
 
   await tab.click({ button: 'right' })
@@ -338,6 +339,6 @@ test('splits the editor group without disturbing the tool windows', async () => 
   // "Close All Tabs" reaches the documents only; the tool windows are a dock of their own.
   await tab.last().click({ button: 'right' })
   await page.getByRole('menu', { name: 'Tab actions' }).getByRole('menuitem', { name: 'Close All Tabs' }).click()
-  await expect(page.getByRole('tab', { name: 'dnSpy.Backend.Contracts.HelloRequest' })).toHaveCount(0)
+  await expect(page.getByRole('tab', { name: 'HelloRequest' })).toHaveCount(0)
   await expect(page.getByRole('tab', { name: 'Locals' })).toBeVisible()
 })

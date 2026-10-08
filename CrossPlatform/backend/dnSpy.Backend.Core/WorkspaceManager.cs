@@ -1465,7 +1465,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			var statements = BuildCodeStatements(syntaxTree, decompiler, module, cancellationToken);
 			RefreshStatementCache();
 			codeStatementsByNode[$"{node.Id}:{stateId}"] = statements;
-			return new DecompileResponse(GetLabel(node), "csharp", output.ToString(), output.Spans,
+			return new DecompileResponse(GetDocumentTitle(node), "csharp", output.ToString(), output.Spans,
 				decompiler.Errors.Select(e => new DiagnosticDto("warning", e.ToString())).ToArray()) { CodeStatements = statements };
 		}
 
@@ -1560,7 +1560,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				var diagnostics = decompiler.Errors
 					.Select(e => new DiagnosticDto("warning", e.ToString()))
 					.ToArray();
-				return new DecompileResponse(GetLabel(node), "csharp", text, Array.Empty<TextSpanDto>(), diagnostics);
+				return new DecompileResponse(GetDocumentTitle(node), "csharp", text, Array.Empty<TextSpanDto>(), diagnostics);
 			}
 			catch (OperationCanceledException) {
 				throw;
@@ -1855,7 +1855,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			MetadataTokens.EntityHandle(unchecked((int)provider.MDToken.Raw));
 
 		DecompileResponse DecompileIL(NodeEntry node) => new(
-			GetLabel(node),
+			GetDocumentTitle(node),
 			"il",
 			ILFormatter.Format(node),
 			Array.Empty<TextSpanDto>(),
@@ -1910,7 +1910,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				var diagnostics = session.Decompiler.Errors
 					.Select(error => new DiagnosticDto("warning", error.ToString()))
 					.ToArray();
-				return new DecompileResponse(GetLabel(node), "il", text, Array.Empty<TextSpanDto>(), diagnostics);
+				return new DecompileResponse(GetDocumentTitle(node), "il", text, Array.Empty<TextSpanDto>(), diagnostics);
 			}
 			catch (OperationCanceledException) {
 				throw;
@@ -3122,12 +3122,33 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			// Show only the type name in the tree (dnSpy behavior); the namespace already appears
 			// on the parent namespace node, and the full name stays available via the tooltip.
 			TypeDef type => type.Name.String,
-			MethodDef method => $"{method.Name}{FormatParameterList(method)}",
+			// The WPF tree writes a method's parameters through the decompiler too, so the label
+			// reads "Calculate(int, int)" rather than "Calculate(Int32, Int32)".
+			MethodDef method => $"{method.Name}{CSharpTypeName.ParameterList(method)}",
 			FieldDef field => field.Name.String,
 			PropertyDef property => property.Name.String,
 			EventDef @event => @event.Name.String,
 			_ => member.ToString() ?? string.Empty,
 		};
+
+		/// <summary>
+		/// The label a method's tab wears. dnSpy's <c>MethodNode.Write</c> with <c>DocumentNodeWriteOptions.Title</c>
+		/// is what the WPF tab shows — it is the tree's "name(params)" plus the decompiler-written
+		/// <c>" : RetType"</c> the tab adds behind it. The tree label keeps the short form — the client
+		/// composes the row's "name(params) : RetType @token" from <see cref="TreeNodeDto.ReturnType"/> and
+		/// <see cref="TreeNodeDto.MetadataToken"/> — because the row also has a tooltip with the full
+		/// signature, which the tab does not.
+		/// </summary>
+		static string GetMethodTabTitle(MethodDef method) =>
+			$"{GetMemberDisplayName(method)} : {CSharpTypeName.Of(method.Parameters.ReturnParameter.ParamDef, method.ReturnType)}";
+
+		/// <summary>
+		/// The title a tab shows for the given document node. A method node names its return type after
+		/// the parameter list — dnSpy's tab for one reads "name(params) : return" — while every other
+		/// kind keeps what the tree shows.
+		/// </summary>
+		static string GetDocumentTitle(NodeEntry node) =>
+			node.Kind == NodeKind.Method && node.Value is MethodDef method ? GetMethodTabTitle(method) : GetLabel(node);
 
 		static string FormatParameterList(MethodDef method) => $"({string.Join(", ", method.Parameters.Where(p => !p.IsHiddenThisParameter).Select(p => p.Type.TypeName))})";
 
@@ -3138,7 +3159,27 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			HasChildren(node),
 			GetDescription(node),
 			GetIcon(node),
-			node.Key);
+			node.Key,
+			GetMetadataToken(node),
+			GetMemberReturnType(node));
+
+		// The token the WPF tree appends as "@06000004" — every node whose value is a metadata row
+		// (assemblies, modules, assembly references, types and members); namespaces, the group folders,
+		// resources and the PE/ELF structures get none, same as dnSpy's NodeFormatter.
+		static int? GetMetadataToken(NodeEntry node) =>
+			node.Value is IMDTokenProvider provider ? unchecked((int)provider.MDToken.Raw) : null;
+
+		// The type a member's row names after the colon — through the C# decompiler's spelling, the
+		// way dnSpy's tree writes it ("int", "Task<int>"). dnSpy writes it for methods, fields,
+		// properties and events; everything else has nothing to name.
+		static string? GetMemberReturnType(NodeEntry node) => node.Value switch {
+			// WPF passes the return parameter for a method, so a "dynamic" return is read off it.
+			MethodDef method => CSharpTypeName.Of(method.Parameters.ReturnParameter.ParamDef, method.ReturnType),
+			FieldDef field => CSharpTypeName.Of(field, field.FieldSig?.Type),
+			PropertyDef property => CSharpTypeName.Of(property, property.PropertySig?.GetRetType()),
+			EventDef @event => CSharpTypeName.Of(@event, @event.EventType),
+			_ => null,
+		};
 
 		static string GetLabel(NodeEntry node) => node.Kind switch {
 			NodeKind.Assembly => GetAssemblyLabel(node),

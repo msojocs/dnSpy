@@ -856,15 +856,21 @@ export const App = (): React.JSX.Element => {
     if (current.workspaceId !== workspaceId || current.workspaceGeneration !== workspaceGeneration)
       return
     const tabId = `doc:${documentId}`
+    // A method's tab shows the title the backend decompiled it under — "name(params) : return" — not
+    // the tree label, which drops the return type. Anything else already labels the two the same way.
+    const tabName = current.documents[documentId]?.title ?? node.label
     if (model.getNodeById(tabId)) {
       model.doAction(Actions.selectTab(tabId))
+      const existing = model.getNodeById(tabId)
+      if (existing instanceof TabNode && existing.getName() !== tabName)
+        model.doAction(Actions.renameTab(tabId, tabName))
     } else {
       const targetTabSet = getTargetDocumentTabSet(model)
       if (!targetTabSet) return
       model.doAction(Actions.addNode({
         type: 'tab',
         id: tabId,
-        name: node.label,
+        name: tabName,
         component: 'document',
         config: { documentId },
       }, targetTabSet.getId(), DockLocation.CENTER, -1, true))
