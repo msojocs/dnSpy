@@ -56,6 +56,12 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
   const launchDebug = useAppStore((state) => state.launchDebug)
   const { t } = useLanguage()
   const [program, setProgram] = useState(() => defaultDebugTarget() ?? '')
+  // The upstream .NET Framework page validates the executable against the file system on every keystroke
+  // (ValidatesOnDataErrors + UpdateSourceTrigger=PropertyChanged): a path that is not a file draws the red
+  // error border and keeps OK disabled. The renderer cannot reach the disk, so the answer comes from the
+  // main process. A blank field is left unflagged — the dialog opens on it before the user has typed
+  // anything — but it still keeps OK disabled, exactly like upstream's MissingFilename.
+  const [programMissing, setProgramMissing] = useState(false)
   const [argumentsText, setArgumentsText] = useState('')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [environmentText, setEnvironmentText] = useState('')
@@ -71,6 +77,21 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [onClose])
+
+  // Re-runs per keystroke, like the upstream binding. The stale answers a fast typist leaves behind are
+  // dropped by the cleanup flag so an earlier "missing" cannot overwrite a later "found".
+  useEffect(() => {
+    const trimmed = program.trim()
+    if (!trimmed) {
+      setProgramMissing(false)
+      return
+    }
+    let cancelled = false
+    void window.dnSpy.pathExists(trimmed).then((exists) => {
+      if (!cancelled) setProgramMissing(!exists)
+    })
+    return () => { cancelled = true }
+  }, [program])
 
   // Same Tab trap as the Options dialog: focus must not reach the toolbar behind the modal.
   const keepFocusInDialog = (event: React.KeyboardEvent): void => {
@@ -91,7 +112,7 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
   }
 
   const environment = parseEnvironment(environmentText)
-  const canConfirm = program.trim().length > 0 && environment !== undefined
+  const canConfirm = program.trim().length > 0 && !programMissing && environment !== undefined
 
   const confirm = (): void => {
     if (!canConfirm) return
@@ -124,7 +145,7 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
           <span />
 
           <label htmlFor="debug-program-exe">{t('Executable')}</label>
-          <input id="debug-program-exe" value={program} onChange={(event) => setProgram(event.target.value)} />
+          <input id="debug-program-exe" aria-invalid={programMissing} value={program} onChange={(event) => setProgram(event.target.value)} />
           <button type="button" onClick={() => void window.dnSpy.chooseDebugTarget().then((path) => { if (path) setProgram(path) })}>{t('Browse...')}</button>
 
           <label htmlFor="debug-program-args">{t('Arguments')}</label>

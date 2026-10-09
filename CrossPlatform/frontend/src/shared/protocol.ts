@@ -854,6 +854,9 @@ export interface DnSpyApi {
   readTextFile(kind?: 'bookmarks' | 'breakpoints'): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   chooseDebugDirectory(): Promise<string | undefined>
+  /** Whether a path names a file that is really on disk — the Debug Program dialog's live check on the
+   * executable field, the port's `File.Exists`. */
+  pathExists(path: string): Promise<boolean>
   listDebugProcesses(): Promise<DebugProcess[]>
   launchDebug(options: DebugLaunchOptions): Promise<DebugStartResponse>
   attachDebug(processId: number, workspaceId?: string): Promise<DebugStartResponse>

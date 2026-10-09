@@ -15,5 +15,8 @@ Object.defineProperty(window, 'dnSpy', {
     isRunningAsAdministrator: async () => false,
     restartAsAdministrator: async () => undefined,
     onWindowMaximizedChange: () => () => undefined,
+    // The Debug Program dialog checks its executable against the disk on every keystroke; assume the
+    // prefilled target is real unless a test overrides this to drive the missing-file path.
+    pathExists: async () => true,
   },
 })

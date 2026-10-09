@@ -1329,6 +1329,17 @@ select:focus-visible,
   font-family: inherit;
 }
 
+/* The upstream validation ErrorTemplate: a 1px red frame around a field whose value is invalid. */
+.debug-program-fields input[aria-invalid='true'] {
+  border-color: var(--danger);
+}
+
+/* The focus ring is an inset outline that would otherwise paint over the red frame; keep it red while the
+   field is focused rather than waiting for focus to leave. */
+.debug-program-fields input[aria-invalid='true']:focus-visible {
+  outline-color: var(--danger);
+}
+
 .debug-program-wide {
   grid-column: 2 / 4;
 }

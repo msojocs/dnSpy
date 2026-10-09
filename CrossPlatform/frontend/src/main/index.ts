@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { BackendClient } from './backend-client'
@@ -602,6 +602,15 @@ const registerIpc = (): void => {
   ipcMain.handle('backend:status:get', () => lastBackendStatus)
   ipcMain.handle('app:startupOptions', () => ({ initialPaths, noLoadFiles }))
   ipcMain.handle('app:filterExistingPaths', (_event, paths: string[]) => paths.filter((candidate) => existsSync(candidate)))
+  // dnSpy's File.Exists: a directory is not a file, and any error — missing, unreadable — just means
+  // "no", so statSync inside a try rather than existsSync.
+  ipcMain.handle('app:pathExists', (_event, candidate: string) => {
+    try {
+      return statSync(candidate).isFile()
+    } catch {
+      return false
+    }
+  })
   ipcMain.handle('app:processId', () => process.pid)
   ipcMain.handle('app:setLocale', (_event, locale: UiLocale) => {
     if (locale === 'en' || locale === 'zh-CN')

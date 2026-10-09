@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../app-store'
 import { DebugProgramDialog, parseEnvironment, splitArguments } from './DebugProgramDialog'
@@ -12,6 +12,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 const dialog = (): HTMLElement => screen.getByRole('dialog', { name: 'Debug Program' })
@@ -115,6 +116,23 @@ describe('DebugProgramDialog', () => {
 
     fireEvent.change(field('Executable'), { target: { value: '   ' } })
     expect(ok()).toBeDisabled()
+  })
+
+  it('flags an executable that is not a file on disk and clears the flag when it is', async () => {
+    vi.spyOn(window.dnSpy, 'pathExists').mockImplementation(async (path) => path === '/tmp/DebugTarget.dll')
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+    const exe = field('Executable')
+    const ok = (): HTMLElement => within(dialog()).getByRole('button', { name: 'OK' })
+
+    // Upstream validates the path on every keystroke, so a value that names no file earns the red border
+    // and keeps OK disabled until the path is fixed.
+    fireEvent.change(exe, { target: { value: '/tmp/Gone.dll' } })
+    await waitFor(() => expect(exe).toHaveAttribute('aria-invalid', 'true'))
+    expect(ok()).toBeDisabled()
+
+    fireEvent.change(exe, { target: { value: '/tmp/DebugTarget.dll' } })
+    await waitFor(() => expect(exe).toHaveAttribute('aria-invalid', 'false'))
+    expect(ok()).toBeEnabled()
   })
 
   it('closes without launching on Cancel', () => {
