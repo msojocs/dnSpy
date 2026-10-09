@@ -96,6 +96,27 @@ const expandModule = async (scope: Locator | Page = page): Promise<void> => {
   await expandRow(scope.locator('.tree-row[data-kind="module"]').first())
 }
 
+interface Box {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** A source line and the gutter column beside it — the two coordinates a gutter click is built from.
+ * Monaco lays the editor out on its own, once when the document opens and again after a resize, and until
+ * it has, the margin holds no box to click in. Both are waited for rather than read once: a single read
+ * races the layout and throws "not laid out yet" on a slow machine. */
+const editorLayout = async (line: Locator, margin: Locator): Promise<{ lineBox: Box; marginBox: Box }> => {
+  await expect(line).toBeVisible()
+  await expect(margin).toBeVisible()
+  const lineBox = await line.boundingBox()
+  const marginBox = await margin.boundingBox()
+  if (!lineBox || !marginBox)
+    throw new Error('The editor is not laid out yet.')
+  return { lineBox, marginBox }
+}
+
 const openAssemblyAndNamespace = async (): Promise<void> => {
   await page.getByRole('button', { name: 'Open Assembly' }).first().click()
   await expect(page.getByRole('treeitem').first()).toContainText('dnSpy.Backend.Contracts')
@@ -329,7 +350,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ })
     await getCode.dblclick()
 
     await expect(page.locator('.document-view')).toHaveAttribute('data-reference-count', /^[1-9]\d*$/)
@@ -420,7 +441,7 @@ test.describe('the workspace shell', () => {
 
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ })
     await getCode.click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Edit Method Body...' }).click()
@@ -437,7 +458,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ })
     await getCode.click()
 
     // The hex group is listed in dnSpy's order, and only the entries that have something to point at are
@@ -519,7 +540,7 @@ test.describe('the workspace shell', () => {
     // land as an edit the user can undo.
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ }).click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Replace Method Body with stub...' }).click()
     await expect(page.getByText('Modified', { exact: true })).toBeVisible()
@@ -630,7 +651,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ }).click()
     await page.keyboard.press('Alt+Enter')
     const method = page.getByRole('dialog', { name: 'Edit Method' })
     await expect(method).toBeVisible()
@@ -673,10 +694,7 @@ test.describe('the workspace shell', () => {
     await showBreakpoints()
     const breakpointRows = page.locator('.breakpoint-row')
     const glyphs = page.locator('.breakpoint-glyph')
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, page.locator('.monaco-editor .margin').first())
     const clickGutter = async (): Promise<void> => {
       await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     }
@@ -707,10 +725,7 @@ test.describe('the workspace shell', () => {
     const glyphs = page.locator('.bookmark-glyph')
     await expect(rows).toHaveCount(0)
 
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, page.locator('.monaco-editor .margin').first())
     // The bookmark strip is the right-hand part of the margin — the breakpoint glyphs are on the left.
     await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
 
@@ -744,10 +759,7 @@ test.describe('the workspace shell', () => {
 
     const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
     await expect(bodyLine).toBeVisible()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, page.locator('.monaco-editor .margin').first())
     await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
 
     await showBookmarksWindow()
@@ -777,10 +789,7 @@ test.describe('the workspace shell', () => {
 
     const bodyLine = page.locator('.monaco-editor .view-lines .view-line').filter({ hasText: /Code\s*=\s*code/ }).first()
     await expect(bodyLine).toBeVisible()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, page.locator('.monaco-editor .margin').first())
     await page.mouse.click(marginBox.x + marginBox.width - 7, lineBox.y + lineBox.height / 2)
 
     await showBookmarksWindow()
@@ -844,7 +853,7 @@ test.describe('the workspace shell', () => {
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
     // The tree row keeps focus, so the F9 handler is not suppressed by the editor guard.
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008CC$/ }).click()
 
     const breakpointRows = page.locator('.breakpoint-row')
     await page.keyboard.press('F9')
@@ -950,10 +959,7 @@ test.describe('the in-process debug engine', () => {
 
     await showBreakpoints()
     const glyphs = page.locator('.breakpoint-glyph')
-    const lineBox = await returnLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(returnLine, editor.locator('.margin').first())
     // A click in the margin left of the line numbers toggles a breakpoint on that line.
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
 
@@ -1034,10 +1040,7 @@ test.describe('the in-process debug engine', () => {
     const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
     await expect(bodyLine).toBeVisible()
     await showBreakpoints()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, editor.locator('.margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Calculate:')
 
@@ -1107,10 +1110,7 @@ test.describe('the in-process debug engine', () => {
     const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
     await expect(bodyLine).toBeVisible()
     await showBreakpoints()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, editor.locator('.margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Calculate:')
 
@@ -1154,10 +1154,7 @@ test.describe('the in-process debug engine', () => {
     await page.mouse.wheel(0, 400)
     await expect(callLine).toBeVisible()
     await showBreakpoints()
-    const lineBox = await callLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(callLine, editor.locator('.margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     await expect(page.locator('.breakpoint-row')).toContainText('DebugTarget.Program.Main:')
 
@@ -1193,10 +1190,7 @@ test.describe('the in-process debug engine', () => {
     const sumLine = editor.locator('.view-lines .view-line').filter({ hasText: /=\s*\w+\s*\+\s*\w+\s*;/ }).first()
     await expect(sumLine).toBeVisible()
     await showBreakpoints()
-    const lineBox = await sumLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(sumLine, editor.locator('.margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     // The statement's own code starts inside the sequence point that covers it — the machine's field store
     // is charged to it — so where the engine can arm the breakpoint is not where the line begins. The row
@@ -1242,10 +1236,7 @@ test.describe('the in-process debug engine', () => {
     const bodyLine = editor.locator('.view-lines .view-line').filter({ hasText: /\+=\s*\w+\s*;/ }).first()
     await expect(bodyLine).toBeVisible()
     await showBreakpoints()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await editor.locator('.margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, editor.locator('.margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
 
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
@@ -1468,10 +1459,7 @@ test.describe('the breakpoints a run leaves behind', () => {
     await expect(bodyLine).toBeVisible()
 
     await showBreakpoints()
-    const lineBox = await bodyLine.boundingBox()
-    const marginBox = await page.locator('.monaco-editor .margin').first().boundingBox()
-    if (!lineBox || !marginBox)
-      throw new Error('The editor is not laid out yet.')
+    const { lineBox, marginBox } = await editorLayout(bodyLine, page.locator('.monaco-editor .margin').first())
     await page.mouse.click(marginBox.x + 8, lineBox.y + lineBox.height / 2)
     await expect(page.locator('.breakpoint-row')).toContainText('dnSpy.Backend.Contracts.RpcException..ctor')
 

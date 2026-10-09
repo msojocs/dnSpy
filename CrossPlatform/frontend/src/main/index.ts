@@ -36,6 +36,8 @@ const nativeMessages = {
     openBreakpoints: '导入断点',
     selectDebugTarget: '选择要调试的 .NET 程序',
     dotNetPrograms: '.NET 程序',
+    selectDebugHost: '选择宿主可执行文件',
+    executables: '可执行文件',
     selectWorkingDirectory: '选择工作目录',
     restartFailed: '无法以管理员身份重启',
     restartNoResponse: '以管理员身份启动的窗口始终没有出现',
@@ -53,6 +55,8 @@ const nativeMessages = {
     openBreakpoints: 'Import Breakpoints',
     selectDebugTarget: 'Select .NET Program to Debug',
     dotNetPrograms: '.NET Programs',
+    selectDebugHost: 'Select Host Executable',
+    executables: 'Executables',
     selectWorkingDirectory: 'Select Working Directory',
     restartFailed: 'Could not restart with elevated rights',
     restartNoResponse: 'The window started with elevated rights never appeared',
@@ -526,6 +530,23 @@ const registerIpc = (): void => {
       properties: ['openFile'],
       filters: [
         { name: nativeText().dotNetPrograms, extensions: ['dll', 'exe'] },
+        { name: nativeText().allFiles, extensions: ['*'] },
+      ],
+    })
+    if (result.canceled || result.filePaths.length === 0)
+      return undefined
+    await dialogPathHistory?.rememberOpenedFile(result.filePaths[0])
+    return result.filePaths[0]
+  })
+  ipcMain.handle('debug:chooseHost', async () => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: nativeText().selectDebugHost,
+      defaultPath: dialogPathHistory?.openDirectory,
+      properties: ['openFile'],
+      filters: [
+        // The host is usually the `dotnet` CLI, which has no extension on Linux, so all files are
+        // offered alongside the executables the upstream picker filters for.
+        { name: nativeText().executables, extensions: ['exe'] },
         { name: nativeText().allFiles, extensions: ['*'] },
       ],
     })

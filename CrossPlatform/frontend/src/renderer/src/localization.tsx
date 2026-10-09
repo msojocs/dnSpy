@@ -167,6 +167,10 @@ const zhCN: Record<string, string> = {
   'Working Directory': '工作目录',
   // The Debug Program dialog's environment box; "Environment" alone already names an Options category.
   'Environment Variables': '环境变量',
+  // The CoreCLR page's host fields; "Host" names the executable the target is started through.
+  'Use host executable': '使用宿主可执行文件',
+  'Host': '宿主程序',
+  'Host Arguments': '程序参数',
   'Break at': '中断于',
   "Don't Break": '不要中断',
   'CreateProcess': 'CreateProcess',

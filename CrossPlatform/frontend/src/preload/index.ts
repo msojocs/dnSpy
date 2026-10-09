@@ -46,6 +46,7 @@ const api: DnSpyApi = {
   readTextFile: (kind) => ipcRenderer.invoke('dialog:openTextFile', kind),
   chooseDebugTarget: () => ipcRenderer.invoke('debug:chooseTarget'),
   chooseDebugDirectory: () => ipcRenderer.invoke('debug:chooseDirectory'),
+  chooseDebugHost: () => ipcRenderer.invoke('debug:chooseHost'),
   pathExists: (path) => ipcRenderer.invoke('app:pathExists', path),
   listDebugProcesses: () => ipcRenderer.invoke('debug:listProcesses'),
   launchDebug: (options) => ipcRenderer.invoke('debug:launch', options),

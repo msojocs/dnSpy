@@ -50,6 +50,15 @@ export const parseEnvironment = (input: string): Record<string, string> | undefi
   return environment
 }
 
+/**
+ * The host a framework-dependent assembly is run through unless the user says otherwise, ie. the
+ * upstream CoreCLR page's default. WPF derives it from `IsDotNetAppHostFilename`, which needs the
+ * file's bytes; here the dialog only sees the path, so a `.dll` is taken to need the host and an
+ * apphost (`.exe`, or a Linux apphost with no extension) to run on its own — the same guess the
+ * engine makes when the choice is left out.
+ */
+export const defaultsToHost = (program: string): boolean => program.trim().toLowerCase().endsWith('.dll')
+
 export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.Element => {
   const dialog = useRef<HTMLDivElement>(null)
   const defaultDebugTarget = useAppStore((state) => state.defaultDebugTarget)
@@ -65,6 +74,13 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
   const [argumentsText, setArgumentsText] = useState('')
   const [workingDirectory, setWorkingDirectory] = useState('')
   const [environmentText, setEnvironmentText] = useState('')
+  // The "use host executable" choice and the host it names, mirroring the upstream CoreCLR page. The
+  // default follows the target kind; a blank host path means "find the dotnet CLI", and its default
+  // argument is `exec`, exactly what upstream fills in.
+  const [useHost, setUseHost] = useState(() => defaultsToHost(program))
+  const [host, setHost] = useState('')
+  const [hostMissing, setHostMissing] = useState(false)
+  const [hostArgumentsText, setHostArgumentsText] = useState('exec')
   const [breakAt, setBreakAt] = useState<'dont-break' | 'create-process' | 'entry-point' | 'module-cctor-or-entry-point'>('dont-break')
 
   useEffect(() => {
@@ -93,6 +109,21 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
     return () => { cancelled = true }
   }, [program])
 
+  // Upstream validates the host the same way, and only when the box is ticked and a path was typed: an
+  // empty host is not an error, it is the request to find the dotnet CLI.
+  useEffect(() => {
+    const trimmed = host.trim()
+    if (!useHost || !trimmed) {
+      setHostMissing(false)
+      return
+    }
+    let cancelled = false
+    void window.dnSpy.pathExists(trimmed).then((exists) => {
+      if (!cancelled) setHostMissing(!exists)
+    })
+    return () => { cancelled = true }
+  }, [host, useHost])
+
   // Same Tab trap as the Options dialog: focus must not reach the toolbar behind the modal.
   const keepFocusInDialog = (event: React.KeyboardEvent): void => {
     if (event.key !== 'Tab' || !dialog.current)
@@ -112,7 +143,7 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
   }
 
   const environment = parseEnvironment(environmentText)
-  const canConfirm = program.trim().length > 0 && !programMissing && environment !== undefined
+  const canConfirm = program.trim().length > 0 && !programMissing && environment !== undefined && !(useHost && hostMissing)
 
   const confirm = (): void => {
     if (!canConfirm) return
@@ -129,6 +160,11 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
         : breakAt === 'module-cctor-or-entry-point'
           ? { breakKind: 'ModuleCctorOrEntryPoint' as const }
           : {}),
+      // The host choice always travels; the host itself and its arguments only when it is used, a blank
+      // path meaning "let the backend find the dotnet CLI".
+      useHost,
+      host: useHost ? host.trim() || undefined : undefined,
+      hostArguments: useHost ? splitArguments(hostArgumentsText) : undefined,
     })
   }
 
@@ -157,6 +193,18 @@ export const DebugProgramDialog = ({ onClose }: { onClose(): void }): React.JSX.
 
           <label htmlFor="debug-program-env">{t('Environment Variables')}</label>
           <textarea id="debug-program-env" className="debug-program-wide" placeholder={t('One KEY=VALUE per line')} value={environmentText} onChange={(event) => setEnvironmentText(event.target.value)} />
+
+          <label className="debug-program-wide debug-program-checkbox" htmlFor="debug-program-use-host">
+            <input id="debug-program-use-host" type="checkbox" checked={useHost} onChange={(event) => setUseHost(event.target.checked)} />
+            {t('Use host executable')}
+          </label>
+
+          <label htmlFor="debug-program-host">{t('Host')}</label>
+          <input id="debug-program-host" aria-invalid={useHost && hostMissing} disabled={!useHost} value={host} onChange={(event) => setHost(event.target.value)} />
+          <button type="button" disabled={!useHost} onClick={() => void window.dnSpy.chooseDebugHost().then((path) => { if (path) setHost(path) })}>{t('Browse...')}</button>
+
+          <label htmlFor="debug-program-host-args">{t('Host Arguments')}</label>
+          <input id="debug-program-host-args" className="debug-program-wide" disabled={!useHost} value={hostArgumentsText} onChange={(event) => setHostArgumentsText(event.target.value)} />
 
           <label htmlFor="debug-program-break">{t('Break at')}</label>
           <select id="debug-program-break" className="debug-program-wide" value={breakAt} onChange={(event) => {

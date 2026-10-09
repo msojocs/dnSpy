@@ -764,6 +764,14 @@ public sealed record EditNodeResponse(string NodeId, string Label, string Kind);
 
 public sealed record SaveModuleResponse(string Path, long Length, string Sha256);
 
+/// <summary>
+/// A launch request from the client. The host fields mirror the upstream CoreCLR page's
+/// "Use host executable" checkbox: <paramref name="UseHost"/> true starts the target through
+/// <paramref name="Host"/> as <c>host hostArgs program args</c>, false runs <paramref name="Program"/>
+/// itself (which must then be a native host, eg. an apphost), and null keeps the engine's own
+/// extension guess — a .dll through the host, anything else directly. <paramref name="HostArguments"/>
+/// are the host's own arguments, eg. <c>exec</c> for the <c>dotnet</c> CLI.
+/// </summary>
 public sealed record DebugLaunchRequest(
 	string Program,
 	IReadOnlyList<string>? Arguments = null,
@@ -771,7 +779,10 @@ public sealed record DebugLaunchRequest(
 	bool StopAtEntry = false,
 	IReadOnlyDictionary<string, string>? Environment = null,
 	string? WorkspaceId = null,
-	string? BreakKind = null);
+	string? BreakKind = null,
+	bool? UseHost = null,
+	string? Host = null,
+	IReadOnlyList<string>? HostArguments = null);
 
 public sealed record DebugProcessDto(int ProcessId, string Name, string? ExecutablePath);
 

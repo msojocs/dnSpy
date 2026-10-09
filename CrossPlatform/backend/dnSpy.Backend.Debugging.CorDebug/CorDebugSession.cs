@@ -111,7 +111,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		Process? child = null;
 		RuntimeStartup.State? startup = null;
 		try {
-			var launchCommand = GetLaunchCommand(program);
+			var launchCommand = GetLaunchCommand(request, program);
 			var startInfo = new ProcessStartInfo {
 				FileName = launchCommand.FileName,
 				WorkingDirectory = request.WorkingDirectory ?? Path.GetDirectoryName(program) ?? Environment.CurrentDirectory,
@@ -173,17 +173,31 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		};
 	}
 
+	/// <summary>The host a framework-dependent assembly is started through when the dialog leaves the
+	/// host path empty — the <c>dotnet</c> CLI on <c>PATH</c>. WPF looks up the machine's installed
+	/// host instead; on Linux the CLI that is on <c>PATH</c> is the one that can run the target.</summary>
+	const string DefaultDotNetHost = "dotnet";
+
 	/// <summary>
-	/// Resolves the process command for a managed debug target. Framework-dependent assemblies are
-	/// launched through the <c>dotnet</c> host; apphosts (including Linux apphosts without an
-	/// extension) must be executed directly. Passing an apphost to <c>dotnet</c> makes the CLI look
-	/// for a managed assembly with that native file name and produces the misleading
-	/// "dotnet-&lt;path&gt; does not exist" error.
+	/// Resolves the process command for a managed debug target, mirroring the upstream CoreCLR page's
+	/// "Use host executable" choice. With a host the target is started as <c>host hostArgs program
+	/// args</c> — the same line the WPF engine builds (<c>"host" hostArgs "filename" args</c>) — and
+	/// an empty host path falls back to the <c>dotnet</c> CLI. Without one the program is run
+	/// directly: an apphost (including Linux apphosts without an extension) on its own, since handing
+	/// one to <c>dotnet</c> makes the CLI look for a managed assembly with that native file name and
+	/// produces the misleading "dotnet-&lt;path&gt; does not exist" error. A request that never made
+	/// the choice keeps the extension guess this engine grew up with: .dll through the host,
+	/// anything else directly.
 	/// </summary>
-	static (string FileName, IReadOnlyList<string> Arguments) GetLaunchCommand(string program) {
-		if (string.Equals(Path.GetExtension(program), ".dll", StringComparison.OrdinalIgnoreCase))
-			return ("dotnet", [program]);
-		return (program, []);
+	static (string FileName, IReadOnlyList<string> Arguments) GetLaunchCommand(DebugLaunchRequest request, string program) {
+		var useHost = request.UseHost ?? string.Equals(Path.GetExtension(program), ".dll", StringComparison.OrdinalIgnoreCase);
+		if (!useHost)
+			return (program, []);
+
+		var host = string.IsNullOrWhiteSpace(request.Host) ? DefaultDotNetHost : request.Host;
+		var arguments = new List<string>(request.HostArguments ?? []);
+		arguments.Add(program);
+		return (host, arguments);
 	}
 
 	public static async Task<CorDebugSession> AttachAsync(int processId, string? workspaceId, IDebugSymbolResolver? symbols, CancellationToken cancellationToken) {

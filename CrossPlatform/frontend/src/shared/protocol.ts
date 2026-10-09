@@ -748,6 +748,17 @@ export interface DebugLaunchOptions {
   stopAtEntry?: boolean
   /** WPF-compatible startup break kind; omitted requests the legacy `stopAtEntry` behavior. */
   breakKind?: 'DontBreak' | 'CreateProcess' | 'EntryPoint' | 'ModuleCctorOrEntryPoint'
+  /**
+   * The upstream CoreCLR page's "Use host executable". `true` starts the target through `host`
+   * (`host hostArguments program arguments`); `false` runs `program` itself, which must then be a
+   * native host such as an apphost. Omitted keeps the engine's own extension guess — a .dll through
+   * the `dotnet` host, anything else directly.
+   */
+  useHost?: boolean
+  /** Path to the host (eg. `dotnet`), or omitted to let the backend find it on `PATH`. */
+  host?: string
+  /** Arguments for the host itself, eg. `['exec']` for the `dotnet` CLI. */
+  hostArguments?: string[]
   workspaceId?: string
 }
 
@@ -854,6 +865,8 @@ export interface DnSpyApi {
   readTextFile(kind?: 'bookmarks' | 'breakpoints'): Promise<string | undefined>
   chooseDebugTarget(): Promise<string | undefined>
   chooseDebugDirectory(): Promise<string | undefined>
+  /** Picks the host executable for the Debug Program dialog's "Use host executable" field. */
+  chooseDebugHost(): Promise<string | undefined>
   /** Whether a path names a file that is really on disk — the Debug Program dialog's live check on the
    * executable field, the port's `File.Exists`. */
   pathExists(path: string): Promise<boolean>

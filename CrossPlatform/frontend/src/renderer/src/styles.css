@@ -1344,6 +1344,24 @@ select:focus-visible,
   grid-column: 2 / 4;
 }
 
+/* The "use host executable" checkbox spans the row as a clickable label rather than a field row. */
+.debug-program-fields label.debug-program-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+/* ...which means the grid's text-field styling has to come back off its checkbox. */
+.debug-program-fields input[type='checkbox'] {
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  accent-color: var(--accent);
+}
+
 .debug-program-engine {
   color: var(--text-muted);
 }

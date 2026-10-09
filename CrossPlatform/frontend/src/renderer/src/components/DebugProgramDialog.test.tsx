@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../app-store'
-import { DebugProgramDialog, parseEnvironment, splitArguments } from './DebugProgramDialog'
+import { DebugProgramDialog, defaultsToHost, parseEnvironment, splitArguments } from './DebugProgramDialog'
 
 const launchDebug = vi.fn(async () => undefined)
 
@@ -44,6 +44,14 @@ describe('parseEnvironment', () => {
   })
 })
 
+describe('defaultsToHost', () => {
+  it('needs the host for a .dll and runs an apphost on its own, matching the engine default', () => {
+    expect(defaultsToHost('/tmp/App.dll')).toBe(true)
+    expect(defaultsToHost('/tmp/App.exe')).toBe(false)
+    expect(defaultsToHost('/tmp/App')).toBe(false)
+  })
+})
+
 describe('DebugProgramDialog', () => {
   it('prefills the executable from the module the workspace has open', () => {
     render(<DebugProgramDialog onClose={vi.fn()} />)
@@ -51,6 +59,9 @@ describe('DebugProgramDialog', () => {
     expect(field('Executable')).toHaveValue('/tmp/DebugTarget.dll')
     // Upstream defaults the CoreCLR page to DontBreak, and so does the port.
     expect(field('Break at')).toHaveValue('dont-break')
+    // A .dll runs through the host, which upstream ticks by default and fills with `exec`.
+    expect(field('Use host executable')).toBeChecked()
+    expect(field('Host Arguments')).toHaveValue('exec')
   })
 
   it('launches with the values the dialog collected', () => {
@@ -68,7 +79,63 @@ describe('DebugProgramDialog', () => {
       workingDirectory: '/tmp',
       environment: { DNSPY_TEST: '1' },
       stopAtEntry: true,
+      useHost: true,
+      host: undefined,
+      hostArguments: ['exec'],
     })
+  })
+
+  it('hosts the target through a chosen executable and its arguments', () => {
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+
+    fireEvent.change(field('Host'), { target: { value: '/usr/bin/dotnet' } })
+    fireEvent.change(field('Host Arguments'), { target: { value: 'exec' } })
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'OK' }))
+
+    expect(launchDebug).toHaveBeenCalledWith(expect.objectContaining({
+      useHost: true,
+      host: '/usr/bin/dotnet',
+      hostArguments: ['exec'],
+    }))
+  })
+
+  it('runs the target directly when the host is turned off, dropping the host fields', () => {
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+
+    fireEvent.click(field('Use host executable'))
+    expect(field('Host')).toBeDisabled()
+    fireEvent.click(within(dialog()).getByRole('button', { name: 'OK' }))
+
+    expect(launchDebug).toHaveBeenCalledWith(expect.objectContaining({
+      useHost: false,
+      host: undefined,
+      hostArguments: undefined,
+    }))
+  })
+
+  it('flags a host path that is not a file, but leaves a blank one alone', async () => {
+    vi.spyOn(window.dnSpy, 'pathExists').mockImplementation(async (path) => path !== '/tmp/GoneDotnet')
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+    const ok = (): HTMLElement => within(dialog()).getByRole('button', { name: 'OK' })
+    const host = field('Host')
+
+    // A blank host means "find the dotnet CLI", so it is not an error.
+    expect(ok()).toBeEnabled()
+
+    fireEvent.change(host, { target: { value: '/tmp/GoneDotnet' } })
+    await waitFor(() => expect(host).toHaveAttribute('aria-invalid', 'true'))
+    expect(ok()).toBeDisabled()
+  })
+
+  it('browses for a host executable', async () => {
+    vi.spyOn(window.dnSpy, 'chooseDebugHost').mockResolvedValue('/usr/share/dotnet/dotnet')
+    render(<DebugProgramDialog onClose={vi.fn()} />)
+
+    const rows = within(dialog()).getAllByRole('button', { name: 'Browse...' })
+    // The host's browse button is the last of the three, after Executable and Working Directory.
+    fireEvent.click(rows[2])
+
+    await waitFor(() => expect(field('Host')).toHaveValue('/usr/share/dotnet/dotnet'))
   })
 
   it('launches with the module cctor startup break kind', () => {

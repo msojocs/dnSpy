@@ -219,6 +219,34 @@ public sealed class DebugSessionManagerTests {
 			TestContext.Current.CancellationToken);
 	}
 
+	/// <summary>
+	/// The upstream CoreCLR page's "Use host executable": with the choice made the target is started
+	/// through the host as <c>host hostArgs program</c> — here the <c>dotnet</c> CLI with its
+	/// <c>exec</c> verb — rather than run on its own.
+	/// </summary>
+	[Fact(Timeout = 60_000)]
+	public async Task LaunchesThroughTheHostWithItsArguments() {
+		using var workspaceManager = new WorkspaceManager();
+		await using var manager = CreateManager(workspaceManager);
+		var target = FindTarget();
+		var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), TestContext.Current.CancellationToken);
+		var stopped = new TaskCompletionSource<DebugEventNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+		manager.EventReceived += (_, notification) => {
+			if (notification.Event == "stopped")
+				stopped.TrySetResult(notification);
+		};
+
+		var started = await manager.LaunchAsync(
+			new DebugLaunchRequest(target, StopAtEntry: true, WorkspaceId: opened.WorkspaceId, UseHost: true, HostArguments: ["exec"]),
+			TestContext.Current.CancellationToken);
+		var stop = await stopped.Task.WaitAsync(TestContext.Current.CancellationToken);
+		Assert.Equal("entry", stop.Body?.GetProperty("reason").GetString());
+
+		await manager.DisconnectAsync(
+			new DebugDisconnectRequest(started.SessionId, TerminateDebuggee: true),
+			TestContext.Current.CancellationToken);
+	}
+
 	static DebugEventNotification Dequeue(Queue<DebugEventNotification> events) {
 		lock (events)
 			return events.Dequeue();
