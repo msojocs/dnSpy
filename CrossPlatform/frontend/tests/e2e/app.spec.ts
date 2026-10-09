@@ -102,8 +102,13 @@ const openAssemblyAndNamespace = async (): Promise<void> => {
   // The menu's own entries name files too, so the root button is asked for by its exact name.
   const fileMenu = page.getByRole('menuitem', { name: 'File', exact: true })
   await fileMenu.click()
-  // The remembered sessions live under File > Recent Files, the way dnSpy has them.
-  await page.getByRole('menuitem', { name: 'Recent Files' }).click()
+  // The remembered sessions live under File > Recent Files, the way dnSpy has them. The row is hovered
+  // rather than clicked, like the other submenu rows here: a click both hovers the row and toggles the
+  // submenu, so it shuts again whenever the hover lands first — a race that only shows up on a slow
+  // machine. Hovering can only open it, and the row says whether it did before the entries are read.
+  const recentFiles = page.getByRole('menuitem', { name: 'Recent Files' })
+  await recentFiles.hover()
+  await expect(recentFiles).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByRole('menuitem', { name: /dnSpy\.Backend\.Contracts\.dll/ })).toBeVisible()
   await fileMenu.click()
   await expandModule()
