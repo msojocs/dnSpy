@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using dnlib.DotNet;
 using dnSpy.Backend.Contracts;
 using dnSpy.Backend.Core;
 using dnSpy.Backend.Debugging.CorDebug;
@@ -222,6 +223,243 @@ public sealed class DebugSessionManagerTests {
 		lock (events)
 			return events.Dequeue();
 	}
+
+	/// <summary>
+	/// "Step into" from a call has to land on the first statement of what the call runs, and the stop
+	/// it reports has to be the callee's frame — a step that only moves the marker down the caller is
+	/// a step into that never happened.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StepIntoEntersTheCalledMethod() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken);
+		var entry = await harness.NextStopAsync();
+		Assert.Equal("entry", Reason(entry));
+
+		await harness.SetLineBreakpointAsync(await harness.CallStatementAsync());
+		var atCall = await harness.ContinueAsync(ThreadId(entry));
+		Assert.Equal("breakpoint", Reason(atCall));
+		Assert.Contains("Main", await harness.DescribeFramesAsync(ThreadId(atCall)), StringComparison.Ordinal);
+
+		var stepped = await harness.StepAsync("stepIn", ThreadId(atCall));
+
+		Assert.Equal("step", Reason(stepped));
+		var after = await harness.DescribeFramesAsync(ThreadId(stepped));
+		Assert.True(after.Contains("Calculate", StringComparison.Ordinal), $"After step into: {after}");
+	}
+
+	/// <summary>
+	/// "Step over" from the same place has to stay in the caller: the call runs, but the stop is the
+	/// caller's next statement.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StepOverStaysInTheCaller() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken);
+		var entry = await harness.NextStopAsync();
+
+		var call = await harness.CallStatementAsync();
+		await harness.SetLineBreakpointAsync(call);
+		var atCall = await harness.ContinueAsync(ThreadId(entry));
+		Assert.Equal("breakpoint", Reason(atCall));
+
+		var stepped = await harness.StepAsync("next", ThreadId(atCall));
+
+		Assert.Equal("step", Reason(stepped));
+		var after = await harness.DescribeFramesAsync(ThreadId(stepped));
+		Assert.True(after.Contains("Main", StringComparison.Ordinal), $"After step over: {after}");
+		var (_, line) = await harness.TopFrameAsync(ThreadId(stepped));
+		Assert.True(line > call.Line, $"Step over landed on line {line}, not past the call on line {call.Line}.");
+	}
+
+	/// <summary>The statement that runs <c>Calculate</c>, named the way the decompiled document shows it.</summary>
+	sealed record CallStatement(int MetadataToken, int Line);
+
+	/// <summary>
+	/// Stepping into the call of an <c>async</c> method has to land inside the body the user wrote. The
+	/// body's IL is a generated <c>MoveNext</c>, so the statement armed is in another method than the
+	/// one the call names — but the frame the stop reports still has to read as the user's method.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StepIntoEntersAnAsyncMethodBody() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken);
+		var entry = await harness.NextStopAsync();
+
+		await harness.SetLineBreakpointAsync(await harness.CallStatementAsync("AddAsync"));
+		var atCall = await harness.ContinueAsync(ThreadId(entry));
+		Assert.Equal("breakpoint", Reason(atCall));
+
+		var stepped = await harness.StepAsync("stepIn", ThreadId(atCall));
+
+		Assert.Equal("step", Reason(stepped));
+		var after = await harness.DescribeFramesAsync(ThreadId(stepped));
+		Assert.True(after.Contains("AddAsync", StringComparison.Ordinal), $"After step into: {after}");
+	}
+	/// <summary>
+	/// A step into a call into another assembly has to land inside it. The callee's module is not one the
+	/// workspace holds, so nothing of it is armed from a workspace's own tree — it is read from disk to
+	/// find the callee's statements, which is how dnSpy's own engine steps: it asks its decompiler for the
+	/// method and the decompiler loads the module. The stop then belongs to the callee's frame, and the
+	/// module it is in is named, which is what the client needs to open it.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StepIntoEntersAFrameworkMethod() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken);
+		var entry = await harness.NextStopAsync();
+
+		// The fixture writes to the console from a branch as well, so the overload is what picks the call
+		// the thread actually reaches: the main path writes the number it computed.
+		var call = await harness.CallStatementAsync("WriteLine", callee => callee.MethodSig is { Params.Count: 1 } signature && signature.Params[0].ElementType == ElementType.I4);
+		await harness.SetLineBreakpointAsync(call);
+		var atCall = await harness.ContinueAsync(ThreadId(entry));
+		Assert.Equal("breakpoint", Reason(atCall));
+		Assert.True((await harness.DescribeFramesAsync(ThreadId(atCall))).Contains("Main", StringComparison.Ordinal));
+
+		var stepped = await harness.StepAsync("stepIn", ThreadId(atCall));
+
+		Assert.Equal("step", Reason(stepped));
+		var (name, _) = await harness.TopFrameAsync(ThreadId(stepped));
+		Assert.True(name.StartsWith("System.Console", StringComparison.Ordinal), $"Step into landed on {name}.");
+	}
+
+	/// <summary>
+	/// Steps, as a client drives them: the target is stopped at the statement that calls a method in
+	/// the same module, and each step has to end on the statement the user meant.
+	/// </summary>
+	sealed class StepHarness : IAsyncDisposable {
+		readonly WorkspaceManager workspaceManager;
+		readonly CorDebugSessionManager manager;
+		readonly Queue<DebugEventNotification> stopped = new();
+		readonly SemaphoreSlim signal = new(0);
+
+		public string SessionId { get; private set; } = string.Empty;
+		string target = string.Empty;
+		string workspaceId = string.Empty;
+
+		StepHarness(WorkspaceManager workspaceManager, CorDebugSessionManager manager) {
+			this.workspaceManager = workspaceManager;
+			this.manager = manager;
+		}
+
+		public static async Task<StepHarness> StartAsync(string target, CancellationToken cancellationToken) {
+			var workspaceManager = new WorkspaceManager();
+			var manager = CreateManager(workspaceManager);
+			var harness = new StepHarness(workspaceManager, manager) { target = target };
+			manager.EventReceived += (_, notification) => {
+				if (notification.Event != "stopped")
+					return;
+				lock (harness.stopped)
+					harness.stopped.Enqueue(notification);
+				harness.signal.Release();
+			};
+			try {
+				var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), cancellationToken);
+				harness.workspaceId = opened.WorkspaceId;
+				var started = await manager.LaunchAsync(
+					new DebugLaunchRequest(target, StopAtEntry: true, WorkspaceId: opened.WorkspaceId),
+					cancellationToken);
+				harness.SessionId = started.SessionId;
+				return harness;
+			}
+			catch {
+				await harness.DisposeAsync();
+				throw;
+			}
+		}
+
+		public async Task<DebugEventNotification> NextStopAsync() {
+			await signal.WaitAsync(TestContext.Current.CancellationToken);
+			lock (stopped)
+				return stopped.Dequeue();
+		}
+
+		public async Task<JsonElement?> RequestAsync(string command, object arguments) {
+			var response = await manager.RequestAsync(
+				new DebugAdapterRequest(SessionId, command, JsonSerializer.SerializeToElement(arguments)),
+				TestContext.Current.CancellationToken);
+			return response.Body;
+		}
+
+		/// <summary>
+		/// The line the client shows for the call. The decompiled document numbers its own lines, and they
+		/// are not the file's, so the statement is found by the IL offset of the call instead of by a
+		/// hard-coded line number. The callee is matched by name, which reaches across assemblies: the
+		/// operand of a call into another module is a member reference, not the method itself.
+		/// </summary>
+		/// <param name="match">Which overload to take when the body calls the name more than once. The
+		/// first call that answers it is the one the main path reaches, since the IL is in source order.</param>
+		public async Task<CallStatement> CallStatementAsync(string calleeName = "Calculate", Func<IMethod, bool>? match = null) {
+			using var module = ModuleDefMD.Load(target);
+			var main = module.GetTypes().Single(type => type.Name == "Program").Methods.Single(method => method.Name == "Main");
+			var metadataToken = unchecked((int)main.MDToken.Raw);
+			var callOffset = (int)main.Body.Instructions
+				.First(instruction => instruction.Operand is IMethod callee && callee.Name == calleeName && (match is null || match(callee)))
+				.Offset;
+			var member = await workspaceManager.FindMemberAsync(
+				new FindMemberRequest(workspaceId, target, metadataToken),
+				TestContext.Current.CancellationToken);
+			var document = await workspaceManager.DecompileAsync(
+				new DecompileRequest(workspaceId, member.NodeId!, DecompilerLanguage.CSharp),
+				TestContext.Current.CancellationToken);
+			var statement = (document.CodeStatements ?? [])
+				.Where(statement => !statement.IsHidden)
+				.Single(statement => statement.IlOffset <= callOffset && callOffset < statement.IlEndOffset);
+			return new CallStatement(metadataToken, statement.StartLine);
+		}
+
+		public Task SetLineBreakpointAsync(CallStatement call) =>
+			RequestAsync("setBreakpoints", new {
+				breakpoints = new[] { new { id = "bp1", modulePath = target, metadataToken = call.MetadataToken, line = call.Line } },
+			});
+
+		public async Task<DebugEventNotification> ContinueAsync(int threadId) {
+			await RequestAsync("continue", new { threadId });
+			return await NextStopAsync();
+		}
+
+		public async Task<(string Name, int Line)> TopFrameAsync(int threadId) {
+			var stack = await RequestAsync("stackTrace", new { threadId, startFrame = 0, levels = 20 });
+			var top = stack?.GetProperty("stackFrames")[0] ?? throw new InvalidOperationException("The stack is empty.");
+			return (top.GetProperty("name").GetString() ?? string.Empty, top.GetProperty("line").GetInt32());
+		}
+
+		public async Task<string> DescribeFramesAsync(int threadId) {
+			var stack = await RequestAsync("stackTrace", new { threadId, startFrame = 0, levels = 20 });
+			var described = new List<string>();
+			foreach (var frame in stack?.GetProperty("stackFrames").EnumerateArray() ?? default)
+				described.Add($"{frame.GetProperty("name").GetString()} @{frame.GetProperty("line").GetInt32()}");
+			return string.Join(" | ", described);
+		}
+
+		public async Task<DebugEventNotification> StepAsync(string kind, int threadId) {
+			await RequestAsync(kind, new { threadId });
+			return await NextStopAsync();
+		}
+
+		public async ValueTask DisposeAsync() {
+			if (!string.IsNullOrEmpty(SessionId)) {
+				try {
+					await manager.DisconnectAsync(
+						new DebugDisconnectRequest(SessionId, TerminateDebuggee: true),
+						CancellationToken.None);
+				}
+				catch {
+					// The debuggee may already be gone; nothing left to clean up.
+				}
+			}
+			await manager.DisposeAsync();
+			workspaceManager.Dispose();
+			signal.Dispose();
+		}
+	}
+
+	static int ThreadId(DebugEventNotification notification) =>
+		notification.Body?.GetProperty("threadId").GetInt32() ?? throw new InvalidOperationException("The stop has no thread ID.");
+
+	static string Reason(DebugEventNotification notification) =>
+		notification.Body?.GetProperty("reason").GetString() ?? string.Empty;
 
 	/// <summary>
 	/// The session manager loads <c>libdbgshim.so</c> as it is constructed, so a machine without it cannot

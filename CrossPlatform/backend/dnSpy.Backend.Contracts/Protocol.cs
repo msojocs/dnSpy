@@ -17,6 +17,15 @@ public static class RpcMethods {
 	public const string TreeGetRoots = "tree/getRoots";
 	public const string TreeGetChildren = "tree/getChildren";
 	public const string TreeGetNode = "tree/getNode";
+	/// <summary>
+	/// The chain of nodes from the workspace root down to a node, the root first and the node itself
+	/// last, answered with the <see cref="TreeNodesResponse"/> the tree already uses. A client cannot
+	/// derive the ancestors of a node it has never listed — a member's id names its module and token,
+	/// not the type that declares it — so it asks for the chain instead. The list is empty for a node
+	/// that cannot be reached from a root (a kind with no path, such as a PE or ELF structure), and the
+	/// call fails with <see cref="ErrorCodes.NodeNotFound"/> when the id names no node at all.
+	/// </summary>
+	public const string TreeGetNodePath = "tree/getNodePath";
 	public const string DocumentDecompile = "document/decompile";
 	public const string DocumentFindMember = "document/findMember";
 	public const string Search = "search/run";
@@ -134,7 +143,20 @@ public enum DecompilerLanguage {
 
 public sealed record DecompileRequest(string WorkspaceId, string NodeId, DecompilerLanguage Language);
 
-public sealed record TextSpanDto(int Start, int Length, string Kind, string? TargetNodeId = null);
+/// <summary>
+/// A piece of the decompiled text that names something. <paramref name="TargetNodeId"/> is the tree
+/// node the piece points at, and is only set when the target's module is one the workspace holds.
+/// A reference into a module the workspace does not hold carries the identity a
+/// <see cref="FindMemberRequest"/> is answered from instead — the file it lives in and the token it
+/// has there — so the client can follow it on demand rather than never.
+/// </summary>
+public sealed record TextSpanDto(
+	int Start,
+	int Length,
+	string Kind,
+	string? TargetNodeId = null,
+	string? TargetModulePath = null,
+	int? TargetMetadataToken = null);
 
 /// <summary>
 /// One sequence point of the decompiled text: the line(s) it covers and the IL range it maps to.
@@ -179,6 +201,11 @@ public sealed record DiagnosticDto(string Severity, string Message, int? Start =
 /// workspace and change on every open, so a persisted bookmark has to name its target by module path
 /// and metadata token instead.
 /// </summary>
+/// <remarks>
+/// A module the workspace does not hold is opened from the file the request names, the way dnSpy's own
+/// reference navigation loads an assembly on demand. That adds a root to the workspace, so a caller
+/// that got a node back has to refresh its roots with <see cref="WorkspaceRequest"/>.
+/// </remarks>
 public sealed record FindMemberRequest(string WorkspaceId, string ModulePath, int MetadataToken);
 
 public sealed record FindMemberResponse(string? NodeId, string? Label, string? Description);

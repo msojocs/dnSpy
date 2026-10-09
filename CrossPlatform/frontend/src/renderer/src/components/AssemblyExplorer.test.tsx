@@ -56,3 +56,24 @@ it('re-reads the token option when it is saved', () => {
   act(() => saveAppOptions({ ...loadAppOptions(), assemblyExplorer: { ...loadAppOptions().assemblyExplorer, showToken: true } }))
   expect(screen.getByText('Example @20000001')).toBeInTheDocument()
 })
+
+// A row the app selected on its own — the node of a document that just came to the front — can be
+// anywhere in a long tree, so the tree scrolls it into sight. Only that node: every other row stays
+// where the user left it.
+it('scrolls the row the app selected on its own into view, and no other', () => {
+  const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => undefined)
+  useAppStore.setState({
+    roots: [{ ...assembly, hasChildren: true }, { id: 'other', kind: 'assembly', label: 'Other', hasChildren: false }],
+    expanded: { assembly: true },
+    children: { assembly: [{ id: 'member', kind: 'method', label: 'Main()', hasChildren: false }] },
+  })
+  render(<AssemblyExplorer onOpenNode={vi.fn()} onAnalyzeNode={vi.fn()} onShowHex={vi.fn()} onShowModuleInfo={vi.fn()} />)
+  scrollIntoView.mockClear()
+
+  act(() => useAppStore.setState({ selectedNode: { id: 'member', kind: 'method', label: 'Main()', hasChildren: false } }))
+
+  expect(scrollIntoView).toHaveBeenCalledTimes(1)
+  expect(scrollIntoView.mock.instances[0]).toBe(screen.getByRole('treeitem', { selected: true }))
+
+  scrollIntoView.mockRestore()
+})

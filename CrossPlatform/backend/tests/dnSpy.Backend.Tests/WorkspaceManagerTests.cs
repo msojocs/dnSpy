@@ -199,6 +199,65 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	/// <summary>
+	/// A reference whose target belongs to an assembly the workspace does not hold is still navigable: the
+	/// span names the file the target lives in and the token it has there, and looking that pair up opens
+	/// the module — the way dnSpy's own reference navigation loads an assembly on demand — instead of
+	/// leaving the reference with no target to go to at all.
+	/// </summary>
+	[Fact]
+	public async Task ReferenceIntoAnAssemblyTheWorkspaceDoesNotHoldIsFollowedOnDemand() {
+		// The manager's own module names types the workspace holds nothing of — its own product's other
+		// assemblies — so its document is full of references that have a target to find rather than a
+		// definition in a module already open.
+		var opened = await manager.OpenAsync(
+			new OpenWorkspaceRequest([typeof(WorkspaceManager).Assembly.Location]),
+			TestContext.Current.CancellationToken);
+		var type = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Core", "WorkspaceManager");
+		var document = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, type.Id, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+
+		var span = document.Spans.First(span =>
+			span.TargetNodeId is null && span.TargetMetadataToken is > 0 && !string.IsNullOrEmpty(span.TargetModulePath));
+		Assert.False(string.Equals(span.TargetModulePath, typeof(WorkspaceManager).Assembly.Location, StringComparison.Ordinal));
+		Assert.True(File.Exists(span.TargetModulePath), $"The reference names a file that is not on this machine: {span.TargetModulePath}");
+		var identity = new FindMemberRequest(opened.WorkspaceId, span.TargetModulePath!, span.TargetMetadataToken!.Value);
+		var rootsBefore = (await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes.Count;
+
+		var found = await manager.FindMemberAsync(identity, TestContext.Current.CancellationToken);
+
+		Assert.NotNull(found.NodeId);
+		// The file was opened into the tree, and what the client was handed is a node of it — the caller
+		// refreshes its roots to see the module, which is why the lookup has to answer a node id at all.
+		var roots = (await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes;
+		Assert.Equal(rootsBefore + 1, roots.Count);
+		Assert.Equal(found.NodeId, (await manager.GetNodeAsync(new NodeRequest(opened.WorkspaceId, found.NodeId!), TestContext.Current.CancellationToken)).Id);
+		// The module is open now, so asking a second time answers the same node and adds nothing.
+		Assert.Equal(found, await manager.FindMemberAsync(identity, TestContext.Current.CancellationToken));
+	}
+
+	/// <summary>
+	/// A member identity is looked up in the module the request names: one the workspace already holds is
+	/// answered where it is, and one this machine does not have is a reference with nowhere to go rather
+	/// than a failure the caller has to handle.
+	/// </summary>
+	[Fact]
+	public async Task FindMember_AnswersForAnOpenModuleAndForNothingElse() {
+		var opened = await OpenContractsAssemblyAsync();
+		var helloRequest = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "HelloRequest");
+		var token = unchecked((int)typeof(HelloRequest).MetadataToken);
+
+		var found = await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, typeof(HelloRequest).Assembly.Location, token),
+			TestContext.Current.CancellationToken);
+		Assert.Equal(helloRequest.Id, found.NodeId);
+
+		var missing = Path.Combine(Path.GetTempPath(), $"dnspy-missing-{Guid.NewGuid():N}.dll");
+		var absent = await manager.FindMemberAsync(new FindMemberRequest(opened.WorkspaceId, missing, token), TestContext.Current.CancellationToken);
+		Assert.Null(absent.NodeId);
+	}
+
+	/// <summary>
 	/// The offset a statement hands the engine has to be where that statement's own code starts. Tiling the
 	/// method's IL charges every offset that belongs to no statement to the statement that follows it, which
 	/// in a loop makes the <c>return</c> report the loop's own condition: a breakpoint set there runs the loop
@@ -1246,6 +1305,36 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	/// <summary>
+	/// The callee of a step into need not live in a module the workspace holds, nor even beside the
+	/// debuggee: a framework method's assembly is in the runtime the debuggee targets, which is a file the
+	/// tree knows how to find and dnlib does not. The step reads it the same way the tree does, so F11
+	/// enters the framework method instead of running past the call it was standing on.
+	/// </summary>
+	[Fact]
+	public async Task GetSteppingTargets_SteppingIntoAFrameworkCallTargetsTheCallee() {
+		var path = Path.Combine(AppContext.BaseDirectory, "DebugTarget.dll");
+		Assert.True(File.Exists(path), $"The debuggee was not copied to the test output: {path}");
+		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+		using var module = ModuleDefMD.Load(path);
+		var main = module.GetTypes().Single(type => type.Name == "Program").Methods.Single(method => method.Name == "Main");
+		// `Console.WriteLine(...)` — the fixture's call whose body is in another module entirely.
+		var call = main.Body.Instructions.First(instruction =>
+			instruction.Operand is IMethod callee && callee.Name == "WriteLine" &&
+			callee.MethodSig is { Params.Count: 1 } signature && signature.Params[0].ElementType == ElementType.I4);
+
+		var into = await manager.GetSteppingTargetsAsync(opened.WorkspaceId, path, unchecked((int)main.MDToken.Raw), (int)call.Offset, stepInto: true, TestContext.Current.CancellationToken);
+
+		Assert.NotNull(into);
+		// The runtime the debuggee targets is where the callee lives, and every target of the step names
+		// the file it was read from rather than the debuggee's own.
+		var frameworkTargets = into.Targets.Where(target => !string.Equals(target.ModulePath, path, StringComparison.Ordinal)).ToArray();
+		Assert.NotEmpty(frameworkTargets);
+		Assert.All(frameworkTargets, target => Assert.Contains("System.Console", Path.GetFileName(target.ModulePath)));
+		// The call does run, so the step goes into it rather than out of the method.
+		Assert.False(into.LeavesMethod);
+	}
+
+	/// <summary>
 	/// The end of a body is where a step has to leave the method: no statement of it can run again, so the
 	/// engine asks the runtime to step out and the stop is reported in the caller.
 	/// </summary>
@@ -2271,6 +2360,133 @@ public sealed class WorkspaceManagerTests : IDisposable {
 				manager.Close(new WorkspaceRequest(opened.WorkspaceId));
 			}
 		}
+	}
+
+	/// <summary>
+	/// The chain an explorer needs to put a node on screen. A client cannot build it itself: a member's
+	/// node id names its module and token, not the type that declares it. The chain is built through the
+	/// same keys the tree uses, which is what makes the ids on it the ids the tree already handed out.
+	/// </summary>
+	[Fact]
+	public async Task NodePath_LeadsFromTheRootToTheNodeItself() {
+		var opened = await OpenContractsAssemblyAsync();
+		var assembly = Assert.Single(
+			(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+		var module = Assert.Single(await ChildrenAsync(opened.WorkspaceId, assembly.Id));
+		var @namespace = Assert.Single(await ChildrenAsync(opened.WorkspaceId, module.Id), node => node.Kind == "namespace");
+		var rpcException = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Contracts", "RpcException");
+		var members = await manager.GetChildrenAsync(new NodeRequest(opened.WorkspaceId, rpcException.Id), TestContext.Current.CancellationToken);
+		var getCode = Assert.Single(members.Nodes, node => node.Label == "get_Code()");
+
+		var path = await manager.GetNodePathAsync(
+			new NodeRequest(opened.WorkspaceId, getCode.Id),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(new[] { "assembly", "module", "namespace", "type", "method" }, path.Nodes.Select(node => node.Kind));
+		Assert.Equal(new[] { assembly.Id, module.Id, @namespace.Id, rpcException.Id, getCode.Id }, path.Nodes.Select(node => node.Id));
+	}
+
+	/// <summary>
+	/// The case the chain exists for: a node reached by its identity alone, whose ancestors nobody has
+	/// listed yet. Asking for the path is what lets a client walk down to it afterwards.
+	/// </summary>
+	[Fact]
+	public async Task NodePath_ReachesANodeNobodyHasListed() {
+		var opened = await OpenContractsAssemblyAsync();
+		// The type's own node, asked for by the identity a bookmark or a followed reference carries — the
+		// namespace above it, and everything above that, has never been listed.
+		var found = await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, typeof(HelloRequest).Assembly.Location, unchecked((int)typeof(HelloRequest).MetadataToken)),
+			TestContext.Current.CancellationToken);
+		Assert.NotNull(found.NodeId);
+
+		var path = await manager.GetNodePathAsync(
+			new NodeRequest(opened.WorkspaceId, found.NodeId!),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(new[] { "assembly", "module", "namespace", "type" }, path.Nodes.Select(node => node.Kind));
+		Assert.Equal(found.NodeId, path.Nodes[^1].Id);
+		Assert.Contains(await ChildrenAsync(opened.WorkspaceId, path.Nodes[2].Id), node => node.Label == nameof(HelloRequest));
+	}
+
+	/// <summary>A nested type is listed under the type that declares it, so the chain names that type first.</summary>
+	[Fact]
+	public async Task NodePath_NamesTheDeclaringTypesOfANestedType() {
+		var opened = await manager.OpenAsync(
+			new OpenWorkspaceRequest([typeof(WorkspaceManagerTests).Assembly.Location]),
+			TestContext.Current.CancellationToken);
+		var outer = await FindTypeAsync(opened.WorkspaceId, "dnSpy.Backend.Tests", nameof(BreakpointExpressionTests));
+		var nested = Assert.Single(await ChildrenAsync(opened.WorkspaceId, outer.Id), node => node.Label == "Scope");
+
+		var path = await manager.GetNodePathAsync(
+			new NodeRequest(opened.WorkspaceId, nested.Id),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(new[] { "assembly", "module", "namespace", "type", "type" }, path.Nodes.Select(node => node.Kind));
+		Assert.Equal(outer.Id, path.Nodes[3].Id);
+		Assert.Equal(nested.Id, path.Nodes[4].Id);
+	}
+
+	[Fact]
+	public async Task NodePath_OfARootIsTheRootItself() {
+		var opened = await OpenContractsAssemblyAsync();
+		var assembly = Assert.Single(
+			(await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes);
+
+		var path = await manager.GetNodePathAsync(new NodeRequest(opened.WorkspaceId, assembly.Id), TestContext.Current.CancellationToken);
+
+		var only = Assert.Single(path.Nodes);
+		Assert.Equal(assembly.Id, only.Id);
+	}
+
+	/// <summary>
+	/// A structure read out of the image, or a resource, has no path from a root that names it — the PE
+	/// node above it does, and the difference is the point: the client is told "no" and keeps its own tree
+	/// rather than being handed a chain that leads nowhere.
+	/// </summary>
+	[Fact]
+	public async Task NodePath_StopsAtTheKindsWithNoChain() {
+		var opened = await OpenContractsAssemblyAsync();
+		var pe = await FindPeNodeAsync(opened.WorkspaceId);
+		var pePath = await manager.GetNodePathAsync(new NodeRequest(opened.WorkspaceId, pe.Id), TestContext.Current.CancellationToken);
+		Assert.Equal(new[] { "assembly", "module", "pe" }, pePath.Nodes.Select(node => node.Kind));
+
+		var structure = (await ChildrenAsync(opened.WorkspaceId, pe.Id))[0];
+		var structurePath = await manager.GetNodePathAsync(new NodeRequest(opened.WorkspaceId, structure.Id), TestContext.Current.CancellationToken);
+		Assert.Empty(structurePath.Nodes);
+	}
+
+	/// <summary>
+	/// A reference into a module the workspace does not hold opens that module on demand, so the tree gains
+	/// a root it never had — and the node the reference named was created without the tree listing one node
+	/// of that module. The chain still has to name its way down from that new root.
+	/// </summary>
+	[Fact]
+	public async Task NodePath_ReachesAModuleOpenedOnDemand() {
+		var opened = await OpenContractsAssemblyAsync();
+		var found = await manager.FindMemberAsync(
+			new FindMemberRequest(opened.WorkspaceId, typeof(object).Assembly.Location, unchecked((int)typeof(Exception).MetadataToken)),
+			TestContext.Current.CancellationToken);
+		Assert.NotNull(found.NodeId);
+
+		var path = await manager.GetNodePathAsync(
+			new NodeRequest(opened.WorkspaceId, found.NodeId!),
+			TestContext.Current.CancellationToken);
+
+		Assert.Equal(new[] { "assembly", "module", "namespace", "type" }, path.Nodes.Select(node => node.Kind));
+		Assert.Equal(found.NodeId, path.Nodes[^1].Id);
+		var roots = (await manager.GetRootsAsync(new WorkspaceRequest(opened.WorkspaceId), TestContext.Current.CancellationToken)).Nodes;
+		Assert.Contains(path.Nodes[0].Id, roots.Select(node => node.Id));
+	}
+
+	[Fact]
+	public async Task NodePath_RefusesANodeThatIsNotThere() {		var opened = await OpenContractsAssemblyAsync();
+
+		var exception = await Assert.ThrowsAsync<RpcException>(() => manager.GetNodePathAsync(
+			new NodeRequest(opened.WorkspaceId, "n999999"),
+			TestContext.Current.CancellationToken));
+
+		Assert.Equal(ErrorCodes.NodeNotFound, exception.Code);
 	}
 
 	/// <summary>Opens the debuggee and decompiles one of its method nodes, for the state machine tests.</summary>

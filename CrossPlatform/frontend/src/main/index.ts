@@ -381,6 +381,10 @@ const registerIpc = (): void => {
   ipcMain.handle('tree:children', (_event, workspaceId: string, nodeId: string) =>
     requireBackend().invoke('tree/getChildren', { workspaceId, nodeId }, 600_000))
   ipcMain.handle('tree:node', (_event, workspaceId: string, nodeId: string) => requireBackend().invoke('tree/getNode', { workspaceId, nodeId }))
+  // Asked for right after a document was decompiled, which is why it shares the long deadline the tree
+  // requests above have.
+  ipcMain.handle('tree:nodePath', (_event, workspaceId: string, nodeId: string) =>
+    requireBackend().invoke('tree/getNodePath', { workspaceId, nodeId }, 600_000))
   // Decompiling an assembly root requires ILSpy to walk every type and build source/IL mappings. Large
   // assemblies can legitimately take several minutes; the generic RPC deadline is intentionally shorter
   // for interactive tree operations, so give this operation its own deadline.

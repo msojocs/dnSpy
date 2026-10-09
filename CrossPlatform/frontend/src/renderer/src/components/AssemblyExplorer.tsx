@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useEffect, useRef } from 'react'
 import { showPopupMenu, type IPopupMenuItem, type PopupMenuEntry } from 'flexlayout-react'
 import {
   Binary,
@@ -88,8 +88,18 @@ const TreeRow = memo(({ node, depth, showToken, onOpenNode, onAnalyzeNode, onSho
   const selected = useAppStore((state) => state.selectedNode?.id === node.id)
   const toggleNode = useAppStore((state) => state.toggleNode)
   const selectNode = useAppStore((state) => state.selectNode)
+  const rowRef = useRef<HTMLDivElement>(null)
   const { t } = useLanguage()
   const label = node.kind === 'referencesgroup' ? t('Assembly References') : node.kind === 'resourcesgroup' ? t('Resources') : node.label
+
+  // A row the app selected on its own — a reference followed in the editor, a bookmark, a step — can be
+  // anywhere in a long tree, so it is brought into sight the way dnSpy's tree scrolls a selected node
+  // into view. `nearest` leaves a row that is already visible where it is, and scrolling does not move
+  // the keyboard focus, so the editor keeps it.
+  useEffect(() => {
+    if (selected)
+      rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [selected])
 
   const open = (): void => {
     selectNode(node)
@@ -100,6 +110,7 @@ const TreeRow = memo(({ node, depth, showToken, onOpenNode, onAnalyzeNode, onSho
   return (
     <>
       <div
+        ref={rowRef}
         className={`tree-row${selected ? ' selected' : ''}`}
         data-kind={node.kind}
         style={{ paddingLeft: `${6 + depth * 16}px` }}

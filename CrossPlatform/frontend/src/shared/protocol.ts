@@ -67,7 +67,20 @@ export interface TextSpan {
   length: number
   kind: string
   targetNodeId?: string
+  /**
+   * A reference into a module the workspace does not hold: the file it lives in and the token it has
+   * there, which `findMember` follows — opening that module on demand the way dnSpy does.
+   */
+  targetModulePath?: string
+  targetMetadataToken?: number
 }
+
+/**
+ * Whether a span names somewhere to go. A reference inside the workspace carries the node; a reference
+ * into a module the workspace does not hold carries that module's file and token instead, which the
+ * backend follows on demand — so it is a target just the same, and the editor draws it as one.
+ */
+export const isNavigableSpan = (span: TextSpan): boolean => Boolean(span.targetNodeId ?? span.targetModulePath)
 
 export interface Diagnostic {
   severity: string
@@ -111,10 +124,11 @@ export interface DecompileResponse {
 }
 
 /**
- * A member looked up by the identity a bookmark keeps across sessions: node ids are handed out per
- * workspace, so a restored bookmark names its target by module path and metadata token instead.
- * Every field is null when the module is not open in the current workspace or the token no longer
- * resolves.
+ * A member looked up by the identity that outlives a node id: a module path plus a metadata token.
+ * That is what a restored bookmark keeps, and what a `TextSpan` names when its target belongs to a
+ * module the workspace does not hold — such a module is opened on demand, so the caller has to
+ * refresh the roots after a hit. Every field is null when the file is not on this machine, is not a
+ * managed module, or when the token no longer resolves.
  */
 export interface FindMemberResponse {
   nodeId?: string
@@ -780,8 +794,14 @@ export interface DnSpyApi {
   getRoots(workspaceId: string): Promise<TreeNodesResponse>
   getChildren(workspaceId: string, nodeId: string): Promise<TreeNodesResponse>
   getNode(workspaceId: string, nodeId: string): Promise<TreeNode>
+  /**
+   * The chain from a root down to a node, the root first and the node itself last — what the explorer
+   * needs for a node it has never listed, since a node id alone does not name its ancestors. Empty for a
+   * node that hangs off no root.
+   */
+  getNodePath(workspaceId: string, nodeId: string): Promise<TreeNodesResponse>
   decompile(workspaceId: string, nodeId: string, language: DecompilerLanguage): Promise<DecompileResponse>
-  /** Resolves a persisted bookmark's target by module path and token, since node ids are session-local. */
+  /** Resolves a target by module path and token, since node ids are session-local. A module the workspace does not hold is opened on demand. */
   findMember(workspaceId: string, modulePath: string, metadataToken: number): Promise<FindMemberResponse>
   search(workspaceId: string, query: string, kinds?: string[]): Promise<SearchResponse>
   analyzeReferences(workspaceId: string, nodeId: string): Promise<AnalyzeReferencesResponse>

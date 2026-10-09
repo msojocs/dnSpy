@@ -24,6 +24,7 @@ import type {
   ReferenceResult,
   ScriptOutputEntry,
   SearchResult,
+  TextSpan,
   TreeNode,
 } from '../../shared/protocol'
 import { getActiveLocale, translate as t } from './localization'
@@ -305,6 +306,11 @@ interface AppState {
   reloadAllAssemblies(): Promise<boolean>
   /** Reorders the tree's root nodes by name — dnSpy's Sort Assemblies. */
   sortAssemblies(): Promise<boolean>
+  /**
+   * Reads the tree's roots again. Following a reference into a module the workspace did not hold opens
+   * that module, so the backend's root list grows without the client having asked it to.
+   */
+  refreshRoots(): Promise<void>
   saveCode(documentId: string): Promise<boolean>
   methodBodyChanged(node: TreeNode, result: EditCommitResponse): Promise<void>
   undoEdit(): Promise<void>
@@ -363,6 +369,12 @@ interface AppState {
    */
   revealDocument?: (nodeId: string) => Promise<void>
   setRevealDocument(open: ((nodeId: string) => Promise<void>) | undefined): void
+  /**
+   * Follows a reference the user clicked in decompiled text — dnSpy's Go To Reference. A reference
+   * inside the workspace names its target's node; one into a module the workspace does not hold names
+   * the file and token it has there, and the backend opens that module on demand to answer for it.
+   */
+  openReferenceTarget(target: TextSpan): Promise<void>
   /** Records the tab order and the selected tab, which the shell reads off the layout it owns. */
   setDocumentOrder(order: string[], active?: string): void
   setRestoringSession(value: boolean): void
@@ -898,8 +910,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Every ancestor has to be open for the node to be on screen, and its children have to be loaded for
     // the tree to have a row to select — a created member's own row is in the list its owner loads.
     const ancestors: string[] = []
-    for (let id = get().parents[nodeId]; id !== undefined; id = get().parents[id])
-      ancestors.unshift(id)
+    // A node the client has never listed has no recorded ancestor: a member's node id names its module
+    // and token but not the type that declares it, so only the backend can say what it hangs off. Asking
+    // for the chain also records it, so the walk answers for this node from then on.
+    if (get().parents[nodeId] === undefined) {
+      let path: TreeNode[]
+      try {
+        path = (await window.dnSpy.getNodePath(workspaceId, nodeId)).nodes
+      } catch {
+        // A node the backend no longer has stays unselected rather than selected-and-blank.
+        return
+      }
+      if (path.length === 0)
+        return
+      ancestors.push(...path.slice(0, -1).map((ancestor) => ancestor.id))
+      set((state) => ({
+        parents: {
+          ...state.parents,
+          ...Object.fromEntries(path.slice(1).map((node, index) => [node.id, path[index].id])),
+        },
+      }))
+    } else {
+      for (let id = get().parents[nodeId]; id !== undefined; id = get().parents[id])
+        ancestors.unshift(id)
+    }
+    // Already where the tree is looking — dnSpy's own tree does nothing in this case either, which keeps
+    // the reveal the shell runs on every tab change from re-reading a tree that is already right. The
+    // selection alone does not say that: opening a document selects the node it opens, and the node a
+    // reference into an unopened module named has no row until its ancestors are opened above it.
+    if (get().selectedNode?.id === nodeId && ancestors.every((id) => get().expanded[id]))
+      return
     set((state) => ({ expanded: { ...state.expanded, ...Object.fromEntries(ancestors.map((id) => [id, true])) } }))
     for (const ancestorId of ancestors) {
       if (get().children[ancestorId])
@@ -1242,6 +1282,52 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  refreshRoots: async () => {
+    const { workspaceId, workspaceGeneration } = get()
+    if (!workspaceId)
+      return
+    try {
+      const roots = await window.dnSpy.getRoots(workspaceId)
+      // The workspace may have been replaced while the roots were on the way, and those roots belong to
+      // the one that is gone.
+      if (get().workspaceGeneration !== workspaceGeneration)
+        return
+      set({ roots: roots.nodes })
+    } catch {
+      // A read of a workspace that has closed under the call needs no reporting; the tree it belonged to
+      // is already gone.
+    }
+  },
+
+  openReferenceTarget: async (target) => {
+    const open = get().openNodeById
+    if (!open)
+      return
+    if (target.targetNodeId) {
+      await open(target.targetNodeId)
+      return
+    }
+    // Inside the workspace a span carries the node itself. A reference into a module the workspace does
+    // not hold carries the file and token it has there instead: asking the backend for that pair opens
+    // the module on demand, which is how dnSpy follows a reference into an assembly the tree does not
+    // have. Opening one adds a root, so the tree is read again — and read first, so the root is there
+    // by the time the document is.
+    const workspaceId = get().workspaceId
+    if (!workspaceId || !target.targetModulePath || target.targetMetadataToken === undefined)
+      return
+    try {
+      const found = await window.dnSpy.findMember(workspaceId, target.targetModulePath, target.targetMetadataToken)
+      if (!found.nodeId) {
+        get().appendOutput(t('Navigation failed: {message}', { message: target.targetModulePath }))
+        return
+      }
+      await get().refreshRoots()
+      await open(found.nodeId)
+    } catch (reason) {
+      get().appendOutput(t('Navigation failed: {message}', { message: reason instanceof Error ? reason.message : String(reason) }))
+    }
+  },
+
   saveCode: async (documentId) => {
     const { busy, documents } = get()
     const document = documents[documentId]
@@ -1449,8 +1535,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   revealStoppedLocation: async (options) => {
-    const { debugFrames, activeDebugFrameId } = get()
-    const frame = debugFrames.find((candidate) => candidate.id === activeDebugFrameId) ?? debugFrames[0]
+    let { debugFrames, activeDebugFrameId } = get()
+    let frame = debugFrames.find((candidate) => candidate.id === activeDebugFrameId) ?? debugFrames[0]
+    // A stop in a module the workspace does not hold has neither a line nor a document: the engine only
+    // resolves a frame against a module the workspace has. dnSpy loads the document when the debugger
+    // stops at it, so the module is opened now — once per path — and the stack is read again, because
+    // that read is what turns the frame into a line. Stepping into the framework looks like it did
+    // nothing without this: the stop happens, and the editor has nowhere to show it.
+    if (frame && frame.line <= 0 && frame.source?.path &&
+      await openDebugModule(get, set, frame.source.path, frame.source.name ?? frame.source.path)) {
+      debugFrames = get().debugFrames
+      frame = debugFrames.find((candidate) => candidate.id === frame!.id) ?? debugFrames[0]
+    }
     // A frame the decompiler could not place has no line to mark. Clearing the marker is what keeps a
     // highlight from a finished stop lingering over the next one.
     if (!frame || frame.line <= 0 || !frame.nodeId) {
@@ -3043,6 +3139,36 @@ const writeHexPatch = async (
   } finally {
     set({ busy: false })
   }
+}
+
+// The modules a debug stop has already asked for, kept per workspace: a file that cannot be opened must
+// not be asked for again on every stop, and a workspace the user opens next deserves a fresh question.
+let autoOpenedModules: { workspaceId?: string; paths: Set<string> } = { paths: new Set() }
+
+/**
+ * Opens a module a stop landed in, and reads the stack again so the frames that were in it resolve to
+ * lines. Answers whether the frames were read again, which is only ever true when a module was really
+ * added — a path already asked for, or one the backend could not open, answers false.
+ */
+const openDebugModule = async (get: StoreGet, set: StoreSet, path: string, name: string): Promise<boolean> => {
+  const { workspaceId } = get()
+  if (!workspaceId) return false
+  if (autoOpenedModules.workspaceId !== workspaceId)
+    autoOpenedModules = { workspaceId, paths: new Set() }
+  if (autoOpenedModules.paths.has(path)) return false
+  autoOpenedModules.paths.add(path)
+  try {
+    const added = await window.dnSpy.addModules(workspaceId, [path])
+    const roots = await window.dnSpy.getRoots(workspaceId)
+    set({ modules: added.modules, roots: roots.nodes })
+    get().appendOutput(t('Loaded {name} for the stopped location.', { name }))
+  } catch {
+    // The file is gone, or is not a module dnSpy can read. The stop keeps the identity it has — a
+    // module and a token — and nothing else changes.
+    return false
+  }
+  await refreshDebugState(get, set, get().selectedDebugThreadId)
+  return true
 }
 
 const refreshDebugState = async (get: StoreGet, set: StoreSet, preferredThreadId?: number): Promise<void> => {

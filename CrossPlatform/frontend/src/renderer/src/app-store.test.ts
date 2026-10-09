@@ -1,6 +1,7 @@
 import { Actions, DockLocation, Model, TabSetNode } from 'flexlayout-react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { CodeStatement, DebugBreakpoint, DecompilerLanguage, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
+import type { CodeStatement, DebugBreakpoint, DebugStackFrame, DecompilerLanguage, HexMethodTarget, HexTargetResponse, TreeNode } from '../../shared/protocol'
+import { isNavigableSpan } from '../../shared/protocol'
 import { bookmarkEntries, bookmarkLineInDocument, bookmarkMarkers, breakpointsFile, buildSession, bytesToHex, codeStatementAt, enableSessionPersistence, filterBookmarks, lineBreakpointEntries, lineBreakpointMarkers, loadSession, methodBreakpointName, orderedDocumentKeys, ownerTypeIdOf, parseBookmarkEntries, parseHexText, parseLineBreakpointEntries, statementIdentity, suggestCodeFilename, syncDockTabStrips, useAppStore } from './app-store'
 import type { Bookmark, DocumentState, LineBreakpoint, SessionSource } from './app-store'
 import { translate } from './localization'
@@ -1049,6 +1050,299 @@ describe('bookmarks', () => {
     expect(ids('debugtarget cold')).toEqual([])
     // A prefix with nothing after it matches everything, the way an empty box does.
     expect(ids('n:')).toEqual(['b1', 'b2'])
+  })
+})
+
+// A reference is drawn and clickable only when it goes somewhere, and "somewhere" is wider than a node
+// id: the editor used to leave a reference into a module the workspace does not hold undecorated, which
+// is what "the references in the text do not respond to a click" looks like from the outside.
+describe('navigable spans', () => {
+  it('counts a reference that names only a module and token as a target', () => {
+    expect(isNavigableSpan({ start: 0, length: 3, kind: 'method', targetModulePath: '/usr/share/dotnet/System.Console.dll', targetMetadataToken: 0x06000123 })).toBe(true)
+    expect(isNavigableSpan({ start: 0, length: 3, kind: 'method', targetNodeId: 'n7' })).toBe(true)
+  })
+
+  it('leaves a span with nothing to go to alone', () => {
+    expect(isNavigableSpan({ start: 0, length: 3, kind: 'text' })).toBe(false)
+    // An empty node id is what the backend leaves behind for a span it could not place, and it is not a
+    // target either.
+    expect(isNavigableSpan({ start: 0, length: 3, kind: 'type', targetNodeId: '' })).toBe(false)
+  })
+})
+
+// A reference the user clicks. Inside the workspace the span names the node it goes to; a reference into
+// a module the workspace does not hold names the file and token it has there instead, and asking the
+// backend for that pair opens that module on demand — which is how dnSpy follows a reference into an
+// assembly its tree does not have. Opening one adds a root, so the tree is read again.
+describe('followed references', () => {
+  const consolePath = '/usr/share/dotnet/shared/Microsoft.NETCore.App/9.0.0/System.Console.dll'
+  const openNodeById = vi.fn()
+  const getRoots = vi.fn()
+  const calls: string[] = []
+
+  const install = (extra: Record<string, unknown>): void => {
+    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, getRoots, ...extra } })
+  }
+
+  beforeEach(() => {
+    calls.length = 0
+    openNodeById.mockReset().mockImplementation(async (nodeId: string) => { calls.push(`open:${nodeId}`); return nodeId })
+    getRoots.mockReset().mockImplementation(async () => { calls.push('roots'); return { nodes: [moduleNode('n2', consolePath)] } })
+    install({})
+    useAppStore.setState({ workspaceId: 'ws1', openNodeById, roots: [], output: [] })
+  })
+
+  it('opens a reference that names its node without asking the backend for anything', async () => {
+    await useAppStore.getState().openReferenceTarget({ start: 0, length: 4, kind: 'type', targetNodeId: 'n7' })
+
+    expect(openNodeById).toHaveBeenCalledWith('n7')
+    expect(getRoots).not.toHaveBeenCalled()
+  })
+
+  it('resolves a reference into a module the workspace does not hold, then reads the tree that module was added to', async () => {
+    const findMember = vi.fn(async () => ({ nodeId: 'n42', label: 'WriteLine', description: 'System.Void System.Console::WriteLine(System.Int32)' }))
+    install({ findMember })
+
+    await useAppStore.getState().openReferenceTarget({ start: 0, length: 9, kind: 'method', targetModulePath: consolePath, targetMetadataToken: 0x06000123 })
+
+    // The file and token, not a node id: that identity is the one a module that is not open can name.
+    expect(findMember).toHaveBeenCalledWith('ws1', consolePath, 0x06000123)
+    // The tree is read before the document opens, so the root the backend just added is there to see.
+    expect(calls).toEqual(['roots', 'open:n42'])
+    expect(useAppStore.getState().roots).toEqual([moduleNode('n2', consolePath)])
+  })
+
+  it('reports a reference the backend has nothing for', async () => {
+    install({ findMember: vi.fn(async () => ({ nodeId: undefined })) })
+
+    await useAppStore.getState().openReferenceTarget({ start: 0, length: 9, kind: 'method', targetModulePath: '/app/Missing.dll', targetMetadataToken: 0x06000001 })
+
+    expect(openNodeById).not.toHaveBeenCalled()
+    expect(useAppStore.getState().output.at(-1)).toContain(translate('Navigation failed: {message}', { message: '/app/Missing.dll' }))
+  })
+
+  it('reports a reference that could not be looked up at all', async () => {
+    install({ findMember: vi.fn(async () => { throw new Error('the backend is gone') }) })
+
+    await useAppStore.getState().openReferenceTarget({ start: 0, length: 9, kind: 'method', targetModulePath: consolePath, targetMetadataToken: 0x06000123 })
+
+    expect(openNodeById).not.toHaveBeenCalled()
+    expect(useAppStore.getState().output.at(-1)).toContain('the backend is gone')
+  })
+
+  it('does nothing for a span that names no target', async () => {
+    await useAppStore.getState().openReferenceTarget({ start: 0, length: 9, kind: 'text' })
+
+    expect(openNodeById).not.toHaveBeenCalled()
+    expect(useAppStore.getState().output).toEqual([])
+  })
+})
+
+// Bringing a node the tree has never listed into view, which is what follows a document tab coming to the
+// front. The client knows a node's ancestors only for the ones it has listed itself, and the node a
+// reference was followed into was usually reached by its id alone — a member's id names its module and
+// token, not the type that declares it. The backend hands back the chain instead, and remembering it as
+// parents is what lets the ordinary walk answer for that node from then on.
+describe('revealing a node the tree has never listed', () => {
+  const modulePath = '/app/Example.dll'
+  const calls: string[] = []
+  const getChildren = vi.fn()
+  const getNode = vi.fn()
+  const getNodePath = vi.fn()
+
+  const chain = (...ids: string[]): TreeNode[] => ids.map((id) => treeNode(id, id))
+
+  const install = (extra: Record<string, unknown> = {}): void => {
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, getChildren, getNode, getNodePath, ...extra },
+    })
+  }
+
+  beforeEach(() => {
+    calls.length = 0
+    getNodePath.mockReset().mockImplementation(async (_workspaceId: string, nodeId: string) => {
+      calls.push(`path:${nodeId}`)
+      return { nodes: chain('n1', 'n2', 'n3', nodeId) }
+    })
+    getChildren.mockReset().mockImplementation(async (_workspaceId: string, nodeId: string) => {
+      calls.push(`children:${nodeId}`)
+      return { nodes: [treeNode('n9', 'n9')] }
+    })
+    getNode.mockReset().mockImplementation(async (_workspaceId: string, nodeId: string) => {
+      calls.push(`node:${nodeId}`)
+      return treeNode(nodeId, nodeId)
+    })
+    install()
+    useAppStore.setState({
+      workspaceId: 'ws1',
+      roots: [treeNode('n1', `assembly:${modulePath}`, { kind: 'assembly' })],
+      children: {},
+      parents: {},
+      expanded: {},
+      loadingNodes: {},
+      selectedNode: undefined,
+    })
+  })
+
+  it('asks for the chain, expands it and selects the node', async () => {
+    await useAppStore.getState().revealNode('n42')
+
+    expect(getNodePath).toHaveBeenCalledWith('ws1', 'n42')
+    // Every ancestor above the node is opened; the node itself is not a branch to expand.
+    expect(useAppStore.getState().expanded).toEqual({ n1: true, n2: true, n3: true })
+    // The rows only exist once the level above each of them has been read.
+    expect(calls).toEqual(['path:n42', 'children:n1', 'children:n2', 'children:n3', 'node:n42'])
+    expect(useAppStore.getState().selectedNode?.id).toBe('n42')
+    // The chain records the ancestry, so the walk answers next time: `getNode` is the only read left.
+    expect(useAppStore.getState().parents).toMatchObject({ n2: 'n1', n3: 'n2', n42: 'n3' })
+  })
+
+  it('walks the ancestry it has already recorded without asking for the chain again', async () => {
+    useAppStore.setState({ parents: { n42: 'n3' }, expanded: {} })
+
+    await useAppStore.getState().revealNode('n42')
+
+    expect(getNodePath).not.toHaveBeenCalled()
+    expect(useAppStore.getState().expanded).toEqual({ n3: true })
+  })
+
+  it('leaves a node the backend can place nowhere unselected', async () => {
+    getNodePath.mockResolvedValue({ nodes: [] })
+
+    await useAppStore.getState().revealNode('n42')
+
+    expect(useAppStore.getState().selectedNode).toBeUndefined()
+    expect(useAppStore.getState().output).toEqual([])
+  })
+
+  it('leaves a node the backend refuses to place unselected rather than failing', async () => {
+    getNodePath.mockRejectedValue(new Error('The selected tree node no longer exists.'))
+
+    await expect(useAppStore.getState().revealNode('n42')).resolves.toBeUndefined()
+
+    expect(useAppStore.getState().selectedNode).toBeUndefined()
+    expect(getNode).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the tree is already showing that node', async () => {
+    useAppStore.setState({ selectedNode: treeNode('n42', 'n42'), parents: { n42: 'n3' }, expanded: { n3: true } })
+
+    await useAppStore.getState().revealNode('n42')
+
+    expect(getNodePath).not.toHaveBeenCalled()
+    expect(getNode).not.toHaveBeenCalled()
+  })
+
+  // Opening a document selects the node it opens, so the store can name a node the tree has no row for at
+  // all: following a reference into a module the workspace does not hold lands on exactly that. Being the
+  // selection does not mean the node is on screen, and the reveal still has to open the way down to it.
+  it('opens the way down to a node the store selected before the tree had its row', async () => {
+    useAppStore.setState({ selectedNode: treeNode('n42', 'n42') })
+
+    await useAppStore.getState().revealNode('n42')
+
+    expect(getNodePath).toHaveBeenCalledWith('ws1', 'n42')
+    expect(useAppStore.getState().expanded).toEqual({ n1: true, n2: true, n3: true })
+    expect(useAppStore.getState().selectedNode?.id).toBe('n42')
+  })
+})
+
+// A stop in a module the workspace does not hold has neither a line nor a node: the engine resolves a
+// frame against the workspace, and that module is not in it. dnSpy's debugger loads the document when it
+// stops at one, so the module is opened here — the stop is what the user is looking at, and stepping
+// into a framework method otherwise looks like nothing happened at all.
+describe('a stop in a module the workspace does not hold', () => {
+  const consolePath = '/usr/share/dotnet/shared/Microsoft.NETCore.App/9.0.0/System.Console.dll'
+  const consoleFrame = (line: number): DebugStackFrame => ({
+    id: 1,
+    name: 'System.Void System.Console::WriteLine(System.Int32)',
+    line,
+    column: 0,
+    nodeId: line > 0 ? 'method-5' : undefined,
+    source: { name: 'System.Console.dll', path: consolePath },
+  })
+  const addModules = vi.fn()
+  const getRoots = vi.fn()
+  const stack = vi.fn()
+  const revealDocument = vi.fn(async () => undefined)
+  // Which modules have already been asked for is remembered per workspace and outlives a test, so each
+  // one gets a workspace of its own — the same thing the store does for a workspace the user opens.
+  let workspaceId = ''
+  let workspaces = 0
+
+  beforeEach(() => {
+    workspaceId = `ws${++workspaces}`
+    addModules.mockReset().mockResolvedValue({ modules: [openedModule('n2', consolePath)], skipped: [], stateId: 's2' })
+    getRoots.mockReset().mockResolvedValue({ nodes: [moduleNode('n2', consolePath)] })
+    // Reading the stack again is what turns the frame into a line: the module is in the workspace now.
+    stack.mockReset().mockResolvedValue([consoleFrame(12)])
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: {
+        ...window.dnSpy,
+        addModules,
+        getRoots,
+        getDebugThreads: vi.fn(async () => [{ id: 1, name: 'Main' }]),
+        getDebugStackTrace: stack,
+        getDebugModules: vi.fn(async () => []),
+        getDebugScopes: vi.fn(async () => []),
+        getDebugVariables: vi.fn(async () => []),
+      },
+    })
+    useAppStore.setState({
+      workspaceId,
+      modules: [openedModule('n1', '/app/DebugTarget.dll')],
+      roots: [moduleNode('n1', '/app/DebugTarget.dll')],
+      debugSessionId: 'session',
+      debugState: 'stopped',
+      debugThreads: [],
+      selectedDebugThreadId: 1,
+      debugFrames: [consoleFrame(0)],
+      selectedDebugFrameId: 1,
+      activeDebugFrameId: 1,
+      watches: [],
+      stoppedLocation: undefined,
+      output: [],
+      revealDocument,
+    })
+  })
+
+  it('loads the module and marks the line the frame resolves to once it is open', async () => {
+    await useAppStore.getState().revealStoppedLocation()
+
+    expect(addModules).toHaveBeenCalledWith(workspaceId, [consolePath])
+    expect(useAppStore.getState().roots).toEqual([moduleNode('n2', consolePath)])
+    expect(useAppStore.getState().output.at(-1)).toContain(translate('Loaded {name} for the stopped location.', { name: 'System.Console.dll' }))
+    expect(useAppStore.getState().stoppedLocation).toMatchObject({ nodeId: 'method-5', line: 12 })
+    expect(revealDocument).toHaveBeenCalledWith('method-5')
+  })
+
+  it('asks for a module once per workspace, however many stops land in it', async () => {
+    // The frame stays unplaced, so the second stop asks the same question and the memory is what
+    // has to answer it.
+    stack.mockResolvedValue([consoleFrame(0)])
+
+    await useAppStore.getState().revealStoppedLocation()
+    await useAppStore.getState().revealStoppedLocation()
+    expect(addModules).toHaveBeenCalledOnce()
+
+    // A workspace the user opens next deserves a fresh question.
+    useAppStore.setState({ workspaceId: 'ws-elsewhere' })
+    await useAppStore.getState().revealStoppedLocation()
+    expect(addModules).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the stop as it is when the module cannot be opened', async () => {
+    addModules.mockRejectedValue(new Error('not a managed module'))
+
+    await useAppStore.getState().revealStoppedLocation()
+
+    // A file that is gone is not worth a word on every stop, and nothing was added, so there is no
+    // reason to read the stack again either.
+    expect(stack).not.toHaveBeenCalled()
+    expect(useAppStore.getState().output).toEqual([])
+    expect(useAppStore.getState().stoppedLocation).toBeUndefined()
   })
 })
 

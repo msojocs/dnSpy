@@ -524,6 +524,7 @@ const zhCN: Record<string, string> = {
   'Backend: {state}': '后端：{state}',
   'Backend: {state} - {message}': '后端：{state} - {message}',
   'Opened {count} module(s).': '已打开 {count} 个模块。',
+  'Loaded {name} for the stopped location.': '已为停止位置加载 {name}。',
   'Skipped {count} module(s) that are already open.': '已跳过 {count} 个已经打开的模块。',
   'Open failed: {message}': '打开失败：{message}',
   'Restored the previous session.': '已恢复上次会话。',

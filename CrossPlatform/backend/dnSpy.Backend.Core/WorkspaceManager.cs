@@ -75,11 +75,14 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 	public Task<TreeNodeDto> GetNodeAsync(NodeRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetNodeDto(request.NodeId), cancellationToken);
 
+	public Task<TreeNodesResponse> GetNodePathAsync(NodeRequest request, CancellationToken cancellationToken) =>
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.GetNodePath(request.NodeId), cancellationToken);
+
 	public Task<DecompileResponse> DecompileAsync(DecompileRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).DecompileDocumentAsync(request, cancellationToken);
 
 	public Task<FindMemberResponse> FindMemberAsync(FindMemberRequest request, CancellationToken cancellationToken) =>
-		GetWorkspace(request.WorkspaceId).RunAsync(w => w.FindMember(request.ModulePath, request.MetadataToken), cancellationToken);
+		GetWorkspace(request.WorkspaceId).RunAsync(w => w.FindMemberAsync(request.ModulePath, request.MetadataToken, cancellationToken), cancellationToken);
 
 	public Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken) =>
 		GetWorkspace(request.WorkspaceId).RunAsync(w => w.Search(request, cancellationToken), cancellationToken);
@@ -504,9 +507,15 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		}
 
 		/// <summary>
-		/// A step into a call lands on the first statement of what the call runs. Calls the workspace
-		/// cannot decompile — the framework, an extern — are not targets, so "step into" degrades to
-		/// "step over" there rather than walking into code with nothing to show.
+		/// A step into a call lands on the first statement of what the call runs. The callee's module is
+		/// read from disk when the workspace does not hold it, which is what dnSpy's own engine does: it
+		/// asks its decompiler for the callee's statements and the decompiler loads the module to answer.
+		/// The file a call to a framework method has to be read from is not beside the debuggee, so it is
+		/// found the way the tree finds it (see <see cref="FindCalleeBody"/>).
+		/// A call the workspace can say nothing about — native, or an assembly this machine does not have —
+		/// has only its entry instruction to aim at, and a call whose body has no entry at all is not a
+		/// target, so "step into" degrades to "step over" there rather than walking into code with no
+		/// document.
 		/// </summary>
 		void AddCalleeTargets(List<SteppingTarget> targets, Workspace? workspace, Workspace.ModuleEntry entry, MethodDef method, int ilOffset, CancellationToken cancellationToken) {
 			if (method.Body is not { } body)
@@ -515,36 +524,88 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			// so the call is rarely at the location itself: the next call the thread reaches is the one a
 			// step into enters. A call the thread branches past is not a problem — the caller's own
 			// statements are armed too, so the step completes there instead of running on unobserved.
-			MethodDef? callee = null;
+			IMethod? call = null;
 			foreach (var instruction in body.Instructions) {
 				if (instruction.Offset < ilOffset)
 					continue;
 				if (instruction.OpCode.Code is not (Code.Call or Code.Callvirt or Code.Newobj))
 					continue;
-				callee = (instruction.Operand as IMethod)?.ResolveMethodDef();
+				call = instruction.Operand as IMethod;
 				break;
 			}
-			if (callee is null || !callee.HasBody)
+			if (call is null)
 				return;
-			// Stepping into a call is only worth offering where there is decompiled source to land in:
-			// the same module, or another module of this workspace. A framework or native callee has no
-			// document to show, so there "step into" degrades to "step over" instead of walking into
-			// code the client cannot display — and, for the framework, into a module that would have to
-			// be decompiled in full to find out.
-			var calleePath = string.IsNullOrEmpty(callee.Module.Location) ? entry.Path : Path.GetFullPath(callee.Module.Location);
-			var calleeEntry = string.Equals(calleePath, entry.Path, StringComparison.Ordinal)
-				? entry
-				: workspace?.FindModuleEntry(calleePath);
-			if (calleeEntry is null)
+			if (FindCalleeBody(workspace, entry, call) is not { } calleeTarget)
 				return;
+			var (calleeEntry, callee) = calleeTarget;
 			// Like the caller's own statements, the whole callee is armed: the runtime reports the statement
-			// it reaches first, which is the one the call runs.
-			foreach (var offset in GetMethodStatements(workspace?.SymbolScope ?? string.Empty, calleeEntry, FindSourceMethod(callee), cancellationToken)
-				.Where(statement => statement.MetadataToken == callee.MDToken.Raw && !statement.IsHidden)
-				.SelectMany(statement => ArmStatement(callee, statement))
-				.Distinct()
-				.OrderBy(offset => offset))
-				targets.Add(new SteppingTarget(calleeEntry.Path, unchecked((int)callee.MDToken.Raw), offset));
+			// it reaches first, which is the one the call runs. Each target is armed under the token of the
+			// body the statement belongs to rather than the method the call names, because the two are not
+			// the same for an async method: its statements are the generated MoveNext's, and arming them
+			// against the kickoff would put no breakpoint in the body at all — the step would run straight
+			// past the call it was meant to enter.
+			var calleeTargets = new List<(int MetadataToken, int IlOffset)>();
+			foreach (var statement in GetMethodStatements(workspace?.SymbolScope ?? string.Empty, calleeEntry, FindSourceMethod(callee), cancellationToken)) {
+				if (statement.IsHidden)
+					continue;
+				if (calleeEntry.Module.ResolveToken(statement.MetadataToken) is not MethodDef statementBody)
+					continue;
+				foreach (var offset in ArmStatement(statementBody, statement))
+					calleeTargets.Add((statement.MetadataToken, offset));
+			}
+			// A body the decompiler gives no statements for — one it cannot read at all, or one whose
+			// statements belong to another method — still begins somewhere, and that one location is what
+			// entering the call reaches. Without it the step would quietly become a step over, which is
+			// exactly the behaviour a step into must not have.
+			if (calleeTargets.Count == 0 && callee.Body is { Instructions.Count: > 0 } calleeBody)
+				calleeTargets.Add((unchecked((int)callee.MDToken.Raw), unchecked((int)calleeBody.Instructions[0].Offset)));
+			foreach (var (metadataToken, offset) in calleeTargets.Distinct().OrderBy(target => target.IlOffset))
+				targets.Add(new SteppingTarget(calleeEntry.Path, metadataToken, offset));
+		}
+
+		/// <summary>
+		/// The module a call's body is in and the body itself, or null when nothing on this machine has
+		/// either. A callee in the caller, or beside it, is one dnlib finds on its own. A framework callee
+		/// is not: the assembly the call's declaring type comes from is in the runtime the debuggee
+		/// targets rather than next to its file, and dnlib is never told where that is. The tree already
+		/// answers where such a reference resolves, so the file is read as a module of its own and the
+		/// method the call names is looked up in it by name and signature — which is what gives the step a
+		/// body to enter instead of a call to run past.
+		/// </summary>
+		(Workspace.ModuleEntry Entry, MethodDef Body)? FindCalleeBody(Workspace? workspace, Workspace.ModuleEntry owner, IMethod call) {
+			if (call.ResolveMethodDef() is { HasBody: true } resolved && !string.IsNullOrEmpty(resolved.Module.Location)) {
+				var path = Path.GetFullPath(resolved.Module.Location);
+				var entry = string.Equals(path, owner.Path, StringComparison.Ordinal) ? owner : FindModule(workspace, path);
+				return entry is null ? null : (entry, resolved);
+			}
+			// An instantiated generic type is named by the type it instantiates, since that is the one
+			// whose module declares the method; anything the reference does not spell out by name and
+			// signature — a generic callee, say — is not followed, and the step stays a step over.
+			if (workspace is null || DeclaringAssembly(call) is not { } reference || call.MethodSig is not { } signature)
+				return null;
+			if (workspace.FindReferencePath(owner, reference) is not { } referencePath)
+				return null;
+			if (FindModule(workspace, Path.GetFullPath(referencePath)) is not { } module)
+				return null;
+			var type = call.DeclaringType is TypeSpec specification ? specification.ScopeType : call.DeclaringType;
+			if (type is null || module.Module.Find(type.FullName, isReflectionName: false) is not { } declaringType)
+				return null;
+			return declaringType.FindMethod(call.Name, signature) is { HasBody: true } body ? (module, body) : null;
+		}
+
+		/// <summary>
+		/// The assembly a call's declaring type is declared in, as the caller's metadata names it, or null
+		/// when the type belongs to a module that metadata owns. A nested type hangs off its declaring
+		/// type rather than the assembly, so it is walked to whichever of them the reference is on.
+		/// </summary>
+		static AssemblyRef? DeclaringAssembly(IMethod call) {
+			var type = call.DeclaringType is TypeSpec specification ? specification.ScopeType : call.DeclaringType;
+			while (type is TypeRef reference) {
+				if (reference.ResolutionScope is AssemblyRef assembly)
+					return assembly;
+				type = reference.DeclaringType;
+			}
+			return null;
 		}
 
 		/// <summary>True when the module is one of the workspace's own files rather than a dependency.</summary>
@@ -1025,6 +1086,76 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 
 		public TreeNodeDto GetNodeDto(string nodeId) => ToDto(GetNode(nodeId));
 
+		/// <summary>
+		/// The chain of nodes from the workspace root down to the given node, the root first and the node
+		/// itself last. A client asks for it because it cannot derive a node's ancestors from the node id:
+		/// a member's id names its module and token, not the type that declares it. Every node on the chain
+		/// is built through the same keys the tree uses, so an id the tree already handed out comes back the
+		/// same. The chain is empty for a node that has no root above it — a structure read out of a PE or
+		/// ELF image, a resource, or a node of a module the workspace never opened.
+		/// </summary>
+		public TreeNodesResponse GetNodePath(string nodeId) =>
+			new(GetNodePathCore(GetNode(nodeId)).Select(ToDto).ToArray());
+
+		IReadOnlyList<NodeEntry> GetNodePathCore(NodeEntry node) {
+			// A root is the root of itself, and a document for a file that is not a managed assembly has
+			// nothing under it to walk down through.
+			if (node.Kind is NodeKind.Assembly or NodeKind.PEDocument or NodeKind.ElfDocument or NodeKind.UnknownDocument)
+				return [node];
+			if (node.AsModuleEntry is not { } module)
+				return [];
+			// An open module owns the module node hanging off its assembly root, which is the node
+			// LoadModulesAsync created. A module reached through an assembly reference has no root of its
+			// own, so no chain leads to its nodes and the caller walks its own tree instead.
+			if (!nodeIdsByKey.ContainsKey($"assembly:{module.Path}"))
+				return [];
+
+			var root = GetOrAddNode($"assembly:{module.Path}", NodeKind.Assembly, module.Module.Assembly ?? (object)module.Module, module);
+			if (node.Kind == NodeKind.Module)
+				return [root, node];
+			var moduleNode = GetOrAddNode($"module:{module.Path}", NodeKind.Module, module.Module, module);
+			var chain = new List<NodeEntry> { root, moduleNode };
+			switch (node.Kind) {
+				case NodeKind.Namespace or NodeKind.PE or NodeKind.ReferencesGroup or NodeKind.ResourcesGroup or NodeKind.TypeReferencesGroup:
+					chain.Add(node);
+					return chain;
+				case NodeKind.AssemblyReference:
+					chain.Add(GetOrAddNode($"{moduleNode.Key}:references", NodeKind.ReferencesGroup, module.Module, module));
+					chain.Add(node);
+					return chain;
+			}
+
+			// A type or one of its members: the namespace the outermost type sits in, the declaring types
+			// from the outside in, and then the node.
+			var declaringType = node.Value switch {
+				TypeDef type => type,
+				MethodDef method => method.DeclaringType,
+				FieldDef field => field.DeclaringType,
+				PropertyDef property => property.DeclaringType,
+				EventDef @event => @event.DeclaringType,
+				_ => null,
+			};
+			if (declaringType is null)
+				return [];
+			var types = new List<TypeDef>();
+			for (var type = declaringType; type is not null; type = type.DeclaringType)
+				types.Insert(0, type);
+			var outermost = types[0];
+			// Only a top-level type sits in a namespace; a nested one is listed under the type that
+			// declares it. The global <Module> type is in no namespace either — GetNamespaceIndex skips it.
+			if (outermost.DeclaringType is null && !outermost.IsGlobalModuleType) {
+				var ns = outermost.Namespace.String ?? string.Empty;
+				if (GetNamespaceIndex(module).Groups.TryGetValue(ns, out var group))
+					chain.Add(GetOrAddNode($"{moduleNode.Key}:namespace:{ns}", NodeKind.Namespace, new NamespaceValue(ns, group), module));
+			}
+			foreach (var type in types)
+				chain.Add(GetMemberNode(type, module));
+			// The last declaring type is the node itself when the node is a type.
+			if (node.Kind != NodeKind.Type)
+				chain.Add(node);
+			return chain;
+		}
+
 		IReadOnlyList<NodeEntry> GetAssemblyChildren(NodeEntry node) {
 			// Assembly node contains the Module node as its only child
 			var moduleEntry = node.AsModuleEntry!;
@@ -1283,6 +1414,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			referencePaths.Add(key, path);
 			return path;
 		}
+
+		/// <summary>
+		/// The file a reference of this module resolves to, for a caller outside the tree that has to
+		/// follow the reference itself — the debug engine, on its way into a call it cannot read.
+		/// </summary>
+		internal string? FindReferencePath(ModuleEntry owner, AssemblyRef reference) => ReferencePath(owner, reference);
 
 		static string ReferenceKey(ModuleEntry owner, string name) => $"{owner.Path}:{name}";
 
@@ -1817,7 +1954,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			}
 		}
 
-		string? ResolveDecompilerReference(object reference, ModuleEntry defaultModule) {
+		SpanTarget? ResolveDecompilerReference(object reference, ModuleEntry defaultModule) {
 			if (reference is MetadataReference metadataReference)
 				return ResolveMetadataHandle(metadataReference.Metadata, metadataReference.Handle, defaultModule);
 			System.Reflection.Metadata.EntityHandle handle;
@@ -1837,20 +1974,57 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			return ResolveMetadataHandle(metadataFile, handle, defaultModule);
 		}
 
-		string? ResolveMetadataHandle(DecompilerMetadataFile? metadataFile, System.Reflection.Metadata.Handle handle, ModuleEntry defaultModule) {
+		/// <summary>
+		/// Where a reference in decompiled text points. The handle belongs to the module whose metadata
+		/// file it arrived with, and that is not the module being decompiled as soon as the reference
+		/// crosses an assembly boundary — reading the token against the wrong module is what puts a span
+		/// on whichever member happens to share it. A module the workspace holds is answered with a node;
+		/// one it does not is answered with the file behind it, so following the reference can open that
+		/// file on demand. dnSpy loads the document then, not while the text is being rendered.
+		/// </summary>
+		SpanTarget? ResolveMetadataHandle(DecompilerMetadataFile? metadataFile, System.Reflection.Metadata.Handle handle, ModuleEntry defaultModule) {
 			if (handle.IsNil)
 				return null;
-			var module = defaultModule;
-			if (!string.IsNullOrEmpty(metadataFile?.FileName)) {
-				var matchingModule = modules.Values.FirstOrDefault(candidate => Path.GetFullPath(candidate.Path).Equals(Path.GetFullPath(metadataFile.FileName), StringComparison.Ordinal));
-				if (matchingModule is not null)
-					module = matchingModule;
-			}
 			var token = unchecked((uint)MetadataTokens.GetToken(handle));
-			if (module.Module.ResolveToken(token) is not IMDTokenProvider provider || provider is not (TypeDef or MethodDef or FieldDef or PropertyDef or EventDef))
-				return null;
-			return GetMemberNode(provider, module).Id;
+			var name = metadataFile?.FileName;
+			// No metadata file means the handle is the decompiled module's own — the only case where
+			// resolving it there is known to be right.
+			if (string.IsNullOrEmpty(name))
+				return ResolveInModule(defaultModule, token);
+			// The module the decompiler read the handle out of: the same file when it is open, and when
+			// the decompiler resolved a copy of its own, an open module of that assembly name — the tree
+			// matches a reference by name for the same reason.
+			var module = modules.Values.FirstOrDefault(candidate => SameFile(candidate.Path, name))
+				?? FindOpenModuleByName(Path.GetFileNameWithoutExtension(name));
+			if (module is not null)
+				return ResolveInModule(module, token);
+			// A reference into an assembly the workspace does not hold. The decompiler names the file it
+			// resolved, or, for a reference it could not resolve, the file name alone — which the
+			// assembly resolver would have searched for beside the referencing module.
+			var path = Path.IsPathRooted(name)
+				? name
+				: Path.Combine(Path.GetDirectoryName(defaultModule.Path) ?? string.Empty, name);
+			return File.Exists(path) ? new SpanTarget(null, path, unchecked((int)token)) : null;
 		}
+
+		/// <summary>A node for a handle that belongs to a module the workspace holds, or nothing to point at.</summary>
+		SpanTarget? ResolveInModule(ModuleEntry module, uint token) {
+			IMDTokenProvider? provider;
+			try {
+				provider = module.Module.ResolveToken(token);
+			}
+			catch (Exception) {
+				// A token the module has no row for is a reference to something it does not define.
+				return null;
+			}
+			// Only members the tree can show are navigable.
+			if (provider is not (TypeDef or MethodDef or FieldDef or PropertyDef or EventDef))
+				return null;
+			return new SpanTarget(GetMemberNode(provider, module).Id, null, null);
+		}
+
+		static bool SameFile(string left, string right) =>
+			Path.GetFullPath(left).Equals(Path.GetFullPath(right), StringComparison.Ordinal);
 
 		internal static System.Reflection.Metadata.EntityHandle ToEntityHandle(IMDTokenProvider provider) =>
 			MetadataTokens.EntityHandle(unchecked((int)provider.MDToken.Raw));
@@ -3479,8 +3653,39 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// back to a node. The member is materialised on demand, so a bookmark stays navigable after a
 		/// restart even though node ids are only unique within one workspace.
 		/// </summary>
-		internal FindMemberResponse FindMember(string modulePath, int metadataToken) {
-			if (metadataToken == 0 || FindModuleEntry(modulePath) is not ModuleEntry module || module.IsExternal)
+		internal FindMemberResponse FindMember(string modulePath, int metadataToken) =>
+			string.IsNullOrEmpty(modulePath)
+				? new FindMemberResponse(null, null, null)
+				: FindMember(FindModuleEntry(modulePath), metadataToken);
+
+		/// <summary>
+		/// The same lookup for an identity that may name a module the workspace does not hold yet — the
+		/// target of a reference in decompiled text. The file is opened on demand, which is what makes
+		/// such a reference followable at all; it adds a root, so a caller that got a node back has to ask
+		/// for the roots again.
+		/// </summary>
+		internal async Task<FindMemberResponse> FindMemberAsync(string modulePath, int metadataToken, CancellationToken cancellationToken) {
+			if (metadataToken == 0 || string.IsNullOrEmpty(modulePath))
+				return new FindMemberResponse(null, null, null);
+			return FindMember(await EnsureModuleOpenAsync(modulePath, cancellationToken).ConfigureAwait(false), metadataToken);
+		}
+
+		/// <summary>
+		/// The entry for a module path, opened into the workspace when it is not one of them yet. A file
+		/// that is missing, or that is not a managed module, yields null rather than an entry — a
+		/// reference into something this machine does not have is a reference with nowhere to go.
+		/// </summary>
+		async Task<ModuleEntry?> EnsureModuleOpenAsync(string modulePath, CancellationToken cancellationToken) {
+			if (FindModuleEntry(modulePath) is { } open)
+				return open;
+			if (!File.Exists(modulePath))
+				return null;
+			var added = await LoadModulesAsync([modulePath], cancellationToken).ConfigureAwait(false);
+			return added.OfType<ModuleEntry>().FirstOrDefault();
+		}
+
+		FindMemberResponse FindMember(ModuleEntry? module, int metadataToken) {
+			if (metadataToken == 0 || module is null || module.IsExternal)
 				return new FindMemberResponse(null, null, null);
 			IMDTokenProvider? member;
 			try {
@@ -3777,6 +3982,12 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		sealed record NamespaceIndex(string StateId, IReadOnlyDictionary<string, IReadOnlyList<TypeDef>> Groups);
 		sealed record ResourceEntryValue(string Name, object? Value, string TypeName);
 		sealed record MetadataReference(DecompilerMetadataFile Metadata, System.Reflection.Metadata.Handle Handle);
+		/// <summary>
+		/// Where a piece of decompiled text points: a node of this workspace, or — for a reference into a
+		/// module the workspace does not hold — the file it lives in and the token it has there, which the
+		/// client follows on demand.
+		/// </summary>
+		internal readonly record struct SpanTarget(string? NodeId, string? ModulePath, int? MetadataToken);
 		readonly record struct ILSourceStatement(int Offset, int EndOffset, string Text);
 		sealed class NodeEntry(string id, string key, NodeKind kind, object value, object module) {
 			public string Id { get; } = id;
@@ -3801,7 +4012,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		sealed record EditOperation(string NodeId, IModuleEntry Module, Func<Action> Apply);
 		sealed record EditHistoryEntry(IReadOnlyList<EditOperation> Operations, IReadOnlyList<Action> UndoActions, string BeforeStateId, string AfterStateId);
 
-		internal sealed class SpanTextOutput(Func<object, string?> resolveTarget) : ITextOutput {
+		internal sealed class SpanTextOutput(Func<object, SpanTarget?> resolveTarget) : ITextOutput {
 			readonly StringBuilder builder = new();
 			readonly List<TextSpanDto> spans = [];
 			int indentation;
@@ -3841,9 +4052,11 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				EnsureIndentation();
 				var start = builder.Length;
 				Append(text);
-				var target = resolveTarget(reference);
-				if (target is not null && text.Length > 0)
-					spans.Add(new TextSpanDto(start, text.Length, isDefinition ? "definition" : "reference", target));
+				// A reference the resolver could not place has no span: the text still renders, but a click
+				// on it has nowhere to go — dnSpy's own output writer skips the reference the same way.
+				if (text.Length == 0 || resolveTarget(reference) is not { } target)
+					return;
+				spans.Add(new TextSpanDto(start, text.Length, isDefinition ? "definition" : "reference", target.NodeId, target.ModulePath, target.MetadataToken));
 			}
 
 			// Every append goes through here so the line/column the syntax tree is labelled with stays in step

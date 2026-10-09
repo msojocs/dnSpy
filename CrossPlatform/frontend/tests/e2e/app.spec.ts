@@ -324,7 +324,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
     await getCode.dblclick()
 
     await expect(page.locator('.document-view')).toHaveAttribute('data-reference-count', /^[1-9]\d*$/)
@@ -335,11 +335,36 @@ test.describe('the workspace shell', () => {
 
     const targetTab = page.getByRole('tab', { name: /BackingField/ })
     await expect(targetTab).toBeVisible()
+    // The explorer follows the tab that came to the front — dnSpy selects a document's nodes whenever its
+    // tab is shown — so the row the reference led to is the one the tree is on.
+    await expect(page.locator('.tree-row.selected')).toHaveText(/BackingField/)
     const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
     await expect(toolbar.getByRole('button', { name: 'Back' })).toBeEnabled()
     await toolbar.getByRole('button', { name: 'Back' }).click()
     await expect(page.getByRole('tab', { name: 'get_Code() : int' })).toHaveAttribute('aria-selected', 'true')
     await expect(toolbar.getByRole('button', { name: 'Forward' })).toBeEnabled()
+  })
+
+  test('follows a reference into a module the tree does not hold', async () => {
+    await openAssemblyAndNamespace()
+    const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
+    await rpcException.dblclick()
+    await expect(page.getByRole('tab', { name: 'RpcException' })).toBeVisible()
+
+    // The base type belongs to an assembly the workspace holds nothing of. The reference names the file
+    // and the token the target has there, so the module is opened on demand and the tree gains a root it
+    // never had — and the explorer still has to reach the target, though it has never listed one node of
+    // that module and could not have worked out where the node sits from its id.
+    await expect(page.locator('.tree-row[data-kind="assembly"]')).toHaveCount(1)
+    const baseType = page.locator('.monaco-editor .view-lines').getByText(/^Exception$/).first()
+    await expect(baseType).toBeVisible()
+    await baseType.click()
+    await page.keyboard.press('F12')
+
+    await expect(page.locator('.tree-row[data-kind="assembly"]')).toHaveCount(2)
+    const followed = page.locator('.tree-row.selected')
+    await expect(followed).toHaveAttribute('data-kind', 'type')
+    await expect(followed).toHaveText(/^Exception @/)
   })
 
   test('opens search results without requiring their tree nodes to be expanded', async () => {
@@ -390,7 +415,7 @@ test.describe('the workspace shell', () => {
 
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
     await getCode.click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Edit Method Body...' }).click()
@@ -407,7 +432,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ })
+    const getCode = page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ })
     await getCode.click()
 
     // The hex group is listed in dnSpy's order, and only the entries that have something to point at are
@@ -489,7 +514,7 @@ test.describe('the workspace shell', () => {
     // land as an edit the user can undo.
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await page.getByRole('menuitem', { name: 'Replace Method Body with stub...' }).click()
     await expect(page.getByText('Modified', { exact: true })).toBeVisible()
@@ -600,7 +625,7 @@ test.describe('the workspace shell', () => {
     await openAssemblyAndNamespace()
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
     await page.keyboard.press('Alt+Enter')
     const method = page.getByRole('dialog', { name: 'Edit Method' })
     await expect(method).toBeVisible()
@@ -814,7 +839,7 @@ test.describe('the workspace shell', () => {
     const rpcException = page.locator('.tree-row[data-kind="type"]').filter({ hasText: /^RpcException @02000076$/ })
     await rpcException.locator('.tree-expander').click()
     // The tree row keeps focus, so the F9 handler is not suppressed by the editor guard.
-    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C2$/ }).click()
+    await page.locator('.tree-row[data-kind="method"]').filter({ hasText: /^get_Code\(\) : int @060008C6$/ }).click()
 
     const breakpointRows = page.locator('.breakpoint-row')
     await page.keyboard.press('F9')

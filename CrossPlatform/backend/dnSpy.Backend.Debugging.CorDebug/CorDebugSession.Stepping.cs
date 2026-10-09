@@ -44,13 +44,17 @@ internal sealed partial class CorDebugSession {
 		await Dispatcher.RunAsync(() => {
 			var frame = CurrentFrame(threadId);
 			var armed = ArmStepTargets(targets?.Targets ?? []);
+			var stepInto = kind == "stepIn";
 			// Leaving a frame has one meaning, and the frame the thread returns to is exactly what the
 			// runtime knows how to find — the resolver says so when the body has nothing left to run.
 			var leaving = kind == "stepOut" || targets is { LeavesMethod: true };
 			// Without a target to watch for there is nothing to stop the step, so the runtime's own
-			// stepper is the only way to complete it.
+			// stepper is the only way to complete it. What it is asked to do is the step the user asked
+			// for, not the one the body's end implies: a step into never leaves the frame it started in,
+			// so a callee the workspace cannot decompile — nothing of it was armed — is still a call the
+			// stepper walks into rather than a frame to return from.
 			if (leaving || (armed == 0 && frame is not null))
-				ArmNativeStepper(frame, leaving, threadId);
+				ArmNativeStepper(frame, leaving && !stepInto, stepInto, threadId);
 			// The step is already armed, so this must not be Continue(): that would disarm it again.
 			ResumeProcess();
 			return true;
@@ -75,6 +79,7 @@ internal sealed partial class CorDebugSession {
 
 	/// <summary>Arms a breakpoint on every location the step may land on, and answers how many took.</summary>
 	int ArmStepTargets(IReadOnlyList<SteppingTarget> targets) {
+		var armed = 0;
 		foreach (var target in targets) {
 			var module = Modules.Find(target.ModulePath);
 			if (module is null)
@@ -83,20 +88,22 @@ internal sealed partial class CorDebugSession {
 				var breakpoint = module.GetFunctionFromToken(target.MetadataToken).ILCode.CreateBreakpoint(target.IlOffset);
 				breakpoint.Activate(true);
 				steppingBreakpoints.Add(new SteppingBreakpoint(target.ModulePath, target.MetadataToken, target.IlOffset, breakpoint));
+				armed++;
 			}
 			catch (Exception ex) when (ModuleTable.IsComFailure(ex)) {
 				// The runtime refuses some offsets; the remaining targets still cover the step.
 			}
 		}
-		return steppingBreakpoints.Count;
+		return armed;
 	}
 
 	/// <summary>
 	/// The fallback for a step with nowhere to land: the runtime's stepper, which stops at the next
 	/// IL instruction. It is statement granularity only by accident, so it is used when there is
-	/// nothing better — leaving a method, or a location the resolver could not map.
+	/// nothing better — leaving a method, a "step into" whose callee cannot be decompiled, or a
+	/// location the resolver could not map.
 	/// </summary>
-	void ArmNativeStepper(ICorDebugFrame? frame, bool stepOut, int threadId) {
+	void ArmNativeStepper(ICorDebugFrame? frame, bool stepOut, bool stepInto, int threadId) {
 		if (frame is null)
 			return;
 		try {
@@ -113,7 +120,9 @@ internal sealed partial class CorDebugSession {
 			if (stepOut)
 				stepper.StepOut();
 			else
-				stepper.Step(true);
+				// Only a step into advances the stepper; a step over passes its flag through, or the
+				// fallback would walk into a call the user asked to step past.
+				stepper.Step(stepInto);
 			nativeStepper = stepper;
 			nativeStepperOrigin = ReadStepOrigin(frame, threadId);
 		}

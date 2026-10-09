@@ -2,7 +2,9 @@ import Editor from './CodeEditor'
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, LoaderCircle } from 'lucide-react'
 import type { editor as MonacoEditor } from 'monaco-editor'
-import type { CodeStatement } from '../../../shared/protocol'
+// A reference that goes somewhere is decorated and clickable; which spans those are is a rule about the
+// spans themselves, so it is asked of them rather than decided here.
+import { isNavigableSpan, type CodeStatement, type TextSpan } from '../../../shared/protocol'
 import { bookmarkMarkers, codeStatementAt, lineBreakpointMarkers, methodBreakpointName, useAppStore } from '../app-store'
 import { clearBookmarks, showBookmarksWindow, stepBookmark, toggleBookmarkAtCaret, toggleBookmarkEnabledAtCaret } from '../bookmark-commands'
 import type { Bookmark, LineBreakpoint } from '../app-store'
@@ -50,7 +52,7 @@ const bookmarkDecorations = (
     },
   }))
 
-export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(targetNodeId: string): void }): React.JSX.Element => {
+export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { documentId: string; viewId: string; theme: string; onNavigate(target: TextSpan): void }): React.JSX.Element => {
   const wordWrap = useAppStore((state) => state.wordWrap)
   const highlightCurrentLine = useAppStore((state) => state.highlightCurrentLine)
   const document = useAppStore((state) => state.documents[documentId])
@@ -116,7 +118,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
     const editor = editorRef.current
     const model = editor?.getModel()
     if (!editor || !model || !decorationsRef.current) return
-    decorationsRef.current.set(spansRef.current.filter((span) => span.targetNodeId).map((span) => {
+    decorationsRef.current.set(spansRef.current.filter(isNavigableSpan).map((span) => {
       const start = model.getPositionAt(span.start)
       const end = model.getPositionAt(span.start + span.length)
       return {
@@ -205,7 +207,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
   const editorTheme = theme === 'light' ? 'dnspy-light' : theme === 'hc' ? 'dnspy-high-contrast' : 'dnspy-dark'
 
   return (
-    <div className="document-view" data-reference-count={document.spans.filter((span) => span.targetNodeId).length}>
+    <div className="document-view" data-reference-count={document.spans.filter(isNavigableSpan).length}>
       <div className="document-toolbar">
         {!['csharp', 'visual-basic', 'il'].includes(document.language) && <span className="document-language-label">{document.language === 'xml' ? 'XAML/XML' : document.language}</span>}
         {document.diagnostics.length > 0 && (
@@ -246,7 +248,7 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
               stoppedDecorationsRef.current = editor.createDecorationsCollection()
               const model = editor.getModel()
               if (!model) return
-              decorationsRef.current.set(spansRef.current.filter((span) => span.targetNodeId).map((span) => {
+              decorationsRef.current.set(spansRef.current.filter(isNavigableSpan).map((span) => {
                 const start = model.getPositionAt(span.start)
                 const end = model.getPositionAt(span.start + span.length)
                 return {
@@ -261,8 +263,8 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
                 const position = editor.getPosition()
                 if (!position) return
                 const offset = model.getOffsetAt(position)
-                const span = spansRef.current.find((candidate) => candidate.targetNodeId && offset >= candidate.start && offset <= candidate.start + candidate.length)
-                if (span?.targetNodeId) onNavigate(span.targetNodeId)
+                const span = spansRef.current.find((candidate) => isNavigableSpan(candidate) && offset >= candidate.start && offset <= candidate.start + candidate.length)
+                if (span) onNavigate(span)
               }
               editor.addCommand(monaco.KeyCode.F12, navigateAtCursor)
               // The caret decides which statement "Show Instructions in Hex Editor" acts on, so the store

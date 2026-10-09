@@ -1032,6 +1032,22 @@ export const App = (): React.JSX.Element => {
     }
   }, [setOpenNodeById, setOpenToolWindow, setRevealDocument])
 
+  // dnSpy selects a document's nodes in the explorer whenever its tab comes to the front, and that is
+  // what follows a reference the user clicked, a bookmark, a search result or a step: each of them just
+  // makes its document the current one, so the rule lives here rather than in every one of them. The tree
+  // is left alone while the pane is not on screen, and while the previous session is still coming back —
+  // the selection that restore puts back is the one to keep.
+  useEffect(() => {
+    if (!activeDocumentId)
+      return
+    if (useAppStore.getState().restoringSession)
+      return
+    const explorer = model.getNodeById('explorer')
+    if (!(explorer instanceof TabNode) || !explorer.isSelected())
+      return
+    void useAppStore.getState().revealNode(activeDocumentId)
+  }, [activeDocumentId, model])
+
   // The one place the previous session comes back. It runs once the backend can answer, and puts the
   // assemblies, the branches, the tabs and the selection back before anything else looks at the state.
   // Files named on the command line are opened afterwards, which — because Open appends — grows the
@@ -1164,7 +1180,7 @@ export const App = (): React.JSX.Element => {
   const paneContent = (node: TabNode): React.ReactNode => {
     switch (node.getComponent()) {
       case 'explorer': return <AssemblyExplorer onOpenNode={openExplorerNode} onAnalyzeNode={analyzeExplorerNode} onShowHex={showExplorerHex} onShowModuleInfo={showExplorerModuleInfo} />
-      case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(targetNodeId) => void openNodeId(targetNodeId)} /></Suspense>
+      case 'document': return <Suspense fallback={<div className="loading-state">{t('Loading')}</div>}><DocumentView documentId={(node.getConfig() as { documentId: string }).documentId} viewId={node.getId()} theme={theme} onNavigate={(target) => void useAppStore.getState().openReferenceTarget(target)} /></Suspense>
       case 'output': return <OutputPane />
       case 'csharp-interactive': return <CSharpInteractive theme={theme} />
       case 'search': return <SearchPane onOpenNodeId={(nodeId) => void openNodeId(nodeId)} />

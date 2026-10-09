@@ -13,6 +13,7 @@ const api: DnSpyApi = {
   getRoots: (workspaceId) => ipcRenderer.invoke('tree:roots', workspaceId),
   getChildren: (workspaceId, nodeId) => ipcRenderer.invoke('tree:children', workspaceId, nodeId),
   getNode: (workspaceId, nodeId) => ipcRenderer.invoke('tree:node', workspaceId, nodeId),
+  getNodePath: (workspaceId, nodeId) => ipcRenderer.invoke('tree:nodePath', workspaceId, nodeId),
   decompile: (workspaceId, nodeId, language: DecompilerLanguage) => ipcRenderer.invoke('document:decompile', workspaceId, nodeId, language),
   findMember: (workspaceId, modulePath, metadataToken) => ipcRenderer.invoke('document:findMember', workspaceId, modulePath, metadataToken),
   search: (workspaceId, query, kinds) => ipcRenderer.invoke('search:run', workspaceId, query, kinds),
