@@ -423,7 +423,7 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 				targets.Add(new SteppingTarget(entry.Path, metadataToken, offset));
 			var bodyTargets = targets.Count;
 			if (stepInto)
-				AddCalleeTargets(targets, workspace, entry, method, ilOffset, cancellationToken);
+				AddCalleeTargets(targets, workspace, entry, method, ilOffset, current?.IlEndOffset ?? int.MaxValue, cancellationToken);
 			// Nothing of the body can run again before it returns, so the step has to leave the method — a
 			// body maps its statements, the caller's resume point is not among them. A step into a call is
 			// the exception: what it lands on belongs to the callee.
@@ -515,29 +515,43 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 		/// A call the workspace can say nothing about — native, or an assembly this machine does not have —
 		/// has only its entry instruction to aim at, and a call whose body has no entry at all is not a
 		/// target, so "step into" degrades to "step over" there rather than walking into code with no
-		/// document.
+		/// document. That is why the calls of the statement are walked rather than taken at the first:
+		/// the one the user is pointing at is the first the workspace can enter.
 		/// </summary>
-		void AddCalleeTargets(List<SteppingTarget> targets, Workspace? workspace, Workspace.ModuleEntry entry, MethodDef method, int ilOffset, CancellationToken cancellationToken) {
+		void AddCalleeTargets(List<SteppingTarget> targets, Workspace? workspace, Workspace.ModuleEntry entry, MethodDef method, int ilOffset, int ilEnd, CancellationToken cancellationToken) {
 			if (method.Body is not { } body)
 				return;
 			// The stop is on a statement's first instruction, but a call site pushes its arguments first,
 			// so the call is rarely at the location itself: the next call the thread reaches is the one a
 			// step into enters. A call the thread branches past is not a problem — the caller's own
 			// statements are armed too, so the step completes there instead of running on unobserved.
+			//
+			// The call the thread reaches is the call it can enter, and a statement often opens with one it
+			// cannot: the constructor of a delegate the compiler builds inline, a body the runtime supplies
+			// rather than the assembly, a method of an assembly this machine does not have. Taking that one
+			// would leave the step with nothing to land on and it would run past the call the user pointed
+			// at, so the calls are walked until one has a body — inside the statement alone, since a call in
+			// the statement after it is the caller's next statement, which a step over reaches, not this one.
+			(Workspace.ModuleEntry Entry, MethodDef Body)? calleeTarget = null;
 			IMethod? call = null;
 			foreach (var instruction in body.Instructions) {
 				if (instruction.Offset < ilOffset)
 					continue;
+				if (instruction.Offset >= ilEnd)
+					break;
 				if (instruction.OpCode.Code is not (Code.Call or Code.Callvirt or Code.Newobj))
 					continue;
-				call = instruction.Operand as IMethod;
+				if (instruction.Operand is not IMethod candidate)
+					continue;
+				if (FindCalleeBody(workspace, entry, candidate) is not { } target)
+					continue;
+				call = candidate;
+				calleeTarget = target;
 				break;
 			}
-			if (call is null)
+			if (call is null || calleeTarget is not { } calleeTargetValue)
 				return;
-			if (FindCalleeBody(workspace, entry, call) is not { } calleeTarget)
-				return;
-			var (calleeEntry, callee) = calleeTarget;
+			var (calleeEntry, callee) = calleeTargetValue;
 			// Like the caller's own statements, the whole callee is armed: the runtime reports the statement
 			// it reaches first, which is the one the call runs. Each target is armed under the token of the
 			// body the statement belongs to rather than the method the call names, because the two are not
@@ -588,9 +602,40 @@ public sealed class WorkspaceManager : IDisposable, IDebugSymbolResolver {
 			if (FindModule(workspace, Path.GetFullPath(referencePath)) is not { } module)
 				return null;
 			var type = call.DeclaringType is TypeSpec specification ? specification.ScopeType : call.DeclaringType;
-			if (type is null || module.Module.Find(type.FullName, isReflectionName: false) is not { } declaringType)
+			if (type is null)
 				return null;
-			return declaringType.FindMethod(call.Name, signature) is { HasBody: true } body ? (module, body) : null;
+			if (module.Module.Find(type.FullName, isReflectionName: false) is { } declaringType)
+				return declaringType.FindMethod(call.Name, signature) is { HasBody: true } body ? (module, body) : null;
+			return FindForwardedBody(workspace, module, type, call.Name, signature);
+		}
+
+		/// <summary>
+		/// The body of a method on a type the referenced assembly only forwards, or null when nothing holds
+		/// it. A reference to a framework type names the assembly the type used to live in — the facade the
+		/// runtime keeps for compatibility — and that assembly declares nothing: its type table is empty and
+		/// every entry is an <c>ExportedType</c> handing the type to the assembly that really declares it,
+		/// which is how <c>System.Runtime</c> carries the whole BCL it does not own. A step into a call on
+		/// such a type would find no body and quietly become a step over, so the forwarder is followed the
+		/// way the runtime follows it — the file is resolved from the forwarding assembly's own directory,
+		/// not the debuggee's — until an assembly declares the type.
+		/// </summary>
+		(Workspace.ModuleEntry Entry, MethodDef Body)? FindForwardedBody(Workspace workspace, Workspace.ModuleEntry facade, ITypeDefOrRef type, string name, MethodSig signature) {
+			// A chain is followed, not a loop, so the bound is only there to stop a file that forwards a
+			// type back to itself from being read forever. Four hops is more than the runtime itself uses.
+			for (var hop = 0; hop < 4; hop++) {
+				if (facade.Module.ExportedTypes.FirstOrDefault(exported => exported.FullName == type.FullName) is not { Scope: AssemblyRef reference })
+					return null;
+				// The forwarder is resolved against the module that carries it: the framework assembly a
+				// reference hands to is a sibling of the facade, not of the debuggee the call is in.
+				if (workspace.FindReferencePath(facade, reference) is not { } path)
+					return null;
+				if (FindModule(workspace, Path.GetFullPath(path)) is not { } next)
+					return null;
+				if (next.Module.Find(type.FullName, isReflectionName: false) is { } declaringType)
+					return declaringType.FindMethod(name, signature) is { HasBody: true } body ? (next, body) : null;
+				facade = next;
+			}
+			return null;
 		}
 
 		/// <summary>

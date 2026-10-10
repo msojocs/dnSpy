@@ -1,6 +1,7 @@
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using dnlib.DotNet;
+using dnlib.DotNet.Emit;
 using dnSpy.Backend.Contracts;
 using dnSpy.Backend.Core;
 using Xunit;
@@ -1233,8 +1234,8 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var token = unchecked((int)calculate.MDToken.Raw);
 		// The loop body is `sum += left;` and the header is the `for` it runs under, offsets read from the
 		// PDB: the step is asked from the body, the way a breakpoint in the loop asks for it.
-		var loopBody = SourceOffset(calculate, line: 26);
-		var loopHeader = SourceOffset(calculate, line: 25);
+		var loopBody = SourceOffset(calculate, line: 31);
+		var loopHeader = SourceOffset(calculate, line: 30);
 
 		var response = await manager.GetSteppingTargetsAsync(null, path, token, loopBody, stepInto: false, TestContext.Current.CancellationToken);
 
@@ -1335,6 +1336,61 @@ public sealed class WorkspaceManagerTests : IDisposable {
 	}
 
 	/// <summary>
+	/// The statement a step into starts from can open with a call the workspace has nothing to enter: the
+	/// fixture's <c>Console.WriteLine(ViaDelegate(doubler, left))</c> has its delegate local cached by the
+	/// compiler, so the statement's IL begins in the cache — a <c>newobj</c> on <c>System.Func`2</c>, a type
+	/// the debuggee's reference only forwards to the core library, whose constructor the runtime supplies and
+	/// no assembly declares a body for. Arming nothing from it and giving up would turn the step into a step
+	/// over; the step has to keep reading the statement and arm the call it does reach.
+	/// </summary>
+	[Fact]
+	public async Task GetSteppingTargets_SteppingIntoAStatementThatOpensWithABodylessCallStillTargetsTheCallee() {
+		var path = Path.Combine(AppContext.BaseDirectory, "DebugTarget.dll");
+		Assert.True(File.Exists(path), $"The debuggee was not copied to the test output: {path}");
+		var opened = await manager.OpenAsync(new OpenWorkspaceRequest([path]), TestContext.Current.CancellationToken);
+		using var module = ModuleDefMD.Load(path);
+		var program = module.GetTypes().Single(type => type.Name == "Program");
+		var main = program.Methods.Single(method => method.Name == "Main");
+		var viaDelegate = program.Methods.Single(method => method.Name == "ViaDelegate");
+		var token = unchecked((int)main.MDToken.Raw);
+		var call = main.Body.Instructions.First(instruction => instruction.Operand is IMethod callee && callee.Name == "ViaDelegate");
+		// The statement is the one the client arms a breakpoint on, read from the decompiled document the
+		// same way the client reads it: the line's IL range, not the offset of the call.
+		var member = await manager.FindMemberAsync(new FindMemberRequest(opened.WorkspaceId, path, token), TestContext.Current.CancellationToken);
+		var document = await manager.DecompileAsync(
+			new DecompileRequest(opened.WorkspaceId, member.NodeId!, DecompilerLanguage.CSharp),
+			TestContext.Current.CancellationToken);
+		var statements = (document.CodeStatements ?? [])
+			.Where(candidate => !candidate.IsHidden && candidate.MetadataToken == token)
+			.ToArray();
+		var armed = statements.Single(candidate => candidate.IlOffset <= call.Offset && call.Offset < candidate.IlEndOffset);
+		// The runtime only accepts a breakpoint on a sequence point, so that is where it stops the thread and
+		// where the step is asked from — not the statement's own code, which here sits behind the cache.
+		var stop = armed.SequencePointIlOffset;
+		var current = statements.Single(candidate => stop >= candidate.SequencePointIlOffset && stop < candidate.IlEndOffset);
+
+		// The statement's first call, from where the step is asked, is the delegate's constructor, and that is
+		// what makes the step's first attempt fail. Should the compiler stop caching the delegate, the first
+		// call would be the one the step is after and this test would no longer cover the shape it was written
+		// for — so the precondition is asserted rather than assumed.
+		var firstCall = main.Body.Instructions.First(instruction =>
+			instruction.Offset >= stop && instruction.Offset < current.IlEndOffset &&
+			instruction.OpCode.Code is Code.Call or Code.Callvirt or Code.Newobj);
+		Assert.Equal(Code.Newobj, firstCall.OpCode.Code);
+		Assert.StartsWith("System.Func`2", ((IMethod)firstCall.Operand!).DeclaringType!.FullName, StringComparison.Ordinal);
+
+		var into = await manager.GetSteppingTargetsAsync(opened.WorkspaceId, path, token, stop, stepInto: true, TestContext.Current.CancellationToken);
+
+		Assert.NotNull(into);
+		// The call the statement does reach is armed, so the step lands inside ViaDelegate instead of running
+		// past it — the body-less constructor before it is skipped rather than ending the search.
+		Assert.Contains(into.Targets, target =>
+			target.MetadataToken == unchecked((int)viaDelegate.MDToken.Raw) &&
+			string.Equals(target.ModulePath, path, StringComparison.Ordinal));
+		Assert.False(into.LeavesMethod);
+	}
+
+	/// <summary>
 	/// The end of a body is where a step has to leave the method: no statement of it can run again, so the
 	/// engine asks the runtime to step out and the stop is reported in the caller.
 	/// </summary>
@@ -1351,7 +1407,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		// The last statement is the `return`, which the step must not land on again. The body's other
 		// statements are still armed — a loop runs its body again, and which pass the thread is on is
 		// not something a step can know from the IL — so the assertion is about the return alone.
-		var returnOffset = SourceOffset(calculate, line: 28);
+		var returnOffset = SourceOffset(calculate, line: 33);
 
 		var response = await manager.GetSteppingTargetsAsync(null, path, unchecked((int)calculate.MDToken.Raw), end, stepInto: false, TestContext.Current.CancellationToken);
 

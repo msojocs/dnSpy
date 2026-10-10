@@ -15,6 +15,11 @@ internal static class Program {
 		var result = Calculate(left, right);
 		Console.WriteLine(result);
 		Console.WriteLine(AddAsync(left, right).GetAwaiter().GetResult());
+		Console.WriteLine(Identity(left));
+		Console.WriteLine(ViaInterface(new Worker()));
+		Console.WriteLine(ViaVirtual(new Worker()));
+		Func<int, int> doubler = value => value * 2;
+		Console.WriteLine(ViaDelegate(doubler, left));
 	}
 	// The accumulator is a real local rather than a single-use temporary: the decompiler inlines a
 	// variable that is assigned once, and a debuggee whose locals all disappear cannot exercise the
@@ -36,5 +41,25 @@ internal static class Program {
 		var sum = left + right;
 		await Task.Yield();
 		return sum;
+	}
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static T Identity<T>(T value) => value;
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static int ViaInterface(IWorker worker) => worker.Work();
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static int ViaVirtual(Worker worker) => worker.Work();
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static int ViaDelegate(Func<int, int> callback, int value) => callback(value);
+
+	interface IWorker {
+		int Work();
+	}
+
+	sealed class Worker : IWorker {
+		public int Work() => 3;
 	}
 }

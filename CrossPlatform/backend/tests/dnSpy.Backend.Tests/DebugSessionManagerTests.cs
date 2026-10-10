@@ -353,6 +353,33 @@ public sealed class DebugSessionManagerTests {
 	}
 
 	/// <summary>
+	/// A step into lands in the method the statement calls, whether the call names a generic
+	/// instantiation or comes after a call the workspace cannot enter at all: <c>ViaDelegate</c>'s
+	/// statement constructs its delegate through a framework constructor the debuggee's reference only
+	/// forwards, and that constructor has no body to step into. Treating that body-less first call as the
+	/// whole statement turned the step into a step over; the step has to keep looking for a call it can
+	/// enter.
+	/// </summary>
+	[Theory(Timeout = 120_000)]
+	[InlineData("Identity")]
+	[InlineData("ViaDelegate")]
+	public async Task StepIntoEntersTheCalleeTheStatementCalls(string callee) {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken);
+		var entry = await harness.NextStopAsync();
+
+		await harness.SetLineBreakpointAsync(await harness.CallStatementAsync(callee));
+		var atCall = await harness.ContinueAsync(ThreadId(entry));
+		Assert.Equal("breakpoint", Reason(atCall));
+
+		var stepped = await harness.StepAsync("stepIn", ThreadId(atCall));
+
+		Assert.Equal("step", Reason(stepped));
+		var after = await harness.DescribeFramesAsync(ThreadId(stepped));
+		Assert.True(after.Contains(callee, StringComparison.Ordinal), $"After step into {callee}: {after}");
+	}
+
+	/// <summary>
 	/// Steps, as a client drives them: the target is stopped at the statement that calls a method in
 	/// the same module, and each step has to end on the statement the user meant.
 	/// </summary>
