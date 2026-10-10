@@ -543,12 +543,18 @@ const registerIpc = (): void => {
       title: nativeText().selectDebugHost,
       defaultPath: dialogPathHistory?.openDirectory,
       properties: ['openFile'],
-      filters: [
-        // The host is usually the `dotnet` CLI, which has no extension on Linux, so all files are
-        // offered alongside the executables the upstream picker filters for.
-        { name: nativeText().executables, extensions: ['exe'] },
-        { name: nativeText().allFiles, extensions: ['*'] },
-      ],
+      // A host is marked by its executable bit, not by an extension: on Linux the `dotnet` CLI and
+      // apphosts such as `Fiddler.WebUi` have no suffix at all, and `.exe` names nothing there. The
+      // chooser matches filters against names and never reads permissions, so no name filter can pick
+      // out executables — all files is the only one that shows every host, and it is all that is
+      // offered. The upstream `.exe` filter survives on Windows, where a host really does carry it,
+      // and leads there so the default still narrows to the executables that platform has.
+      filters: process.platform === 'win32'
+        ? [
+            { name: nativeText().executables, extensions: ['exe'] },
+            { name: nativeText().allFiles, extensions: ['*'] },
+          ]
+        : [{ name: nativeText().allFiles, extensions: ['*'] }],
     })
     if (result.canceled || result.filePaths.length === 0)
       return undefined
@@ -659,11 +665,28 @@ const registerIpc = (): void => {
   })
 }
 
+// The window is the entire interface, so where the menu bar is a strip attached to that window there is
+// nothing to put in it and it is removed: Linux and Windows draw it inside the window, and every command
+// lives in the shell's toolbar. macOS draws a single menu bar for the whole application and routes the
+// standard editing shortcuts and Quit through it, so removing it there would cost the shell Cmd+C/V/A/Z,
+// Cmd+Q and the About/Window menus — role-built submenus supply the platform's own localizations.
+const installApplicationMenu = (): void => {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    { role: 'editMenu' },
+    { role: 'windowMenu' },
+  ]))
+}
+
 app.whenReady().then(async () => {
   uiLocale = app.getLocale().toLowerCase().startsWith('zh') ? 'zh-CN' : 'en'
   dialogPathHistory = new DialogPathHistory(path.join(app.getPath('userData'), 'dialog-state.json'))
   await dialogPathHistory.load()
-  Menu.setApplicationMenu(null)
+  installApplicationMenu()
   registerAppProtocol()
   registerIpc()
   createWindow()

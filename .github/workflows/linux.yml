@@ -1,16 +1,21 @@
-name: Linux Cross-Platform CI
+name: Cross-Platform CI
 
+# Three things trigger a build: work on the linux branch, a version tag, and a manual run.
+# Pull requests only build and test — publishing is tied to a push, so a branch push rolls the preview
+# release and a v* tag cuts a real one. See docs/release-process.md for what each produces.
 on:
   push:
     branches:
       - linux
+    tags:
+      - 'v*'
   pull_request:
     branches:
       - linux
   workflow_dispatch:
 
 jobs:
-  build-test-package:
+  linux:
     name: Electron and .NET backend
     runs-on: ubuntu-24.04
     defaults:
@@ -75,25 +80,278 @@ jobs:
         run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1200x24" bash -c "openbox & sleep 1; pnpm --dir frontend test:e2e"
 
       - name: Build Linux packages
+        # A tag is the only source of a release version, and the tag name is passed through as-is:
+        # the packaging script strips the `v`. Branch builds pass an empty string and keep the version
+        # in frontend/package.json, which is what keeps the rolling preview's asset names stable.
+        env:
+          DNSPY_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: pnpm package:linux
 
       - name: Test packaged application
+        # This is the only test that runs the real installable rather than the source tree, so it is
+        # what proves the bundled backend and its DbgShim are where the shell looks for them — and,
+        # since it drives a breakpoint, that the debug engine works out of the package.
         env:
           DNSPY_PACKAGED_EXECUTABLE: ${{ github.workspace }}/CrossPlatform/artifacts/packages/linux-unpacked/dnspy
           WAYLAND_DISPLAY: ''
           XDG_SESSION_TYPE: x11
         run: xvfb-run --auto-servernum --server-args="-screen 0 1600x1200x24" bash -c "openbox & sleep 1; pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts"
 
-      - name: Generate checksums
-        run: sha256sum artifacts/packages/dnSpy-*.AppImage artifacts/packages/dnSpy-*.deb > artifacts/packages/SHA256SUMS
+      - name: Stage release assets
+        # The bill of materials is per-platform (its native shim entry differs), so it is named after
+        # the platform here and renamed with the version by the release job. Checksums are summed
+        # across all three platforms there as well, for the same reason.
+        shell: bash
+        run: cp artifacts/sbom/dnSpy.cdx.json artifacts/packages/dnSpy-linux-x64.cdx.json
 
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: dnSpy-linux-x64
-          path: |
-            CrossPlatform/artifacts/packages/dnSpy-*.AppImage
-            CrossPlatform/artifacts/packages/dnSpy-*.deb
-            CrossPlatform/artifacts/packages/SHA256SUMS
-            CrossPlatform/artifacts/sbom/dnSpy.cdx.json
+          path: CrossPlatform/artifacts/packages/dnSpy-*
           if-no-files-found: error
           compression-level: 0
+
+  windows:
+    name: Windows packages
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: CrossPlatform
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+          run_install: false
+
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: CrossPlatform/pnpm-lock.yaml
+
+      - name: Restore JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build backend
+        # The packaged smoke test opens a Debug-built assembly from the backend's own bin directory,
+        # so that build has to exist here even though packaging publishes the backend separately.
+        run: pnpm build:backend
+
+      - name: Build Windows packages
+        env:
+          DNSPY_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: pnpm package:windows
+
+      - name: Test packaged application
+        # A packaged Windows app runs headless on a runner without a virtual display, so unlike Linux
+        # this needs no Xvfb. The debugger assertion inside the test is the point: it is what makes a
+        # green run here mean "debugging works on Windows", not merely "the file was produced".
+        env:
+          DNSPY_PACKAGED_EXECUTABLE: ${{ github.workspace }}\CrossPlatform\artifacts\packages\win-unpacked\dnSpy.exe
+        run: pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts
+
+      - name: Stage release assets
+        shell: bash
+        run: cp artifacts/sbom/dnSpy.cdx.json artifacts/packages/dnSpy-windows-x64.cdx.json
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dnSpy-windows-x64
+          path: CrossPlatform/artifacts/packages/dnSpy-*
+          if-no-files-found: error
+          compression-level: 0
+
+  macos:
+    name: macOS packages
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: CrossPlatform
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-dotnet@v6.0.0
+        with:
+          dotnet-version: 10.0.x
+          dotnet-quality: ga
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.3.4
+          run_install: false
+
+      - uses: actions/setup-node@v6.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: CrossPlatform/pnpm-lock.yaml
+
+      - name: Restore JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build backend
+        run: pnpm build:backend
+
+      - name: Build macOS packages
+        # Builds the arm64 package only. The bundle is ad-hoc signed rather than properly signed —
+        # see packaging/electron-builder.yml — which is enough to launch it but leaves Gatekeeper
+        # complaining to whoever downloads it.
+        env:
+          DNSPY_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: pnpm package:mac
+
+      - name: Test packaged application
+        env:
+          DNSPY_PACKAGED_EXECUTABLE: ${{ github.workspace }}/CrossPlatform/artifacts/packages/mac-arm64/dnSpy.app/Contents/MacOS/dnSpy
+        run: pnpm --dir frontend exec playwright test tests/e2e/package.spec.ts
+
+      - name: Stage release assets
+        shell: bash
+        run: cp artifacts/sbom/dnSpy.cdx.json artifacts/packages/dnSpy-macos-arm64.cdx.json
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: dnSpy-macos-arm64
+          path: CrossPlatform/artifacts/packages/dnSpy-*
+          if-no-files-found: error
+          compression-level: 0
+
+  preview:
+    name: Publish preview release
+    # Deliberately not waiting on the Windows and macOS jobs: the preview is about getting a Linux
+    # build to testers promptly, and a macOS runner can sit in the queue for a long time. Those two
+    # jobs still run on every push, so they still report whether the other platforms build.
+    needs: [linux]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/linux'
+    runs-on: ubuntu-24.04
+    # One preview exists at a time, so two pushes in quick succession must not race for its tag.
+    concurrency:
+      group: dnspy-preview-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v7.0.1
+        with:
+          name: dnSpy-linux-x64
+          path: assets
+
+      - name: Assemble assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find assets -type f | while read -r file; do
+            name="$(basename "$file")"
+            if [[ -e "release-assets/$name" ]]; then
+              echo "Two artifacts both provide $name." >&2
+              exit 1
+            fi
+            cp "$file" release-assets/
+          done
+          cd release-assets
+          sha256sum dnSpy-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          cat > NOTES.md <<EOF
+          Automatic preview build of the \`linux\` branch, replaced on every push.
+
+          - Commit: [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)
+          - Build: [run $GITHUB_RUN_NUMBER](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
+          - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          Linux only: Windows and macOS are built and smoke tested by the same run, but their packages
+          are not attached here — they ship with the tagged releases. The version carried by these
+          files is the one in the source tree, not a release version, because the names have to stay
+          the same for the assets to be replaced rather than piled up.
+          EOF
+
+      - name: Publish preview release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Move the fixed tag onto this commit so the release points at the code it was built from.
+          git tag --force linux-preview "$GITHUB_SHA"
+          git push --force origin refs/tags/linux-preview
+
+          if gh release view linux-preview >/dev/null 2>&1; then
+            gh release upload linux-preview release-assets/* --clobber
+            gh release edit linux-preview --prerelease --title "Linux preview build" --notes-file NOTES.md
+          else
+            gh release create linux-preview --verify-tag --prerelease --title "Linux preview build" --notes-file NOTES.md release-assets/*
+          fi
+
+          # Installers change name when a target is added or dropped; without this the release would
+          # keep serving the old format alongside the new one.
+          keep="$(ls release-assets)"
+          while read -r asset; do
+            [[ -z "$asset" ]] && continue
+            if ! grep -qxF "$asset" <<<"$keep"; then
+              gh release delete-asset linux-preview "$asset" --yes
+            fi
+          done < <(gh release view linux-preview --json assets --jq '.assets[].name')
+
+  release:
+    name: Publish release
+    needs: [linux, windows, macos]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v7.0.1
+        with:
+          path: assets
+
+      - name: Assemble assets
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find assets -type f | while read -r file; do
+            name="$(basename "$file")"
+            if [[ -e "release-assets/$name" ]]; then
+              echo "Two artifacts both provide $name." >&2
+              exit 1
+            fi
+            cp "$file" release-assets/
+          done
+          version="${GITHUB_REF_NAME#v}"
+          for file in release-assets/dnSpy-*.cdx.json; do
+            platform="$(basename "$file" .cdx.json)"
+            mv "$file" "release-assets/dnSpy-$version-${platform#dnSpy-}.cdx.json"
+          done
+          cd release-assets
+          sha256sum dnSpy-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Re-running the workflow must not fail on a release that already exists, so an existing one
+          # is updated in place instead.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "dnSpy $GITHUB_REF_NAME"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes release-assets/*
+          fi

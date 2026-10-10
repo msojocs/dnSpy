@@ -26,6 +26,19 @@ interface PendingRequest {
   settleDuringDispose: boolean
 }
 
+// A package carries one backend per platform, published under the name `${process.platform}-${process.arch}`
+// of the platform it targets — win32-x64, darwin-arm64, linux-x64 — so these three names describe the
+// package we are running out of, not the machine we are on. The file names inside follow the target
+// platform the same way: a Windows host carries `.exe`, and the debug engine's shim is a DLL there and
+// a dylib on macOS.
+const backendDirectoryName = `${process.platform}-${process.arch}`
+const backendExecutableName = process.platform === 'win32' ? 'dnSpy.Backend.Host.exe' : 'dnSpy.Backend.Host'
+const dbgShimFileName = process.platform === 'win32'
+  ? 'dbgshim.dll'
+  : process.platform === 'darwin'
+    ? 'libdbgshim.dylib'
+    : 'libdbgshim.so'
+
 export class BackendClient {
   private process?: ChildProcessWithoutNullStreams
   private readBuffer = Buffer.alloc(0)
@@ -51,7 +64,7 @@ export class BackendClient {
         // The debug engine lives in the backend process and loads the CLR's shim from beside its own
         // binary; in a package that is under resources/backend, not the source tree the backend sees.
         ...(app.isPackaged ? {
-          DNSPY_DBGSHIM_PATH: path.join(process.resourcesPath, 'backend', `${process.platform}-${process.arch}`, 'libdbgshim.so'),
+          DNSPY_DBGSHIM_PATH: path.join(process.resourcesPath, 'backend', backendDirectoryName, dbgShimFileName),
         } : {}),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -206,7 +219,7 @@ export class BackendClient {
 
   private resolveCommand(): { executable: string; args: string[]; cwd: string } {
     if (app.isPackaged) {
-      const executable = path.join(process.resourcesPath, 'backend', `${process.platform}-${process.arch}`, 'dnSpy.Backend.Host')
+      const executable = path.join(process.resourcesPath, 'backend', backendDirectoryName, backendExecutableName)
       return {
         executable,
         args: ['--nonce', this.nonce, '--parent-pid', String(process.pid)],

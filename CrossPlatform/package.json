@@ -12,7 +12,9 @@
     "test:backend": "dotnet test dnSpy.CrossPlatform.slnx -m:1 -p:UseSharedCompilation=false",
     "test:frontend": "pnpm --dir frontend test",
     "typecheck": "pnpm --dir frontend typecheck",
-    "package:linux": "bash scripts/package-linux.sh"
+    "package:linux": "node scripts/package-platform.mjs linux",
+    "package:windows": "node scripts/package-platform.mjs win",
+    "package:mac": "node scripts/package-platform.mjs mac"
   },
   "devDependencies": {
     "yaml": "2.9.1"

@@ -41,6 +41,33 @@ linux:
     - AppImage
     - deb
 artifactName: dnSpy-${version}-${arch}.${ext}
+win:
+  executableName: dnSpy
+  # A PNG source: electron-builder converts it to the .ico the installers want. Sharing one icon file
+  # across all three platforms is why the Windows and macOS icons look like Linux's.
+  icon: ../packaging/icons/icon.png
+  target:
+    - nsis
+    - zip
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: dnSpy-${version}-${arch}-setup.${ext}
+mac:
+  executableName: dnSpy
+  icon: ../packaging/icons/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+  # Apple silicon will not launch a bundle that carries no signature at all, and `null` means exactly
+  # that — electron-builder does not fall back to an ad-hoc signature on its own. `-` asks for an
+  # ad-hoc one, which is enough to launch. It must be paired with hardenedRuntime: false, because a
+  # hardened runtime validates every library the process loads and would then need the
+  # disable-library-validation entitlement to load the backend's own dylib.
+  identity: "-"
+  hardenedRuntime: false
 deb:
   depends:
     - libgtk-3-0

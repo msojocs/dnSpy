@@ -103,4 +103,4 @@ pnpm --dir frontend test:e2e
 pnpm package:linux
 ```
 
-安装包输出到 `CrossPlatform/artifacts/packages/`。调试所需的 `libdbgshim.so` 由 `Microsoft.Diagnostics.DbgShim.linux-x64` NuGet 包提供，随 `dotnet publish` 落到后端目录并被一起打包；应用运行时不会联网下载调试器。
+安装包输出到 `CrossPlatform/artifacts/packages/`。调试所需的 `libdbgshim.so` 由 `Microsoft.Diagnostics.DbgShim.linux-x64` NuGet 包提供，随 `dotnet publish` 落到后端目录并被一起打包；应用运行时不会联网下载调试器。Windows 和 macOS 各用自己 RID 的同一个包（`win-x64` / `osx-arm64`），见[发布流程](release-process.md)。

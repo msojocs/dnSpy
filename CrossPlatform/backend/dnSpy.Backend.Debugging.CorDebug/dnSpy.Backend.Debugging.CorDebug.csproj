@@ -4,6 +4,16 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- Which DbgShim native asset to bring in. A publish names its RID, so it gets the shim of the
+         platform it ships to; a plain build (the tests, a debug run) has no RID and gets the shim of
+         the machine doing the build, which is the only platform it can run the engine on. The SDK's
+         portable RID is used because the non-portable one is distro-specific (ubuntu.26.04-x64), and
+         the DbgShim packages are published per portable RID. -->
+    <DbgShimRuntimeIdentifier Condition="'$(DbgShimRuntimeIdentifier)' == ''">$(RuntimeIdentifier)</DbgShimRuntimeIdentifier>
+    <DbgShimRuntimeIdentifier Condition="'$(DbgShimRuntimeIdentifier)' == ''">$(NETCoreSdkPortableRuntimeIdentifier)</DbgShimRuntimeIdentifier>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\dnSpy.Backend.Contracts\dnSpy.Backend.Contracts.csproj" />
   </ItemGroup>
@@ -13,8 +23,19 @@
          source generated COM, so no native interop assembly of our own is needed. -->
     <PackageReference Include="ICorDebugSharp" Version="0.1.8" />
     <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.745401" />
-    <!-- Supplies libdbgshim.so. The .NET runtime ships libmscordbi.so but not dbgshim, so this
-         package is the only source of it; the publish output puts it next to the host binary. -->
-    <PackageReference Include="Microsoft.Diagnostics.DbgShim.linux-x64" Version="10.0.745401" />
+    <!-- Supplies the shim (libdbgshim.so, dbgshim.dll, libdbgshim.dylib). The .NET runtime ships
+         mscordbi but not dbgshim, so this package is the only source of it; a RID-specific publish
+         puts the native asset next to the host binary. The packages are RID-specific because that is
+         how upstream publishes them, which is why they are matched to the RID by hand here. -->
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim.linux-x64" Version="10.0.745401" Condition="'$(DbgShimRuntimeIdentifier)' == 'linux-x64'" />
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim.win-x64" Version="10.0.745401" Condition="'$(DbgShimRuntimeIdentifier)' == 'win-x64'" />
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim.osx-arm64" Version="10.0.745401" Condition="'$(DbgShimRuntimeIdentifier)' == 'osx-arm64'" />
   </ItemGroup>
+
+  <!-- Linux, Windows x64 and macOS arm64 are the platforms the release builds; anything else would
+       silently ship a package whose debug engine reports itself unavailable. -->
+  <Target Name="ValidateDbgShimRuntimeIdentifier" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(DbgShimRuntimeIdentifier)' != 'linux-x64' And '$(DbgShimRuntimeIdentifier)' != 'win-x64' And '$(DbgShimRuntimeIdentifier)' != 'osx-arm64'"
+           Text="No DbgShim package is wired up for runtime identifier '$(DbgShimRuntimeIdentifier)'." />
+  </Target>
 </Project>

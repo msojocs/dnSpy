@@ -78,8 +78,11 @@ public sealed class CorDebugSessionManager : IAsyncDisposable {
 			return process.MainModule?.FileName;
 		}
 		catch {
-			// On Linux MainModule is unavailable without elevated access; /proc is the fallback.
+			// On Linux MainModule is unavailable without elevated access; /proc is the fallback there.
+			// Windows and macOS answer from the process's own module list, so a failure there is final.
 		}
+		if (!OperatingSystem.IsLinux())
+			return null;
 		try {
 			var link = new FileInfo($"/proc/{process.Id}/exe").LinkTarget;
 			return string.IsNullOrEmpty(link) ? null : link;
