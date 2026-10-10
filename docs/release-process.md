@@ -1,20 +1,21 @@
 # 发布流程
 
-dnSpy 的跨平台（Electron）版本由 `.github/workflows/linux.yml` 构建和发布。上游 WPF 那条线（`.github/workflows/build.yml`）不受影响。
+dnSpy 的跨平台（Electron）版本由 `.github/workflows/cross-platform.yml` 构建和发布。上游 WPF 那条线（`.github/workflows/build.yml`）不受影响。
 
 ## 两种 release
 
 | 触发 | 结果 | 产物 |
 | --- | --- | --- |
-| 推送到 `linux` 分支 | **预览 release**：固定 tag `linux-preview`，`prerelease`，每次推送覆盖产物 | 仅 Linux（AppImage、deb） |
+| 推送到 `linux` 分支 | **预览 release**：固定 tag `cross-platform-preview`，`prerelease`，每次推送覆盖产物 | Windows、Linux、macOS 三平台安装包 |
 | 打 `v*` 标签（例如 `v1.0.1`） | **正式 release**：tag 就是版本号 | Windows、Linux、macOS 三平台安装包 |
 
-预览 release 只挂 Linux 产物是刻意的：推送后能最快拿到可测试的包，不必等 macOS runner 排队。同一次 workflow 里 Windows 和 macOS 仍然会构建并跑打包冒烟测试，所以「其他平台是否还能构建」在预览 release 上也能看到结论，只是包不挂在那里。
+两种 release 挂的产物是同一批：都是三个平台、都由同一次 workflow 产出，区别只在版本号和稳定性——预览跟着推送走并原地覆盖，正式版本一个 tag 一份、名字带版本号。预览 release 里能下到 Windows 和 macOS 包，是为了让这两个平台的测试者不用等正式发布就能拿到东西试。
 
 ### 预览 release 的几个约定
 
-- tag `linux-preview` 每次被强制前移到本次提交，所以 release 页面上的 tag 始终指向产物对应的代码。
+- tag `cross-platform-preview` 每次被强制前移到本次提交，所以 release 页面上的 tag 始终指向产物对应的代码。
 - 产物名里的版本号是仓库里的版本（当前 `1.0.0`），**不注入 tag 版本**——名字必须保持稳定，否则每次推送都会新增一组文件而不是替换。
+- 三个平台**全部**成功才会发布：`preview` job `needs` 三个构建 job，任一平台失败就没有预览 release。
 - 本次不再产出的旧文件会被删除（比如以后换掉安装包格式时）。
 
 ### 正式 release 的几个约定
@@ -26,7 +27,7 @@ dnSpy 的跨平台（Electron）版本由 `.github/workflows/linux.yml` 构建�
 
 打 tag 之后，上游的 `build.yml` 还会因为 `release: released` 跑 4 个 Windows WPF 构建。它们只上传 workflow artifact，不会往这个 release 里加东西。
 
-## 产物清单（正式 release）
+## 产物清单
 
 | 平台 | 文件 |
 | --- | --- |
@@ -34,6 +35,8 @@ dnSpy 的跨平台（Electron）版本由 `.github/workflows/linux.yml` 构建�
 | Linux x64 | `dnSpy-<版本>-x86_64.AppImage`、`dnSpy-<版本>-amd64.deb` |
 | macOS arm64 | `dnSpy-<版本>-arm64.dmg`、`dnSpy-<版本>-arm64.zip` |
 | 全部 | `SHA256SUMS`（三个平台合并）、`dnSpy-<版本>-<平台>.cdx.json`（各平台一份 SBOM） |
+
+预览 release 挂的是同一份清单，只是 `<版本>` 用仓库里的版本（当前 `1.0.0`）、SBOM 保留各平台 job 暂存时的 `dnSpy-<平台>.cdx.json` 名字——两种 release 的文件名必须逐次稳定，才能原地替换。
 
 ## 安装
 
@@ -101,7 +104,7 @@ macOS 上启动式调试走 `posix_spawn` + 目标自带诊断端口，不受影
 
 ## 验证一次发布
 
-预览：推送 `linux` 后，三个构建 job 全绿，`linux-preview` release 的 tag 指向本次提交、产物被替换、说明里的 SHA 正确。
+预览：推送 `linux` 后，三个构建 job 全绿，`cross-platform-preview` release 的 tag 指向本次提交、产物被替换、说明里的 SHA 正确。
 
 正式：打 `v1.0.1` 后，三个 job 全绿，release 里有 6 个安装包 + 合并的 `SHA256SUMS` + 3 份 SBOM，文件名带 `1.0.1`。
 

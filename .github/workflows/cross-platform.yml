@@ -227,10 +227,11 @@ jobs:
 
   preview:
     name: Publish preview release
-    # Deliberately not waiting on the Windows and macOS jobs: the preview is about getting a Linux
-    # build to testers promptly, and a macOS runner can sit in the queue for a long time. Those two
-    # jobs still run on every push, so they still report whether the other platforms build.
-    needs: [linux]
+    # The preview is the one place a branch build can be downloaded from, so it carries all three
+    # platforms and waits for all three: a Windows or macOS tester needs their own installer to be
+    # there to test with. The run only reports a build that got that far anyway, so waiting costs the
+    # preview nothing but the queue time of the slowest runner.
+    needs: [linux, windows, macos]
     if: github.event_name == 'push' && github.ref == 'refs/heads/linux'
     runs-on: ubuntu-24.04
     # One preview exists at a time, so two pushes in quick succession must not race for its tag.
@@ -243,9 +244,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # Every platform's artifact, named after the job that uploaded it — the assembly step below
+      # flattens the directories that makes.
       - uses: actions/download-artifact@v8.0.2
         with:
-          name: dnSpy-linux-x64
           path: assets
 
       - name: Assemble assets
@@ -274,10 +276,12 @@ jobs:
           - Build: [run $GITHUB_RUN_NUMBER](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
           - Built: $(date -u '+%Y-%m-%d %H:%M UTC')
 
-          Linux only: Windows and macOS are built and smoke tested by the same run, but their packages
-          are not attached here — they ship with the tagged releases. The version carried by these
+          All three platforms: Windows x64, Linux x64 and macOS arm64. The version carried by these
           files is the one in the source tree, not a release version, because the names have to stay
           the same for the assets to be replaced rather than piled up.
+
+          The packaged installers are unsigned, so Windows warns with SmartScreen and macOS needs the
+          app opened from the context menu or de-quarantined first — see docs/release-process.md.
           EOF
 
       - name: Publish preview release
@@ -286,14 +290,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Move the fixed tag onto this commit so the release points at the code it was built from.
-          git tag --force linux-preview "$GITHUB_SHA"
-          git push --force origin refs/tags/linux-preview
+          git tag --force cross-platform-preview "$GITHUB_SHA"
+          git push --force origin refs/tags/cross-platform-preview
 
-          if gh release view linux-preview >/dev/null 2>&1; then
-            gh release upload linux-preview release-assets/* --clobber
-            gh release edit linux-preview --prerelease --title "Linux preview build" --notes-file NOTES.md
+          if gh release view cross-platform-preview >/dev/null 2>&1; then
+            gh release upload cross-platform-preview release-assets/* --clobber
+            gh release edit cross-platform-preview --prerelease --title "dnSpy preview build" --notes-file NOTES.md
           else
-            gh release create linux-preview --verify-tag --prerelease --title "Linux preview build" --notes-file NOTES.md release-assets/*
+            gh release create cross-platform-preview --verify-tag --prerelease --title "dnSpy preview build" --notes-file NOTES.md release-assets/*
           fi
 
           # Installers change name when a target is added or dropped; without this the release would
@@ -302,9 +306,9 @@ jobs:
           while read -r asset; do
             [[ -z "$asset" ]] && continue
             if ! grep -qxF "$asset" <<<"$keep"; then
-              gh release delete-asset linux-preview "$asset" --yes
+              gh release delete-asset cross-platform-preview "$asset" --yes
             fi
-          done < <(gh release view linux-preview --json assets --jq '.assets[].name')
+          done < <(gh release view cross-platform-preview --json assets --jq '.assets[].name')
 
   release:
     name: Publish release

@@ -1,7 +1,7 @@
 {
   "name": "dnspy-desktop",
   "private": true,
-  "version": "1.0.0",
+  "version": "6.6.0",
   "description": "Cross-platform .NET assembly browser, decompiler, editor and debugger.",
   "homepage": "https://github.com/dnSpyEx/dnSpy",
   "author": {

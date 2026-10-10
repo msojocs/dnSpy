@@ -104,17 +104,30 @@ interface Box {
 }
 
 /** A source line and the gutter column beside it — the two coordinates a gutter click is built from.
- * Monaco lays the editor out on its own, once when the document opens and again after a resize, and until
- * it has, the margin holds no box to click in. Both are waited for rather than read once: a single read
- * races the layout and throws "not laid out yet" on a slow machine. */
+ * Monaco lays the editor out on its own, once when the document opens and again after a resize, and no
+ * check of its own gates the read: the elements are visible throughout, but the relayout rebuilds the view
+ * lines, so a box read in its middle belongs to a node the editor is already swapping out — attached, and
+ * with nothing left to click in. The boxes are therefore polled rather than read once, and a read is only
+ * trusted once a second one agrees with it: the pair is what says the layout has stopped moving, and with
+ * it that the coordinates the click is aimed at will still be these by the time it lands. */
 const editorLayout = async (line: Locator, margin: Locator): Promise<{ lineBox: Box; marginBox: Box }> => {
   await expect(line).toBeVisible()
   await expect(margin).toBeVisible()
-  const lineBox = await line.boundingBox()
-  const marginBox = await margin.boundingBox()
-  if (!lineBox || !marginBox)
-    throw new Error('The editor is not laid out yet.')
-  return { lineBox, marginBox }
+  let seen = ''
+  let boxes: { lineBox: Box; marginBox: Box } | undefined
+  await expect(async () => {
+    const lineBox = await line.boundingBox()
+    const marginBox = await margin.boundingBox()
+    if (!lineBox?.width || !lineBox.height || !marginBox?.width || !marginBox.height)
+      throw new Error('The editor is not laid out yet.')
+    const next = JSON.stringify([lineBox, marginBox])
+    if (next !== seen) {
+      seen = next
+      throw new Error('The editor is still being laid out.')
+    }
+    boxes = { lineBox, marginBox }
+  }).toPass({ timeout: 15_000 })
+  return boxes!
 }
 
 const openAssemblyAndNamespace = async (): Promise<void> => {

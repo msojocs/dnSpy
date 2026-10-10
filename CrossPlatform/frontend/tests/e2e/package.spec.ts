@@ -9,7 +9,7 @@ import path from 'node:path'
 // These tests drive an installed application rather than the source tree, which is the only way to
 // catch a package that is missing something the shell needs at runtime: a backend that was never
 // published into it, or a debug engine whose native shim did not come along. Each packaging job in
-// .github/workflows/linux.yml points DNSPY_PACKAGED_EXECUTABLE at its own unpacked build.
+// .github/workflows/cross-platform.yml points DNSPY_PACKAGED_EXECUTABLE at its own unpacked build.
 const executable = process.env.DNSPY_PACKAGED_EXECUTABLE
 const contractsAssemblyPath = path.resolve(import.meta.dirname, '../../../backend/dnSpy.Backend.Contracts/bin/Debug/net10.0/dnSpy.Backend.Contracts.dll')
 const debugTargetPath = path.resolve(import.meta.dirname, '../../../backend/tests/DebugTarget/bin/Debug/net10.0/DebugTarget.dll')
