@@ -79,6 +79,18 @@ const showBreakpoints = async (): Promise<void> => {
   await breakpointsMenuItem.click()
 }
 
+/** The exception list lives behind the same Debug menu. Unlike Breakpoints the window is docked in the
+ * default layout, so it is usually already there as a tab — the menu is only how a closed one comes back. */
+const showExceptionSettings = async (): Promise<void> => {
+  const tab = page.getByRole('tab', { name: 'Exception Settings' })
+  if ((await tab.count()) === 0) {
+    await page.getByRole('menuitem', { name: 'Debug', exact: true }).click()
+    await page.getByRole('menuitem', { name: 'Window', exact: true }).hover()
+    await page.getByRole('menuitem', { name: /^Exception Settings/ }).click()
+  }
+  await tab.click()
+}
+
 /** A row's expander is clicked only when the row is still collapsed: the assembly explorer opens an
  * assembly collapsed, while the type picker opens with its roots already expanded, and a blind click
  * would fold the picker's instead. */
@@ -1035,6 +1047,46 @@ test.describe('the in-process debug engine', () => {
     await expect(page.getByText('Stopped: breakpoint', { exact: true })).toBeVisible()
 
     await toolbar.getByRole('button', { name: 'Stop' }).click()
+    await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
+  })
+
+  // The exception list is the engine's data rather than the client's — it outlives every session — and the
+  // window is one of the tool windows the default layout does not dock, so this is also the check that
+  // opening it shows a real list instead of an empty pane.
+  test('lists the engine exception types and stops on a thrown one that is set to break when thrown', async () => {
+    await openDebugTarget()
+    await showExceptionSettings()
+
+    // The rows come from the engine's definition files, with the category default row first.
+    await expect(page.locator('.exception-row').first()).toContainText('<All Common Language Runtime Exceptions not in this list>')
+    // Hundreds of types are listed, so the search narrows the list to the one the fixture throws.
+    await page.getByRole('textbox', { name: 'Search for an exception' }).fill('System.InvalidOperationException')
+    const row = page.locator('.exception-row').filter({ hasText: 'System.InvalidOperationException' })
+    await expect(row).toHaveCount(1)
+
+    // Break When Thrown is off for it by default, and the fixture catches the exception it throws: without
+    // this toggle the launch below would run to the end instead of stopping on the throw. The click only
+    // reaches the checkbox; the row reads back from the list the engine answered with, so waiting for it to
+    // come back checked is waiting for the round trip.
+    await row.getByRole('checkbox').click()
+    await expect(row.getByRole('checkbox')).toBeChecked()
+
+    const toolbar = page.getByRole('toolbar', { name: 'Main toolbar' })
+    await toolbar.getByRole('button', { name: 'Debug a Program' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Debug Program' })
+    await dialog.getByLabel('Arguments', { exact: true }).fill('--catch')
+    await dialog.getByRole('button', { name: 'OK' }).click()
+
+    // The stop is the exception's own: the reason names it, and the frame is the method that threw.
+    await expect(page.locator('.status-bar')).toContainText('Stopped: exception')
+    await page.getByRole('tab', { name: 'Call Stack' }).click()
+    await expect(page.locator('.result-list[aria-label="Call Stack"] .stack-row').first()).toContainText('DebugTarget.dll!DebugTarget.Program.ThrowAndCatch()')
+    // The exception itself is reported by name, so the window says what the program stopped on.
+    await showOutput()
+    await expect(page.getByRole('tabpanel', { name: 'Output' })).toContainText('Exception thrown: System.InvalidOperationException')
+
+    // Continuing lets the fixture's catch swallow it, and the program runs to its end.
+    await toolbar.getByRole('button', { name: 'Continue' }).click()
     await expect(toolbar.getByRole('button', { name: 'Debug a Program' })).toBeEnabled()
   })
 

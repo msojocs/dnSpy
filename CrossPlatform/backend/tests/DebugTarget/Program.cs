@@ -20,6 +20,14 @@ internal static class Program {
 		Console.WriteLine(ViaVirtual(new Worker()));
 		Func<int, int> doubler = value => value * 2;
 		Console.WriteLine(ViaDelegate(doubler, left));
+		// The exception tests drive a throw of their own: one that escapes and one the fixture catches,
+		// so both the unhandled and the first-chance stop have a case to stop on. They run last on
+		// purpose — the statements above are the lines the debugger tests pin, and a branch in front of
+		// them would move every one of them down.
+		if (args.Contains("--throw", StringComparer.Ordinal))
+			ThrowUnhandled();
+		if (args.Contains("--catch", StringComparer.Ordinal))
+			ThrowAndCatch();
 	}
 	// The accumulator is a real local rather than a single-use temporary: the decompiler inlines a
 	// variable that is assigned once, and a debuggee whose locals all disappear cannot exercise the
@@ -61,5 +69,20 @@ internal static class Program {
 
 	sealed class Worker : IWorker {
 		public int Work() => 3;
+	}
+
+	// Kept out of Main so the throw happens in a frame of its own, and marked NoInlining so nothing
+	// folds it back in: the debugger's stop has to name this frame's method when it reports it.
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static void ThrowUnhandled() => throw new InvalidOperationException("unhandled-boom");
+
+	[MethodImpl(MethodImplOptions.NoInlining)]
+	static void ThrowAndCatch() {
+		try {
+			throw new InvalidOperationException("caught-boom");
+		}
+		catch (InvalidOperationException) {
+			// Swallowed on purpose: the engine still sees the first chance, and the program keeps going.
+		}
 	}
 }

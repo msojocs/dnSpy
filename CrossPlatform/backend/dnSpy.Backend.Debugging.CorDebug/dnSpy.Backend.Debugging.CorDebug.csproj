@@ -19,6 +19,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The default exception types and categories, the same file the WPF engine ships. The service
+         globs debug/*.ex.xml at startup, so this is data it reads rather than code it links. -->
+    <None Include="debug\DotNet.ex.xml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The exception list is engine data rather than an API: the only caller is the session manager,
+         which hands out its snapshot. The tests read it directly, so it stays internal and they get
+         the assembly's internals. -->
+    <InternalsVisibleTo Include="dnSpy.Backend.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- ICorDebugSharp wraps ICorDebug/IMetaDataImport and the DbgShim bootstrap API on top of
          source generated COM, so no native interop assembly of our own is needed. -->
     <PackageReference Include="ICorDebugSharp" Version="0.1.8" />

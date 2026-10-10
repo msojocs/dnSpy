@@ -38,7 +38,6 @@ beforeEach(() => {
   useAppStore.setState({
     lineBreakpoints: [],
     functionBreakpoints: [{ name: 'Ns.Type.A', enabled: true }, { name: 'Ns.Type.B', enabled: false }],
-    exceptionBreakpoints: [],
     debugSessionId: 'session',
   })
 })
@@ -101,7 +100,7 @@ describe('BreakpointsPane', () => {
   })
 
   it('exports what a restart would have read back', async () => {
-    useAppStore.setState({ lineBreakpoints: [restored()], exceptionBreakpoints: ['uncaught'] })
+    useAppStore.setState({ lineBreakpoints: [restored()] })
     render(<BreakpointsPane />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Export Breakpoints' }))
@@ -121,7 +120,6 @@ describe('BreakpointsPane', () => {
         description: 'System.Void Ns.Type::M()',
       }],
       functions: [{ name: 'Ns.Type.A', enabled: true }, { name: 'Ns.Type.B', enabled: false }],
-      exceptions: ['uncaught'],
     })
     expect(await screen.findByText('Exported breakpoints to /tmp/breakpoints.json.')).toBeVisible()
   })
@@ -131,7 +129,6 @@ describe('BreakpointsPane', () => {
       version: 1,
       breakpoints: [{ modulePath: '/app/DebugTarget.dll', metadataToken: 0x06000001, sourceMethodToken: 0x06000001, ilOffset: 7, line: 42, enabled: true, description: 'System.Void Ns.Type::M()' }],
       functions: [{ name: 'Ns.Type.A', enabled: true }, { name: 'Ns.Type.C', enabled: true }],
-      exceptions: [],
     }))
     render(<BreakpointsPane />)
 

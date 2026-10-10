@@ -686,6 +686,67 @@ export interface DebugFunctionBreakpointRequest {
   settings?: BreakpointSettings
 }
 
+/** One category of exception types, eg. the CLR's own. */
+export interface DebugExceptionCategory {
+  name: string
+  displayName: string
+  shortDisplayName: string
+  /** Whether the category's types are identified by a number rather than a name. */
+  hasCode: boolean
+  decimalCode: boolean
+  unsignedCode: boolean
+}
+
+/** A module-name condition, the only kind the exception window offers. */
+export interface DebugExceptionCondition {
+  type: 'moduleNameEquals' | 'moduleNameNotEquals'
+  value: string
+}
+
+/**
+ * A type the engine can break on, as the Exception Settings window renders it. The defaults come from
+ * the definition files and never change; `stopFirstChance` and the rest are what the user has made of
+ * them. A row with no name and no code is the category's own default, which covers every type the
+ * category does not name.
+ */
+export interface DebugExceptionSettings {
+  /** Opaque; the client only round-trips it back in a diff. */
+  key: string
+  category: string
+  name: string | null
+  code: number | null
+  description: string | null
+  defaultStopFirstChance: boolean
+  defaultStopSecondChance: boolean
+  stopFirstChance: boolean
+  stopSecondChance: boolean
+  conditions: DebugExceptionCondition[]
+}
+
+/** The engine's whole exception list: the categories in display order, then every type in them. */
+export interface DebugExceptionSettingsList {
+  categories: DebugExceptionCategory[]
+  exceptions: DebugExceptionSettings[]
+}
+
+/** One row of the diff the client stores: a change against the defaults, not a whole list. */
+export interface DebugExceptionDiffEntry {
+  category: string
+  name?: string | null
+  code?: number | null
+  description?: string | null
+  stopFirstChance?: boolean
+  stopSecondChance?: boolean
+  conditions?: DebugExceptionCondition[]
+}
+
+/** What the client persists and replays: the same Add/Remove/Update dnSpy's settings file holds. */
+export interface DebugExceptionDiff {
+  added?: DebugExceptionDiffEntry[]
+  removed?: DebugExceptionDiffEntry[]
+  updated?: DebugExceptionDiffEntry[]
+}
+
 /** The engine's answer: where the breakpoint really is, and whether it is armed. */
 export interface DebugBreakpoint {
   id: string
@@ -887,7 +948,12 @@ export interface DnSpyApi {
   getDebugScopes(sessionId: string, frameId: number): Promise<DebugScope[]>
   getDebugVariables(sessionId: string, variablesReference: number): Promise<DebugVariable[]>
   getDebugModules(sessionId: string): Promise<DebugModule[]>
-  setExceptionBreakpoints(sessionId: string, filters: string[]): Promise<Record<string, unknown>>
+  /** The exception types the engine can break on, with their default and current settings. */
+  getExceptionSettings(): Promise<DebugExceptionSettingsList>
+  /** Applies the client's stored diff against the defaults and answers with the resulting list. */
+  applyExceptionSettings(diff: DebugExceptionDiff): Promise<DebugExceptionSettingsList>
+  /** Drops every change and answers with the default list. */
+  resetExceptionSettings(): Promise<DebugExceptionSettingsList>
   evaluateDebugExpression(sessionId: string, frameId: number, expression: string): Promise<DebugVariable>
   disconnectDebug(sessionId: string, terminateDebuggee: boolean): Promise<void>
   /** Runs one submission in the C# Interactive session and returns the lines it produced. */

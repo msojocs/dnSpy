@@ -64,7 +64,9 @@ const api: DnSpyApi = {
   getDebugScopes: async (sessionId, frameId) => ((await ipcRenderer.invoke('debug:scopes', sessionId, { frameId })).body?.scopes ?? []),
   getDebugVariables: async (sessionId, variablesReference) => ((await ipcRenderer.invoke('debug:variables', sessionId, { variablesReference })).body?.variables ?? []),
   getDebugModules: async (sessionId) => ((await ipcRenderer.invoke('debug:modules', sessionId, { startModule: 0, moduleCount: 10000 })).body?.modules ?? []),
-  setExceptionBreakpoints: async (sessionId, filters) => (await ipcRenderer.invoke('debug:setExceptionBreakpoints', sessionId, { filters })).body ?? {},
+  getExceptionSettings: () => ipcRenderer.invoke('debug:exceptionSettings:get'),
+  applyExceptionSettings: (diff) => ipcRenderer.invoke('debug:exceptionSettings:apply', diff),
+  resetExceptionSettings: () => ipcRenderer.invoke('debug:exceptionSettings:reset'),
   evaluateDebugExpression: async (sessionId, frameId, expression) => {
     const body = (await ipcRenderer.invoke('debug:evaluate', sessionId, { expression, frameId, context: 'watch' })).body
     return { name: expression, value: body?.result ?? '', type: body?.type, variablesReference: body?.variablesReference ?? 0, evaluateName: expression }

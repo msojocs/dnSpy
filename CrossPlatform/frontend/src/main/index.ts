@@ -592,8 +592,12 @@ const registerIpc = (): void => {
   debugRequest('debug:scopes', 'scopes')
   debugRequest('debug:variables', 'variables')
   debugRequest('debug:modules', 'modules')
-  debugRequest('debug:setExceptionBreakpoints', 'setExceptionBreakpoints')
   debugRequest('debug:evaluate', 'evaluate')
+  // The exception list is engine-wide rather than per session, so these three go straight to the
+  // manager the way listProcesses does.
+  ipcMain.handle('debug:exceptionSettings:get', () => requireBackend().invoke('exceptions/get', {}))
+  ipcMain.handle('debug:exceptionSettings:apply', (_event, diff: unknown) => requireBackend().invoke('exceptions/apply', diff))
+  ipcMain.handle('debug:exceptionSettings:reset', () => requireBackend().invoke('exceptions/reset', {}))
   ipcMain.handle('debug:disconnect', (_event, sessionId: string, terminateDebuggee: boolean) => requireBackend().invoke('debug/disconnect', { sessionId, terminateDebuggee }))
   // A submission may legitimately run for minutes, which the 60 s default would cut short; the
   // resulting system/cancel would look to the user like a script that simply never finished.

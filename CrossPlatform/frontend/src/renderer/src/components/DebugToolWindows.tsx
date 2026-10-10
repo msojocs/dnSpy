@@ -160,8 +160,6 @@ export const BreakpointsPane = (): React.JSX.Element => {
   const removeBreakpoint = useAppStore((state) => state.removeFunctionBreakpoint)
   const setBreakpointEnabled = useAppStore((state) => state.setFunctionBreakpointEnabled)
   const setBreakpointSettings = useAppStore((state) => state.setFunctionBreakpointSettings)
-  const exceptionBreakpoints = useAppStore((state) => state.exceptionBreakpoints)
-  const setExceptionBreakpoint = useAppStore((state) => state.setExceptionBreakpoint)
   const importBreakpoints = useAppStore((state) => state.importBreakpoints)
   const { t } = useLanguage()
   const submit = (): void => {
@@ -174,7 +172,7 @@ export const BreakpointsPane = (): React.JSX.Element => {
   // The same file the settings are written as, so an export can be dropped back in by hand.
   const exportBreakpoints = async (): Promise<void> => {
     const file = breakpointsFile(useAppStore.getState())
-    if (file.breakpoints.length === 0 && file.functions.length === 0 && file.exceptions.length === 0)
+    if (file.breakpoints.length === 0 && file.functions.length === 0)
       return
     const saved = await window.dnSpy.saveCode('breakpoints.json', JSON.stringify(file, null, 2))
     setStatus(saved ? t('Exported breakpoints to {path}.', { path: saved }) : '')
@@ -202,9 +200,8 @@ export const BreakpointsPane = (): React.JSX.Element => {
     const file = {
       breakpoints: parseLineBreakpointEntries(parsed),
       functions: parseFunctionBreakpoints(stored.functions),
-      exceptions: Array.isArray(stored.exceptions) ? stored.exceptions.filter((filter): filter is string => typeof filter === 'string') : [],
     }
-    if (file.breakpoints.length === 0 && file.functions.length === 0 && file.exceptions.length === 0) {
+    if (file.breakpoints.length === 0 && file.functions.length === 0) {
       setStatus(t('The breakpoint file could not be read.'))
       return
     }
@@ -285,14 +282,6 @@ export const BreakpointsPane = (): React.JSX.Element => {
             </div>
           )
         })}
-        {/* The in-process engine has no exception breakpoints; the checkboxes stay visible but inert rather than
-            disappearing, so the pane does not shift between engines. */}
-        <label className="exception-breakpoint-row" title={t('Not supported by this debug engine')}>
-          <input type="checkbox" disabled checked={exceptionBreakpoints.includes('all')} onChange={(event) => void setExceptionBreakpoint('all', event.target.checked)} /> {t('All thrown exceptions')}
-        </label>
-        <label className="exception-breakpoint-row" title={t('Not supported by this debug engine')}>
-          <input type="checkbox" disabled checked={exceptionBreakpoints.includes('user-unhandled')} onChange={(event) => void setExceptionBreakpoint('user-unhandled', event.target.checked)} /> {t('User-unhandled exceptions')}
-        </label>
       </div>
       {editing && (
         <BreakpointSettingsDialog

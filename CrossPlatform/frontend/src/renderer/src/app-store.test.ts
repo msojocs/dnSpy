@@ -149,7 +149,7 @@ describe('function breakpoints', () => {
       configurable: true,
       value: { ...window.dnSpy, setFunctionBreakpoints },
     })
-    useAppStore.setState({ functionBreakpoints: [], exceptionBreakpoints: [], debugSessionId: 'session' })
+    useAppStore.setState({ functionBreakpoints: [], debugSessionId: 'session' })
   })
 
   it('adds, toggles and removes breakpoints', async () => {
@@ -450,11 +450,10 @@ describe('breakpoint persistence', () => {
   beforeEach(() => {
     localStorage.clear()
     setBreakpoints.mockClear()
-    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, setBreakpoints, setFunctionBreakpoints: vi.fn(async () => ({})), setExceptionBreakpoints: vi.fn(async () => ({})) } })
+    Object.defineProperty(window, 'dnSpy', { configurable: true, value: { ...window.dnSpy, setBreakpoints, setFunctionBreakpoints: vi.fn(async () => ({})) } })
     useAppStore.setState({
       lineBreakpoints: [],
       functionBreakpoints: [],
-      exceptionBreakpoints: [],
       debugSessionId: 'session',
       documents: { 'method-1': document(statements) },
     })
@@ -472,7 +471,7 @@ describe('breakpoint persistence', () => {
       enabled: true,
       description: 'System.Void Ns.Type::M()',
     }
-    expect(stored()).toEqual({ version: 1, breakpoints: [entry], functions: [], exceptions: [] })
+    expect(stored()).toEqual({ version: 1, breakpoints: [entry], functions: [] })
     expect(parseLineBreakpointEntries(stored())).toEqual([entry])
     expect(lineBreakpointEntries(useAppStore.getState().lineBreakpoints)).toEqual([entry])
   })
@@ -487,13 +486,11 @@ describe('breakpoint persistence', () => {
     expect(stored()).toMatchObject({ breakpoints: [] })
   })
 
-  it('writes function and exception breakpoints alongside the line ones', async () => {
+  it('writes function breakpoints alongside the line ones', async () => {
     await useAppStore.getState().addFunctionBreakpoint('Ns.Type.M')
-    await useAppStore.getState().setExceptionBreakpoint('uncaught', true)
 
     expect(stored()).toMatchObject({
       functions: [{ name: 'Ns.Type.M', enabled: true }],
-      exceptions: ['uncaught'],
     })
   })
 
@@ -532,12 +529,10 @@ describe('breakpoint persistence', () => {
     const added = await useAppStore.getState().importBreakpoints({
       breakpoints: parseLineBreakpointEntries([{ modulePath: '/app/DebugTarget.dll', metadataToken: 0x06000002, sourceMethodToken: 0x06000002, ilOffset: 3, line: 20, enabled: false }]),
       functions: [{ name: 'Ns.Type.N', enabled: true }],
-      exceptions: ['uncaught'],
     })
-    expect(added).toBe(3)
+    expect(added).toBe(2)
     expect(useAppStore.getState().lineBreakpoints).toHaveLength(2)
     expect(useAppStore.getState().functionBreakpoints.map((breakpoint) => breakpoint.name)).toEqual(['Ns.Type.M', 'Ns.Type.N'])
-    expect(useAppStore.getState().exceptionBreakpoints).toEqual(['uncaught'])
   })
 })
 
@@ -548,7 +543,7 @@ describe('breakpoints at startup', () => {
 
   beforeEach(() => localStorage.clear())
 
-  it('restores line, function and exception breakpoints together', async () => {
+  it('restores line and function breakpoints together', async () => {
     seed({
       version: 1,
       breakpoints: [
@@ -556,7 +551,6 @@ describe('breakpoints at startup', () => {
         { modulePath: '', metadataToken: 0, ilOffset: 0 },
       ],
       functions: [{ name: 'Ns.Type.M', enabled: true }, { name: '  ' }],
-      exceptions: ['uncaught', 'uncaught'],
     })
     vi.resetModules()
 
@@ -579,7 +573,6 @@ describe('breakpoints at startup', () => {
       description: 'System.Void Ns.Type::M()',
     })
     expect(reloaded.useAppStore.getState().functionBreakpoints).toEqual([{ name: 'Ns.Type.M', enabled: true }])
-    expect(reloaded.useAppStore.getState().exceptionBreakpoints).toEqual(['uncaught'])
   })
 
   it('survives a storage entry it cannot parse', async () => {
@@ -590,7 +583,130 @@ describe('breakpoints at startup', () => {
 
     expect(reloaded.useAppStore.getState().lineBreakpoints).toEqual([])
     expect(reloaded.useAppStore.getState().functionBreakpoints).toEqual([])
-    expect(reloaded.useAppStore.getState().exceptionBreakpoints).toEqual([])
+  })
+})
+
+// The exception list belongs to the engine, and it outlives every debug session. What the client keeps
+// is the change it made against the defaults, which it replays to get the list back.
+describe('exception settings', () => {
+  const applyExceptionSettings = vi.fn()
+  const getExceptionSettings = vi.fn()
+  const resetExceptionSettings = vi.fn()
+
+  const list = (name: string, stopFirstChance: boolean) => ({
+    categories: [{ name: 'DotNet', displayName: 'Common Language Runtime Exceptions', shortDisplayName: '.NET', hasCode: false, decimalCode: false, unsignedCode: false }],
+    exceptions: [{
+      key: `DotNet\u0001${name}`,
+      category: 'DotNet',
+      name,
+      code: null,
+      description: null,
+      defaultStopFirstChance: false,
+      defaultStopSecondChance: true,
+      stopFirstChance,
+      stopSecondChance: true,
+      conditions: [],
+    }],
+  })
+
+  beforeEach(() => {
+    localStorage.clear()
+    applyExceptionSettings.mockReset().mockResolvedValue(list('System.InvalidOperationException', true))
+    getExceptionSettings.mockReset().mockResolvedValue(list('System.InvalidOperationException', false))
+    resetExceptionSettings.mockReset().mockResolvedValue(list('System.InvalidOperationException', false))
+    Object.defineProperty(window, 'dnSpy', {
+      configurable: true,
+      value: { ...window.dnSpy, applyExceptionSettings, getExceptionSettings, resetExceptionSettings },
+    })
+    useAppStore.setState({
+      exceptionDiff: {},
+      exceptionSettings: list('System.InvalidOperationException', false).exceptions,
+      exceptionCategories: list('System.InvalidOperationException', false).categories,
+      exceptionSettingsLoaded: false,
+      exceptionSettingsError: undefined,
+    })
+  })
+
+  it('replays the stored diff rather than asking for the defaults', async () => {
+    const diff = { updated: [{ category: 'DotNet', name: 'System.InvalidOperationException', stopFirstChance: true }] }
+    useAppStore.setState({ exceptionDiff: diff })
+
+    await useAppStore.getState().loadExceptionSettings()
+
+    expect(applyExceptionSettings).toHaveBeenCalledWith(diff)
+    expect(getExceptionSettings).not.toHaveBeenCalled()
+    expect(useAppStore.getState().exceptionSettings[0]?.stopFirstChance).toBe(true)
+    expect(useAppStore.getState().exceptionSettingsLoaded).toBe(true)
+  })
+
+  it('asks for the defaults when nothing has been changed', async () => {
+    await useAppStore.getState().loadExceptionSettings()
+
+    expect(getExceptionSettings).toHaveBeenCalled()
+    expect(applyExceptionSettings).not.toHaveBeenCalled()
+    expect(useAppStore.getState().exceptionCategories).toHaveLength(1)
+  })
+
+  it('turns a type on by writing it into the diff the engine is sent', async () => {
+    await useAppStore.getState().setExceptionBreakWhenThrown(['DotNet\u0001System.InvalidOperationException'], true)
+
+    expect(applyExceptionSettings).toHaveBeenCalledWith({
+      updated: [expect.objectContaining({ category: 'DotNet', name: 'System.InvalidOperationException', stopFirstChance: true })],
+    })
+  })
+
+  it('removes a type the definitions name and drops one the user added', async () => {
+    const custom = list('My.Custom.Exception', true).exceptions[0]
+    useAppStore.setState({
+      exceptionDiff: { added: [custom] },
+      exceptionSettings: [...list('System.InvalidOperationException', false).exceptions, custom],
+    })
+    // The engine answers with the whole list, so the type it was told to add comes back in it.
+    applyExceptionSettings.mockImplementation(async (diff: unknown) => {
+      const added = (diff as { added?: typeof custom[] }).added ?? []
+      return { ...list('x', false), exceptions: [...list('System.InvalidOperationException', false).exceptions, ...added] }
+    })
+
+    await useAppStore.getState().removeExceptionDefinitions(['DotNet\u0001System.InvalidOperationException'])
+    expect(applyExceptionSettings).toHaveBeenLastCalledWith({
+      added: [expect.objectContaining({ name: 'My.Custom.Exception' })],
+      removed: [expect.objectContaining({ name: 'System.InvalidOperationException' })],
+    })
+
+    await useAppStore.getState().removeExceptionDefinitions(['DotNet\u0001My.Custom.Exception'])
+    // A type the client itself added needs no removal order — dropping it from `added` is the removal.
+    expect(useAppStore.getState().exceptionDiff.added).toBeUndefined()
+    expect(useAppStore.getState().exceptionDiff.removed).toHaveLength(1)
+  })
+
+  it('reports a failed read instead of throwing, so a launch it rides along with survives', async () => {
+    getExceptionSettings.mockRejectedValueOnce(new Error('The backend is not running.'))
+
+    await expect(useAppStore.getState().loadExceptionSettings()).resolves.toBeUndefined()
+    expect(useAppStore.getState().exceptionSettingsError).toBe('The backend is not running.')
+  })
+
+  it('restores the defaults and forgets the diff', async () => {
+    useAppStore.setState({ exceptionDiff: { updated: [{ category: 'DotNet', name: 'System.InvalidOperationException', stopFirstChance: true }] } })
+
+    await useAppStore.getState().restoreDefaultExceptionSettings()
+
+    expect(resetExceptionSettings).toHaveBeenCalled()
+    expect(useAppStore.getState().exceptionDiff).toEqual({})
+    expect(useAppStore.getState().exceptionSettings[0]?.stopFirstChance).toBe(false)
+  })
+
+  it('writes the diff to storage and reads it back on the next run', async () => {
+    await useAppStore.getState().setExceptionBreakWhenThrown(['DotNet\u0001System.InvalidOperationException'], true)
+    const stored = JSON.parse(localStorage.getItem('dnspy.exceptions.v1') ?? 'null')
+    expect(stored.updated).toHaveLength(1)
+    expect(stored.updated[0].name).toBe('System.InvalidOperationException')
+
+    // A damaged entry reads as "nothing was changed", which is the default list.
+    localStorage.setItem('dnspy.exceptions.v1', '{ not json')
+    vi.resetModules()
+    const reloaded = await import('./app-store')
+    expect(reloaded.useAppStore.getState().exceptionDiff).toEqual({})
   })
 })
 

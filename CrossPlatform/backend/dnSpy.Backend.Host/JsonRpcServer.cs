@@ -264,6 +264,12 @@ internal sealed class JsonRpcServer {
 			case RpcMethods.DebugDisconnect:
 				await GetDebugSessions().DisconnectAsync(DeserializeParams<DebugDisconnectRequest>(request), cancellationToken).ConfigureAwait(false);
 				return new { disconnected = true };
+			case RpcMethods.ExceptionGet:
+				return GetDebugSessions().GetExceptionSettings();
+			case RpcMethods.ExceptionApply:
+				return GetDebugSessions().ApplyExceptionSettings(ReadParamsElement(request));
+			case RpcMethods.ExceptionReset:
+				return GetDebugSessions().ResetExceptionSettings();
 			default:
 				throw new RpcException(ErrorCodes.MethodNotFound, $"Unknown method: {request.Method}");
 		}
@@ -309,6 +315,10 @@ internal sealed class JsonRpcServer {
 		return request.Params.Value.Deserialize<T>(jsonOptions)
 			?? throw new JsonException("The request params evaluated to null.");
 	}
+
+	/// <summary>The raw params object, for a request whose shape the receiving service reads itself.</summary>
+	static JsonElement ReadParamsElement(RpcRequest request) =>
+		request.Params ?? throw new JsonException("The request does not contain params.");
 
 	void CancelRequest(JsonElement? parameters) {
 		if (parameters is null || !parameters.Value.TryGetProperty("id", out var id))

@@ -380,6 +380,60 @@ public sealed class DebugSessionManagerTests {
 	}
 
 	/// <summary>
+	/// An exception nothing catches stops the debuggee, even though its type is not set to break when
+	/// thrown: that is the rule the exception list applies to an unhandled one. The name in the event is
+	/// what the client shows, and it comes from the module's metadata rather than from symbols.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StopsOnAnUnhandledException() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken, ["--throw"]);
+		var entry = await harness.NextStopAsync();
+
+		var stop = await harness.ContinueAsync(ThreadId(entry));
+
+		Assert.Equal("exception", Reason(stop));
+		Assert.Equal("System.InvalidOperationException", stop.Body?.GetProperty("exceptionName").GetString());
+		Assert.True(stop.Body?.GetProperty("unhandled").GetBoolean());
+	}
+
+	/// <summary>
+	/// A caught exception is not a stop under the defaults, and turning on "break when thrown" for its
+	/// type is what makes the first chance stop. Both halves matter: the first says the settings are read
+	/// at all, the second says they are read per type.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task StopsOnAFirstChanceExceptionOnceItsTypeIsSetToBreak() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken, ["--catch"]);
+		var entry = await harness.NextStopAsync();
+
+		harness.SetBreakWhenThrown("System.InvalidOperationException", stopFirstChance: true);
+		var stop = await harness.ContinueAsync(ThreadId(entry));
+
+		Assert.Equal("exception", Reason(stop));
+		Assert.Equal("System.InvalidOperationException", stop.Body?.GetProperty("exceptionName").GetString());
+		Assert.False(stop.Body?.GetProperty("unhandled").GetBoolean());
+	}
+
+	/// <summary>
+	/// The same debuggee with nothing changed. The exception is caught by the fixture, so the run walks
+	/// straight to the breakpoint after it: had the first chance stopped, that is the stop the client
+	/// would have been handed instead.
+	/// </summary>
+	[Fact(Timeout = 120_000)]
+	public async Task ACaughtExceptionIsNotAStopByDefault() {
+		var target = FindTarget();
+		await using var harness = await StepHarness.StartAsync(target, TestContext.Current.CancellationToken, ["--catch"]);
+		var entry = await harness.NextStopAsync();
+
+		await harness.SetLineBreakpointAsync(await harness.CallStatementAsync("Calculate"));
+		var stop = await harness.ContinueAsync(ThreadId(entry));
+
+		Assert.Equal("breakpoint", Reason(stop));
+	}
+
+	/// <summary>
 	/// Steps, as a client drives them: the target is stopped at the statement that calls a method in
 	/// the same module, and each step has to end on the statement the user meant.
 	/// </summary>
@@ -398,7 +452,7 @@ public sealed class DebugSessionManagerTests {
 			this.manager = manager;
 		}
 
-		public static async Task<StepHarness> StartAsync(string target, CancellationToken cancellationToken) {
+		public static async Task<StepHarness> StartAsync(string target, CancellationToken cancellationToken, IReadOnlyList<string>? arguments = null) {
 			var workspaceManager = new WorkspaceManager();
 			var manager = CreateManager(workspaceManager);
 			var harness = new StepHarness(workspaceManager, manager) { target = target };
@@ -413,7 +467,7 @@ public sealed class DebugSessionManagerTests {
 				var opened = await workspaceManager.OpenAsync(new OpenWorkspaceRequest([target]), cancellationToken);
 				harness.workspaceId = opened.WorkspaceId;
 				var started = await manager.LaunchAsync(
-					new DebugLaunchRequest(target, StopAtEntry: true, WorkspaceId: opened.WorkspaceId),
+					new DebugLaunchRequest(target, Arguments: arguments, StopAtEntry: true, WorkspaceId: opened.WorkspaceId),
 					cancellationToken);
 				harness.SessionId = started.SessionId;
 				return harness;
@@ -468,6 +522,17 @@ public sealed class DebugSessionManagerTests {
 			RequestAsync("setBreakpoints", new {
 				breakpoints = new[] { new { id = "bp1", modulePath = target, metadataToken = call.MetadataToken, line = call.Line } },
 			});
+
+		/// <summary>
+		/// Turns "break when thrown" on for a type, through the same diff the Exception Settings window
+		/// sends. The list is engine-wide, so this reaches the session the harness already started.
+		/// </summary>
+		public void SetBreakWhenThrown(string name, bool stopFirstChance) =>
+			manager.ApplyExceptionSettings(JsonSerializer.SerializeToElement(new {
+				updated = new[] {
+					new { category = "DotNet", name, code = (int?)null, stopFirstChance, stopSecondChance = false },
+				},
+			}));
 
 		public async Task<DebugEventNotification> ContinueAsync(int threadId) {
 			await RequestAsync("continue", new { threadId });

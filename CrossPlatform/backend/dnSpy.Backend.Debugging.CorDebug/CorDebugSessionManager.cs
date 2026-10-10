@@ -17,7 +17,6 @@ public sealed class CorDebugSessionManager : IAsyncDisposable {
 	static readonly HashSet<string> AllowedCommands = new(StringComparer.Ordinal) {
 		"setBreakpoints",
 		"setFunctionBreakpoints",
-		"setExceptionBreakpoints",
 		"configurationDone",
 		"continue",
 		"pause",
@@ -35,11 +34,29 @@ public sealed class CorDebugSessionManager : IAsyncDisposable {
 	static readonly JsonElement Capabilities = JsonSerializer.SerializeToElement(new {
 		supportsLineBreakpoints = true,
 		supportsFunctionBreakpoints = true,
-		supportsExceptionBreakpoints = false,
+		supportsExceptionBreakpoints = true,
 		supportsEvaluate = false,
 	});
 
 	readonly ConcurrentDictionary<string, CorDebugSession> sessions = new(StringComparer.Ordinal);
+
+	/// <summary>
+	/// The exception list every session shares. Edits arrive as RPCs and are consulted per exception
+	/// event, so a session reads the current settings without being pushed a copy.
+	/// </summary>
+	readonly ExceptionSettingsService exceptionSettings = new();
+
+	public object GetExceptionSettings() => exceptionSettings.BuildSnapshot();
+
+	public object ApplyExceptionSettings(JsonElement diff) {
+		exceptionSettings.Apply(diff);
+		return exceptionSettings.BuildSnapshot();
+	}
+
+	public object ResetExceptionSettings() {
+		exceptionSettings.Reset();
+		return exceptionSettings.BuildSnapshot();
+	}
 
 	/// <summary>
 	/// Resolves decompiled-source breakpoints to IL identities. Null in a host built without the
@@ -93,13 +110,13 @@ public sealed class CorDebugSessionManager : IAsyncDisposable {
 	}
 
 	public async Task<DebugStartResponse> LaunchAsync(DebugLaunchRequest request, CancellationToken cancellationToken) {
-		var session = await CorDebugSession.LaunchAsync(request, symbols, cancellationToken).ConfigureAwait(false);
+		var session = await CorDebugSession.LaunchAsync(request, symbols, exceptionSettings, cancellationToken).ConfigureAwait(false);
 		Register(session);
 		return new DebugStartResponse(session.Id, Capabilities);
 	}
 
 	public async Task<DebugStartResponse> AttachAsync(DebugAttachRequest request, CancellationToken cancellationToken) {
-		var session = await CorDebugSession.AttachAsync(request.ProcessId, request.WorkspaceId, symbols, cancellationToken).ConfigureAwait(false);
+		var session = await CorDebugSession.AttachAsync(request.ProcessId, request.WorkspaceId, symbols, exceptionSettings, cancellationToken).ConfigureAwait(false);
 		Register(session);
 		return new DebugStartResponse(session.Id, Capabilities);
 	}

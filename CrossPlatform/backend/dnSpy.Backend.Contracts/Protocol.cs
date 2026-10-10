@@ -64,6 +64,12 @@ public static class RpcMethods {
 	public const string DebugEvent = "debug/event";
 	public const string ScriptEvaluate = "script/evaluate";
 	public const string ScriptReset = "script/reset";
+	/// <summary>The exception types the debug engine can break on, with their default and current settings.</summary>
+	public const string ExceptionGet = "exceptions/get";
+	/// <summary>Applies the client's Add/Remove/Update diff against the defaults and answers with the new list.</summary>
+	public const string ExceptionApply = "exceptions/apply";
+	/// <summary>Drops every change and answers with the default list.</summary>
+	public const string ExceptionReset = "exceptions/reset";
 }
 
 public static class ErrorCodes {

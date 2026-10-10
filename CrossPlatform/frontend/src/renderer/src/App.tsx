@@ -13,6 +13,7 @@ import { CSharpInteractive } from './components/CSharpInteractive'
 import { MethodBodyEditor, RenameDialog, RenameNamespaceDialog } from './components/EditDialogs'
 import { HexView, ModuleInfoView } from './components/SpecialDocuments'
 import { BreakpointsPane, CallStackPane, LocalsPane, ModulesPane, ThreadsPane, WatchPane } from './components/DebugToolWindows'
+import { ExceptionSettingsPane } from './components/ExceptionSettingsPane'
 import { BookmarksPane } from './components/BookmarksPane'
 import { AttachDialog } from './components/AttachDialog'
 import { DebugProgramDialog } from './components/DebugProgramDialog'
@@ -1188,7 +1189,7 @@ export const App = (): React.JSX.Element => {
       case 'hex': return <HexView moduleId={(node.getConfig() as { moduleId: string }).moduleId} />
       case 'module-info': return <ModuleInfoView moduleId={(node.getConfig() as { moduleId: string }).moduleId} />
       case 'locals': return <LocalsPane />
-      case 'exception-settings': return <DebugPlaceholder label={t('Exception Settings')} />
+      case 'exception-settings': return <ExceptionSettingsPane />
       case 'watch': return <WatchPane />
       case 'callstack': return <CallStackPane />
       case 'breakpoints': return <BreakpointsPane />

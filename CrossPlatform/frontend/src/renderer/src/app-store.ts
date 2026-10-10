@@ -11,6 +11,11 @@ import type {
   DecompileResponse,
   DebugBreakpoint,
   DebugEvent,
+  DebugExceptionCategory,
+  DebugExceptionCondition,
+  DebugExceptionDiff,
+  DebugExceptionDiffEntry,
+  DebugExceptionSettings,
   DebugLaunchOptions,
   DebugModule,
   DebugStackFrame,
@@ -96,7 +101,6 @@ export interface LineBreakpointEntry {
 export interface StoredBreakpoints {
   breakpoints: LineBreakpointEntry[]
   functions: FunctionBreakpoint[]
-  exceptions: string[]
 }
 
 /**
@@ -222,7 +226,18 @@ interface AppState {
   /** The bookmark navigation steps from; set by the last go-to, so next/previous continue from there. */
   activeBookmarkId?: string
   bookmarksReveal?: BookmarkReveal
-  exceptionBreakpoints: string[]
+  /**
+   * The exception list as the engine has it, refreshed whenever it changes. The engine owns the
+   * list — the client stores only `exceptionDiff`, and replays it to get here.
+   */
+  exceptionCategories: DebugExceptionCategory[]
+  exceptionSettings: DebugExceptionSettings[]
+  /** What the client has changed against the engine's defaults, which is what it persists. */
+  exceptionDiff: DebugExceptionDiff
+  /** Set once the engine has answered the first request, so the pane can tell empty from unloaded. */
+  exceptionSettingsLoaded: boolean
+  /** Why the list could not be read — an engine that will not load has no exception types to offer. */
+  exceptionSettingsError?: string
   /** What the engine says it can do; drives which debug UI stays enabled. */
   debugCapabilities: Record<string, unknown>
   /** Lines of the C# Interactive window, oldest first. */
@@ -404,7 +419,16 @@ interface AppState {
   selectPreviousBookmarkInDocument(documentId: string, line?: number): Promise<void>
   selectNextBookmarkWithSameLabel(): Promise<void>
   selectPreviousBookmarkWithSameLabel(): Promise<void>
-  setExceptionBreakpoint(filter: string, enabled: boolean): Promise<void>
+  /** Reads the stored diff back into the engine and shows the list that comes out of it. */
+  loadExceptionSettings(): Promise<void>
+  /** Turns "break when thrown" on or off for the types named by key. */
+  setExceptionBreakWhenThrown(keys: string[], value: boolean): Promise<void>
+  /** Adds a type the definition files do not name, so it can be broken on anyway. */
+  addExceptionDefinition(entry: { category: string; name?: string; code?: number; description?: string }): Promise<void>
+  removeExceptionDefinitions(keys: string[]): Promise<void>
+  setExceptionConditions(keys: string[], conditions: DebugExceptionCondition[]): Promise<void>
+  /** Throws the diff away and puts the engine back to the settings the definition files name. */
+  restoreDefaultExceptionSettings(): Promise<void>
   appendOutput(message: string): void
   clearError(): void
   /** Builds the C# Interactive session the first time the window is opened, printing the banner. */
@@ -495,7 +519,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   functionBreakpoints: [],
   lineBreakpoints: [],
   bookmarks: [],
-  exceptionBreakpoints: [],
+  exceptionCategories: [],
+  exceptionSettings: [],
+  exceptionDiff: {},
+  exceptionSettingsLoaded: false,
   debugCapabilities: {},
 
   setBackendStatus: (status) => {
@@ -1415,8 +1442,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         await window.dnSpy.setFunctionBreakpoints(sessionId, breakpointRequests)
       if (get().lineBreakpoints.length > 0)
         await syncLineBreakpoints(get, set)
-      if (get().exceptionBreakpoints.length > 0)
-        await window.dnSpy.setExceptionBreakpoints(sessionId, get().exceptionBreakpoints)
+      // The exception list lives in the engine rather than in the session, and it outlives every
+      // session, so the stored diff goes back in before the debuggee is released: a run started
+      // without the Exception Settings window ever being opened still honors what it holds.
+      await get().loadExceptionSettings()
       // A launch that does not break during startup is held by the engine until this lands: the
       // debuggee would otherwise run to completion in the time the launch request alone takes.
       await window.dnSpy.configurationDone(sessionId)
@@ -1438,6 +1467,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ debugSessionId: started.sessionId, debugCapabilities: started.capabilities })
       if (get().lineBreakpoints.length > 0)
         await syncLineBreakpoints(get, set)
+      await get().loadExceptionSettings()
       get().appendOutput(t('Attached to process {processId}.', { processId }))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1456,6 +1486,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         stoppedReason: typeof event.body?.reason === 'string' ? event.body.reason : 'stopped',
       })
       const reason = typeof event.body?.reason === 'string' ? event.body.reason : 'unknown'
+      // An exception stop carries what was thrown, which is the one thing the Output window has to
+      // say beyond "stopped": the reason alone does not name the type.
+      const exceptionName = typeof event.body?.exceptionName === 'string' ? event.body.exceptionName : undefined
+      const exceptionModule = typeof event.body?.exceptionModule === 'string' ? event.body.exceptionModule : undefined
+      if (exceptionName)
+        get().appendOutput(exceptionModule
+          ? t('Exception thrown: {name} in {module}.', { name: exceptionName, module: exceptionModule })
+          : t('Exception thrown: {name}.', { name: exceptionName }))
       get().appendOutput(t('Debugger stopped: {reason}.', { reason: t(reason) }))
       await refreshDebugState(get, set, threadId)
       set({ debugState: 'stopped' })
@@ -1712,16 +1750,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     const knownFunctions = new Set(get().functionBreakpoints.map((breakpoint) => breakpoint.name))
     const functions = (stored.functions ?? []).filter((breakpoint) => !knownFunctions.has(breakpoint.name))
-    const exceptions = (stored.exceptions ?? []).filter((filter) => !get().exceptionBreakpoints.includes(filter))
-    if (imported.length === 0 && functions.length === 0 && exceptions.length === 0)
+    if (imported.length === 0 && functions.length === 0)
       return 0
     set((state) => ({
       lineBreakpoints: [...state.lineBreakpoints, ...imported],
       functionBreakpoints: [...state.functionBreakpoints, ...functions],
-      exceptionBreakpoints: [...state.exceptionBreakpoints, ...exceptions],
     }))
     await Promise.all([syncLineBreakpoints(get, set), syncFunctionBreakpoints(get)])
-    return imported.length + functions.length + exceptions.length
+    return imported.length + functions.length
   },
 
   setAllLineBreakpointsEnabled: async (enabled) => {
@@ -1900,15 +1936,61 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectNextBookmarkWithSameLabel: async () => { await stepBookmark(get, 1, { sameLabel: true }) },
   selectPreviousBookmarkWithSameLabel: async () => { await stepBookmark(get, -1, { sameLabel: true }) },
 
-  setExceptionBreakpoint: async (filter, enabled) => {
-    set((state) => ({
-      exceptionBreakpoints: enabled
-        ? [...new Set([...state.exceptionBreakpoints, filter])]
-        : state.exceptionBreakpoints.filter((candidate) => candidate !== filter),
-    }))
-    const { debugSessionId, exceptionBreakpoints } = get()
-    if (debugSessionId)
-      await window.dnSpy.setExceptionBreakpoints(debugSessionId, exceptionBreakpoints)
+  loadExceptionSettings: async () => {
+    const diff = get().exceptionDiff
+    try {
+      // The engine's list is the truth; the stored diff is only how the client gets its own changes
+      // back into it, and it goes in as one request rather than one per row.
+      const list = hasExceptionDiff(diff)
+        ? await window.dnSpy.applyExceptionSettings(diff)
+        : await window.dnSpy.getExceptionSettings()
+      set({ exceptionCategories: list.categories, exceptionSettings: list.exceptions, exceptionSettingsLoaded: true, exceptionSettingsError: undefined })
+    } catch (error) {
+      // A failed launch must not be turned into a failed read: the window reports the engine instead.
+      set({ exceptionSettingsError: error instanceof Error ? error.message : String(error) })
+    }
+  },
+
+  setExceptionBreakWhenThrown: async (keys, value) => {
+    await applyExceptionChange(get, set, keys, (diff, rows) =>
+      rows.reduce((current, row) => withExceptionSetting(current, row, { stopFirstChance: value }), diff))
+  },
+
+  addExceptionDefinition: async (entry) => {
+    const diff = get().exceptionDiff
+    set({ exceptionDiff: pruneExceptionDiff({ ...diff, added: [...(diff.added ?? []), {
+      category: entry.category,
+      name: entry.name ?? null,
+      code: entry.code ?? null,
+      description: entry.description ?? null,
+      // A type added to the list is one the user wants to break on — WPF's AddExceptionVM sets both flags.
+      stopFirstChance: true,
+      stopSecondChance: true,
+      conditions: [],
+    }] }) })
+    await get().loadExceptionSettings()
+  },
+
+  removeExceptionDefinitions: async (keys) => {
+    await applyExceptionChange(get, set, keys, (diff, rows) =>
+      rows.reduce((current, row) => withoutException(current, row), diff))
+  },
+
+  setExceptionConditions: async (keys, conditions) => {
+    // WPF's Edit Conditions turns Break When Thrown on along with the conditions, so a condition the
+    // user just wrote cannot end up on a row that never stops.
+    await applyExceptionChange(get, set, keys, (diff, rows) =>
+      rows.reduce((current, row) => withExceptionSetting(current, row, { conditions, stopFirstChance: true }), diff))
+  },
+
+  restoreDefaultExceptionSettings: async () => {
+    set({ exceptionDiff: {} })
+    try {
+      const list = await window.dnSpy.resetExceptionSettings()
+      set({ exceptionCategories: list.categories, exceptionSettings: list.exceptions, exceptionSettingsLoaded: true, exceptionSettingsError: undefined })
+    } catch (error) {
+      set({ exceptionSettingsError: error instanceof Error ? error.message : String(error) })
+    }
   },
 
   appendOutput: (message) => set((state) => ({
@@ -2609,9 +2691,6 @@ export const parseFunctionBreakpoints = (value: unknown): FunctionBreakpoint[] =
   })
 }
 
-const parseExceptionBreakpoints = (value: unknown): string[] =>
-  Array.isArray(value) ? [...new Set(value.filter((filter): filter is string => typeof filter === 'string' && filter !== ''))] : []
-
 /** Turns a stored row back into a breakpoint. The node id died with the workspace that issued it, so
  * it starts empty: the IL identity is what the backend resolves the location from, and what
  * `attachLineBreakpoints` matches on once the document is decompiled again. */
@@ -2632,21 +2711,20 @@ const lineBreakpointFromEntry = (entry: LineBreakpointEntry): LineBreakpoint => 
   settings: entry.settings,
 })
 
-const emptyBreakpoints = (): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'> =>
-  ({ lineBreakpoints: [], functionBreakpoints: [], exceptionBreakpoints: [] })
+const emptyBreakpoints = (): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints'> =>
+  ({ lineBreakpoints: [], functionBreakpoints: [] })
 
-function loadBreakpoints(): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'> {
+function loadBreakpoints(): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints'> {
   if (typeof localStorage === 'undefined')
     return emptyBreakpoints()
   try {
     const stored = JSON.parse(localStorage.getItem(breakpointsStorageKey) ?? 'null') as unknown
     if (typeof stored !== 'object' || stored === null)
       return emptyBreakpoints()
-    const { breakpoints, functions, exceptions } = stored as Record<string, unknown>
+    const { breakpoints, functions } = stored as Record<string, unknown>
     return {
       lineBreakpoints: parseLineBreakpointEntries(breakpoints).map(lineBreakpointFromEntry),
       functionBreakpoints: parseFunctionBreakpoints(functions),
-      exceptionBreakpoints: parseExceptionBreakpoints(exceptions),
     }
   } catch {
     return emptyBreakpoints()
@@ -2654,14 +2732,13 @@ function loadBreakpoints(): Pick<AppState, 'lineBreakpoints' | 'functionBreakpoi
 }
 
 /** The file an export writes, which is also what `loadBreakpoints` reads back. */
-export const breakpointsFile = (state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'>): StoredBreakpoints & { version: number } => ({
+export const breakpointsFile = (state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints'>): StoredBreakpoints & { version: number } => ({
   version: 1,
   breakpoints: lineBreakpointEntries(state.lineBreakpoints),
   functions: state.functionBreakpoints,
-  exceptions: state.exceptionBreakpoints,
 })
 
-function saveBreakpoints(state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints' | 'exceptionBreakpoints'>): void {
+function saveBreakpoints(state: Pick<AppState, 'lineBreakpoints' | 'functionBreakpoints'>): void {
   if (typeof localStorage !== 'undefined')
     localStorage.setItem(breakpointsStorageKey, JSON.stringify(breakpointsFile(state)))
 }
@@ -2674,9 +2751,131 @@ useAppStore.setState(loadBreakpoints())
 // — a crash or a kill takes the window with it — so every change goes straight to storage instead.
 useAppStore.subscribe((state, previous) => {
   if (state.lineBreakpoints !== previous.lineBreakpoints ||
-    state.functionBreakpoints !== previous.functionBreakpoints ||
-    state.exceptionBreakpoints !== previous.exceptionBreakpoints)
+    state.functionBreakpoints !== previous.functionBreakpoints)
     saveBreakpoints(state)
+})
+
+const exceptionDiffStorageKey = 'dnspy.exceptions.v1'
+
+/** Whether the client has changed anything at all against the engine's defaults. */
+const hasExceptionDiff = (diff: DebugExceptionDiff): boolean =>
+  (diff.added?.length ?? 0) > 0 || (diff.removed?.length ?? 0) > 0 || (diff.updated?.length ?? 0) > 0
+
+/** Drops the parts of a diff that ended up empty, so what is stored says only what was changed. */
+const pruneExceptionDiff = (diff: DebugExceptionDiff): DebugExceptionDiff => ({
+  added: diff.added?.length ? diff.added : undefined,
+  removed: diff.removed?.length ? diff.removed : undefined,
+  updated: diff.updated?.length ? diff.updated : undefined,
+})
+
+/** Whether two rows name the same type: by name when it has one, otherwise by code. */
+const sameException = (
+  a: { category: string; name?: string | null; code?: number | null },
+  b: { category: string; name?: string | null; code?: number | null },
+): boolean => a.category === b.category && (a.name ?? null) === (b.name ?? null) && (a.code ?? null) === (b.code ?? null)
+
+/** A row stated as the diff states it: everything the engine would apply. */
+const exceptionDiffEntry = (row: DebugExceptionSettings, changes: Partial<DebugExceptionDiffEntry>): DebugExceptionDiffEntry => ({
+  category: row.category,
+  name: row.name,
+  code: row.code,
+  description: row.description,
+  stopFirstChance: row.stopFirstChance,
+  stopSecondChance: row.stopSecondChance,
+  conditions: row.conditions,
+  ...changes,
+})
+
+/**
+ * Puts a row's new settings into the diff. A type the user added is stated in `added`, where it is also
+ * what creates it; one the definition files name only needs its changed settings in `updated`.
+ */
+const withExceptionSetting = (diff: DebugExceptionDiff, row: DebugExceptionSettings, changes: Partial<DebugExceptionDiffEntry>): DebugExceptionDiff => {
+  if ((diff.added ?? []).some((entry) => sameException(entry, row)))
+    return pruneExceptionDiff({ ...diff, added: (diff.added ?? []).map((entry) => sameException(entry, row) ? { ...entry, ...changes } : entry) })
+  return pruneExceptionDiff({
+    ...diff,
+    updated: [...(diff.updated ?? []).filter((entry) => !sameException(entry, row)), exceptionDiffEntry(row, changes)],
+  })
+}
+
+/** Takes a row off the list: a type the user added simply goes, a defined one has to be removed. */
+const withoutException = (diff: DebugExceptionDiff, row: DebugExceptionSettings): DebugExceptionDiff => {
+  if ((diff.added ?? []).some((entry) => sameException(entry, row)))
+    return pruneExceptionDiff({ ...diff, added: (diff.added ?? []).filter((entry) => !sameException(entry, row)) })
+  return pruneExceptionDiff({
+    ...diff,
+    removed: [...(diff.removed ?? []).filter((entry) => !sameException(entry, row)), exceptionDiffEntry(row, {})],
+    updated: (diff.updated ?? []).filter((entry) => !sameException(entry, row)),
+  })
+}
+
+/**
+ * Applies one change to the stored diff, hands the whole diff to the engine and shows the list that
+ * comes back. The engine answers with the list rather than the change, so the pane never has to guess
+ * what a row ended up as — a category default it fell back to, say, or a removal that took.
+ */
+async function applyExceptionChange(
+  get: StoreGet,
+  set: StoreSet,
+  keys: string[],
+  change: (diff: DebugExceptionDiff, rows: DebugExceptionSettings[]) => DebugExceptionDiff,
+): Promise<void> {
+  const state = get()
+  const rows = state.exceptionSettings.filter((row) => keys.includes(row.key))
+  const diff = change(state.exceptionDiff, rows)
+  set({ exceptionDiff: diff })
+  try {
+    const list = await window.dnSpy.applyExceptionSettings(diff)
+    set({ exceptionCategories: list.categories, exceptionSettings: list.exceptions, exceptionSettingsError: undefined })
+  } catch (error) {
+    set({ exceptionSettingsError: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+const parseExceptionDiffEntries = (value: unknown): DebugExceptionDiffEntry[] | undefined => {
+  if (!Array.isArray(value))
+    return undefined
+  const entries = value.flatMap((candidate): DebugExceptionDiffEntry[] => {
+    if (typeof candidate !== 'object' || candidate === null || typeof (candidate as DebugExceptionDiffEntry).category !== 'string')
+      return []
+    const entry = candidate as DebugExceptionDiffEntry
+    return [{
+      category: entry.category,
+      name: typeof entry.name === 'string' ? entry.name : null,
+      code: typeof entry.code === 'number' ? entry.code : null,
+      description: typeof entry.description === 'string' ? entry.description : null,
+      stopFirstChance: entry.stopFirstChance === true,
+      stopSecondChance: entry.stopSecondChance === true,
+      conditions: Array.isArray(entry.conditions)
+        ? entry.conditions.filter((condition) => condition.type === 'moduleNameEquals' || condition.type === 'moduleNameNotEquals')
+        : [],
+    }]
+  })
+  return entries.length > 0 ? entries : undefined
+}
+
+/** Reads the stored diff back. Anything damaged reads as "no changes", which is the default list. */
+function loadExceptionDiff(): DebugExceptionDiff {
+  if (typeof localStorage === 'undefined')
+    return {}
+  try {
+    const stored = JSON.parse(localStorage.getItem(exceptionDiffStorageKey) ?? 'null') as unknown
+    if (typeof stored !== 'object' || stored === null)
+      return {}
+    const { added, removed, updated } = stored as Record<string, unknown>
+    return { added: parseExceptionDiffEntries(added), removed: parseExceptionDiffEntries(removed), updated: parseExceptionDiffEntries(updated) }
+  } catch {
+    return {}
+  }
+}
+
+// Read back after the module has finished evaluating, for the same reason the breakpoints are.
+useAppStore.setState({ exceptionDiff: loadExceptionDiff() })
+
+useAppStore.subscribe((state, previous) => {
+  if (state.exceptionDiff !== previous.exceptionDiff && typeof localStorage !== 'undefined')
+    localStorage.setItem(exceptionDiffStorageKey, JSON.stringify(state.exceptionDiff))
 })
 
 const sessionStorageKey = 'dnspy.session.v1'

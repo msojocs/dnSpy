@@ -40,6 +40,9 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	/// <summary>Resolves decompiled-source coordinates to IL identities. May be null.</summary>
 	public IDebugSymbolResolver? SymbolResolver { get; private init; }
 
+	/// <summary>The shared exception list a stop decision is read from. May be null in a host without the engine.</summary>
+	public ExceptionSettingsService? ExceptionSettings { get; private init; }
+
 	/// <summary>Absolute path of the program being launched, used to recognise its module.</summary>
 	public string? LaunchProgram { get; private init; }
 
@@ -92,7 +95,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 
 	// ---------------------------------------------------------------- lifecycle
 
-	public static async Task<CorDebugSession> LaunchAsync(DebugLaunchRequest request, IDebugSymbolResolver? symbols, CancellationToken cancellationToken) {
+	public static async Task<CorDebugSession> LaunchAsync(DebugLaunchRequest request, IDebugSymbolResolver? symbols, ExceptionSettingsService? exceptionSettings, CancellationToken cancellationToken) {
 		var program = Path.GetFullPath(request.Program);
 		if (!File.Exists(program))
 			throw new RpcException(ErrorCodes.FileNotFound, $"Debug target does not exist: {request.Program}");
@@ -101,6 +104,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		var session = new CorDebugSession {
 			WorkspaceId = request.WorkspaceId,
 			SymbolResolver = symbols,
+			ExceptionSettings = exceptionSettings,
 			LaunchProgram = program,
 			BreakKind = breakKind,
 			StopAtEntry = breakKind is not null,
@@ -200,7 +204,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		return (host, arguments);
 	}
 
-	public static async Task<CorDebugSession> AttachAsync(int processId, string? workspaceId, IDebugSymbolResolver? symbols, CancellationToken cancellationToken) {
+	public static async Task<CorDebugSession> AttachAsync(int processId, string? workspaceId, IDebugSymbolResolver? symbols, ExceptionSettingsService? exceptionSettings, CancellationToken cancellationToken) {
 		if (processId <= 0)
 			throw new RpcException(ErrorCodes.InvalidParams, "A positive process ID is required.");
 		// DebugActiveProcess resumes the target, so the CLR interfaces have to be obtained first.
@@ -208,6 +212,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		var session = new CorDebugSession {
 			WorkspaceId = workspaceId,
 			SymbolResolver = symbols,
+			ExceptionSettings = exceptionSettings,
 			TargetProcessId = processId,
 		};
 		try {
@@ -396,6 +401,9 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 			case BreakpointSetErrorCorDebugManagedCallbackEventArgs error:
 				OnBreakpointSetError(error.Breakpoint, error.DwError);
 				break;
+			case Exception2CorDebugManagedCallbackEventArgs exception:
+				OnExceptionThrown(exception);
+				break;
 			case DebuggerErrorCorDebugManagedCallbackEventArgs debuggerError:
 				DebugLog.Error("debugger-error", new COMException($"The debugger reported error 0x{debuggerError.ErrorCode:X8}.", debuggerError.ErrorHR));
 				break;
@@ -417,7 +425,7 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		}
 	}
 
-	void Stop(string reason, ICorDebugThread? thread, string? breakpointId = null) {
+	void Stop(string reason, ICorDebugThread? thread, string? breakpointId = null, IReadOnlyDictionary<string, object?>? extra = null) {
 		// A stop ends whatever step was in flight — the step's own breakpoint hitting is one way for
 		// it to end — and the frames and values the previous stop handed out die with it: their COM
 		// objects belong to a suspension that no longer exists.
@@ -427,12 +435,19 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 		IsStopped = true;
 		StopReason = reason;
 		StoppedThreadId = thread is null ? null : ThreadTable.TryGetId(thread);
-		Emit(DebugEventNames.Stopped, new {
-			reason,
-			threadId = StoppedThreadId,
-			allThreadsStopped = true,
-			hitBreakpointIds = breakpointId is null ? [] : new[] { breakpointId },
-		});
+		var body = new Dictionary<string, object?>(StringComparer.Ordinal) {
+			["reason"] = reason,
+			["threadId"] = StoppedThreadId,
+			["allThreadsStopped"] = true,
+			["hitBreakpointIds"] = breakpointId is null ? [] : new[] { breakpointId },
+		};
+		// An exception stop says which exception and whether it was handled, so the client can show
+		// more than "stopped: exception".
+		if (extra is not null) {
+			foreach (var (key, value) in extra)
+				body[key] = value;
+		}
+		Emit(DebugEventNames.Stopped, body);
 	}
 
 	/// <summary>
@@ -457,6 +472,9 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 	partial void OnBreakpointHit(ICorDebugBreakpoint breakpoint, ICorDebugThread thread);
 
 	partial void OnBreakpointSetError(ICorDebugBreakpoint breakpoint, uint dwError);
+
+	// Implemented in CorDebugSession.Exceptions.cs, which is where the exception list lives.
+	partial void OnExceptionThrown(Exception2CorDebugManagedCallbackEventArgs exception);
 
 	// ---------------------------------------------------------------- commands
 
@@ -505,10 +523,6 @@ internal sealed partial class CorDebugSession : IAsyncDisposable {
 				return ThreadsResponse();
 			case "modules":
 				return ModulesResponse();
-			case "setExceptionBreakpoints":
-				// Exception breakpoints are outside the v1 engine; the client disables the UI from
-				// the capabilities reported at launch time.
-				return EmptyJson();
 			case "evaluate":
 				throw new RpcException(ErrorCodes.MethodNotFound, "Expression evaluation is not supported by the in-process debug engine.");
 			case "scopes":

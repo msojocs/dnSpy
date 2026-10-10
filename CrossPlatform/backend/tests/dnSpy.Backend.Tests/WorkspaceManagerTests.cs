@@ -1234,8 +1234,8 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		var token = unchecked((int)calculate.MDToken.Raw);
 		// The loop body is `sum += left;` and the header is the `for` it runs under, offsets read from the
 		// PDB: the step is asked from the body, the way a breakpoint in the loop asks for it.
-		var loopBody = SourceOffset(calculate, line: 31);
-		var loopHeader = SourceOffset(calculate, line: 30);
+		var loopBody = SourceOffset(calculate, line: 39);
+		var loopHeader = SourceOffset(calculate, line: 38);
 
 		var response = await manager.GetSteppingTargetsAsync(null, path, token, loopBody, stepInto: false, TestContext.Current.CancellationToken);
 
@@ -1407,7 +1407,7 @@ public sealed class WorkspaceManagerTests : IDisposable {
 		// The last statement is the `return`, which the step must not land on again. The body's other
 		// statements are still armed — a loop runs its body again, and which pass the thread is on is
 		// not something a step can know from the IL — so the assertion is about the return alone.
-		var returnOffset = SourceOffset(calculate, line: 33);
+		var returnOffset = SourceOffset(calculate, line: 41);
 
 		var response = await manager.GetSteppingTargetsAsync(null, path, unchecked((int)calculate.MDToken.Raw), end, stepInto: false, TestContext.Current.CancellationToken);
 

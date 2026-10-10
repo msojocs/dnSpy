@@ -1247,18 +1247,170 @@ select:focus-visible,
   opacity: 0.55;
 }
 
-.exception-breakpoint-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 27px;
-  padding: 2px 9px;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+/* The Exception Settings window: a toolbar, the optional add row, the table, and the count line. */
+.exception-settings-pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  min-height: 0;
+  height: 100%;
 }
 
-.exception-breakpoint-row input {
+.exception-search-label {
+  color: var(--text-muted);
+}
+
+.exception-search,
+.exception-category-filter {
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.exception-search {
+  flex: 1;
+  min-width: 80px;
+  padding: 0 7px;
+}
+
+.exception-category-filter {
+  max-width: 160px;
+}
+
+/* A toolbar toggle that is on, such as "show only enabled exceptions". */
+.icon-button.active {
+  border-color: var(--border-strong);
+  background: var(--selection);
+}
+
+.exception-add-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.exception-add-row input,
+.exception-add-row select {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.exception-add-row .exception-add-name {
+  flex: 1;
+  min-width: 120px;
+}
+
+.exception-table {
+  display: grid;
+  grid-template-rows: 23px minmax(0, 1fr);
+  min-height: 0;
+}
+
+.exception-header,
+.exception-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 40%) minmax(120px, 20%) minmax(150px, 1fr);
+  align-items: center;
+}
+
+.exception-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+}
+
+.exception-header > span,
+.exception-row > span {
+  overflow: hidden;
+  padding: 0 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exception-rows {
+  overflow: auto;
+  background: var(--surface);
+}
+
+.exception-row {
+  min-height: 25px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  cursor: default;
+}
+
+.exception-row.selected {
+  background: var(--selection);
+}
+
+.exception-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.exception-name-cell input[type="checkbox"] {
+  flex: 0 0 auto;
   width: 14px;
   height: 14px;
+}
+
+.exception-name-cell > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exception-conditions-dialog {
+  min-width: 420px;
+}
+
+.exception-conditions-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px;
+}
+
+.exception-conditions-empty {
+  color: var(--text-muted);
+}
+
+.exception-condition-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.exception-condition-row select,
+.exception-condition-row input {
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.exception-condition-row input {
+  flex: 1;
+  min-width: 120px;
+}
+
+.exception-condition-and {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.exception-condition-add {
+  align-self: flex-start;
 }
 
 .breakpoint-main-row > span {
