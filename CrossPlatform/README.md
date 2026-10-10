@@ -6,7 +6,7 @@ The existing WPF application remains in the repository while functionality is mi
 
 ## Prerequisites
 
-- .NET SDK 10.0.112 or a compatible 10.0 patch
+- .NET SDK 10.0 (the newest 10.0.x installed is used)
 - Node.js 22 LTS
 - pnpm 12.3.4
 
