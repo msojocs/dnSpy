@@ -180,16 +180,23 @@ export const DocumentView = ({ documentId, viewId, theme, onNavigate }: { docume
       return
     }
     // Only the editor on screen can show a line, and the tab the request opened usually mounts after the
-    // request was made — so the caret is placed when this document is the one in front, once per request.
-    if (activeDocumentId !== documentId || revealedTokenRef.current === stoppedLocation.token)
+    // request was made — so the caret is placed when this document is the one in front.
+    if (activeDocumentId !== documentId)
       return
-    revealedTokenRef.current = stoppedLocation.token
-    pendingRevealRef.current = { line, column: stoppedLocation.column }
+    // The request is remembered the first time it is seen, and the reveal is retried on every run after
+    // that. Monaco's editor is created asynchronously, so the run that first asks for the line is usually
+    // the one where no editor exists yet to scroll — the mount that can is a later run of this effect.
+    // Retrying is what makes the scroll land in that case; a request that has already landed leaves
+    // nothing pending, so the repeats cost nothing.
+    if (revealedTokenRef.current !== stoppedLocation.token) {
+      revealedTokenRef.current = stoppedLocation.token
+      pendingRevealRef.current = { line, column: stoppedLocation.column }
+      // A step scrolls but leaves the keyboard where the user put it; a frame switch or Show Next
+      // Statement is a navigation, and there the caret follows into the editor.
+      if (stoppedLocation.caret)
+        editorRef.current?.focus()
+    }
     applyPendingReveal()
-    // A step scrolls but leaves the keyboard where the user put it; a frame switch or Show Next Statement
-    // is a navigation, and there the caret follows into the editor.
-    if (stoppedLocation.caret)
-      editorRef.current?.focus()
   }, [documentId, stoppedLocation, activeDocumentId, document?.text, locale, editorReady])
 
   if (!document)

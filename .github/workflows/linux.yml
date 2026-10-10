@@ -16,7 +16,7 @@ on:
 
 jobs:
   linux:
-    name: Electron and .NET backend
+    name: Linux packages
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -243,7 +243,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - uses: actions/download-artifact@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: dnSpy-linux-x64
           path: assets
@@ -317,7 +317,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - uses: actions/download-artifact@v7.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           path: assets
 
